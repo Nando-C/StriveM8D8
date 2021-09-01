@@ -20,10 +20,21 @@ io.on('connection', socket => {
 
     socket.on('login', ( { username, room} ) => {
         onlineUsers.push({ username, id: socket.id, room })
-        console.log(onlineUsers)
+        // console.log(onlineUsers)
+        socket.join(room)
+        // console.log(socket.rooms)
+        socket.broadcast.emit('newLogin')
+        socket.emit('loggedin')
+    })
+
+    socket.on('sendmessage', ( {message, room } )=>{
+        socket.to(room).emit('message', message)
     })
 })
 
+app.get('/online-users', (req, res) => {
+    res.send( {onlineUsers} )
+})
 const port = process.env.PORT || 3001
 
 console.table(listEndpoints(server))
