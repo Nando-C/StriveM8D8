@@ -20,7 +20,7 @@ io.on('connection', socket => {
 
     socket.on('login', ( { username, room} ) => {
         onlineUsers.push({ username, id: socket.id, room })
-        // console.log(onlineUsers)
+        console.log(onlineUsers)
         socket.join(room)
         // console.log(socket.rooms)
         socket.broadcast.emit('newLogin')
@@ -29,6 +29,13 @@ io.on('connection', socket => {
 
     socket.on('sendmessage', ( {message, room } )=>{
         socket.to(room).emit('message', message)
+    })
+
+    socket.on('disconnect', () => {
+        console.log("socket disconnected")
+        console.log(onlineUsers)
+        onlineUsers = onlineUsers.filter(user => user.id !== socket.id)
+        console.log(onlineUsers)
     })
 })
 
