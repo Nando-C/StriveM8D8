@@ -1,0 +1,35 @@
+{
+  "name": "StriveM8D8",
+  "version": "1.0.0",
+  "description": "Now that you have seen how to have sockets join rooms from the backend, implement a 1 to 1 chat, considering that socket.io is conveniently having each socket join automatically a room which has the same name of that socket id.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "nodemon -r dotenv/config ./src/index.js",
+    "start": "node ./src/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nando-C/StriveM8D8.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Nando-C/StriveM8D8/issues"
+  },
+  "homepage": "https://github.com/Nando-C/StriveM8D8#readme",
+  "devDependencies": {
+    "dotenv": "^10.0.0",
+    "nodemon": "^2.0.12"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.17.1",
+    "express-list-endpoints": "^6.0.0",
+    "http-errors": "^1.8.0",
+    "mongoose": "^6.0.3",
+    "socket.io": "^4.2.0"
+  }
+}
