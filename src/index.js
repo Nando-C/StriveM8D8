@@ -11,7 +11,7 @@ app.use(express.json())
 
 const server = createServer(app)
 
-const io = new Server(server, { allowEI03: true })
+const io = new Server(server, { allowEIO3: true })
 
 let onlineUsers = []
 
@@ -19,10 +19,9 @@ io.on('connection', socket => {
     console.log(socket.id)
 
     socket.on('login', ( { username, room} ) => {
+        onlineUsers = onlineUsers.filter(user => user.id !== socket.id)
         onlineUsers.push({ username, id: socket.id, room })
-        console.log(onlineUsers)
         socket.join(room)
-        // console.log(socket.rooms)
         socket.broadcast.emit('newLogin')
         socket.emit('loggedin')
     })
@@ -32,10 +31,8 @@ io.on('connection', socket => {
     })
 
     socket.on('disconnect', () => {
-        console.log("socket disconnected")
-        console.log(onlineUsers)
+        console.log("socket disconnected:", socket.id)
         onlineUsers = onlineUsers.filter(user => user.id !== socket.id)
-        console.log(onlineUsers)
     })
 })
 
