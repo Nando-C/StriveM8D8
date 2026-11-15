@@ -43,8 +43,9 @@ export const createApp = () => {
 
     app.use((req, res, next) => next(createError(404)))
 
-    // Express identifies an error handler by its four parameters: keep all of them.
-    app.use((err, req, res, next) => {
+    // Express identifies an error handler by its four parameters: keep all of them,
+    // including the unused last one.
+    app.use((err, req, res, _next) => {
         const status = err.status || 500
         if (status >= 500) {
             console.error(err)
