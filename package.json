@@ -8,7 +8,8 @@
     "test": "vitest run",
     "dev": "nodemon -r dotenv/config ./src/index.js",
     "start": "node ./src/index.js",
-    "lint": "oxlint --deny-warnings src test vitest.config.js"
+    "lint": "oxlint --deny-warnings src test vitest.config.js",
+    "dev:all": "concurrently --names server,client --prefix-colors blue,green \"pnpm dev\" \"pnpm --dir client dev\""
   },
   "repository": {
     "type": "git",
@@ -22,6 +23,7 @@
   },
   "homepage": "https://github.com/Nando-C/StriveM8D8#readme",
   "devDependencies": {
+    "concurrently": "^10.0.7",
     "mongodb-memory-server": "^11.3.0",
     "nodemon": "^3.1.14",
     "oxlint": "^1.93.0",

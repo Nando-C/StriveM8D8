@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react'
+import { LoaderCircle, MessagesSquare } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -15,40 +16,48 @@ interface LoginFormProps {
 
 export function LoginForm({ connected, pending, error, onLogin }: LoginFormProps) {
   const [username, setUsername] = useState('')
-  const disabled = !connected || pending
+  // The form works before the connection is up; the request is sent once it is.
+  const busy = pending
   const trimmed = username.trim()
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    if (disabled || trimmed === '') return
+    if (busy || trimmed === '') return
     onLogin(trimmed)
   }
 
   return (
-    <main className="flex min-h-svh items-center justify-center p-4">
+    <main className="flex min-h-svh items-center justify-center bg-muted/40 p-4">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle>Strive Chat</CardTitle>
-          <CardDescription>Pick a username to start chatting.</CardDescription>
+          <div className="mb-2 flex size-10 items-center justify-center rounded-xl bg-primary text-primary-foreground">
+            <MessagesSquare aria-hidden="true" className="size-5" />
+          </div>
+          <CardTitle>
+            <h1>Strive Chat</h1>
+          </CardTitle>
+          <CardDescription>Pick a name and start a one-to-one conversation with anyone online.</CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={submit} className="flex flex-col gap-4">
+          <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
             <div className="flex flex-col gap-2">
               <Label htmlFor="username">Username</Label>
               <Input
                 id="username"
                 name="username"
                 autoComplete="off"
+                autoCapitalize="none"
+                spellCheck={false}
                 autoFocus
                 maxLength={30}
                 value={username}
                 onChange={event => setUsername(event.target.value)}
-                disabled={disabled}
+                disabled={pending}
                 aria-invalid={error !== null}
                 aria-describedby="username-hint"
               />
               <p id="username-hint" className="text-xs text-muted-foreground">
-                Up to 30 letters, digits, hyphens or underscores.
+                Up to 30 letters, digits, hyphens or underscores. No password — this is a demo.
               </p>
             </div>
             {error !== null && (
@@ -56,8 +65,9 @@ export function LoginForm({ connected, pending, error, onLogin }: LoginFormProps
                 <AlertDescription>{error}</AlertDescription>
               </Alert>
             )}
-            <Button type="submit" disabled={disabled || trimmed === ''}>
-              {!connected ? 'Connecting…' : pending ? 'Signing in…' : 'Join'}
+            <Button type="submit" size="lg" disabled={busy || trimmed === ''}>
+              {busy && <LoaderCircle aria-hidden="true" className="animate-spin" />}
+              {!pending ? 'Join' : connected ? 'Signing in…' : 'Connecting…'}
             </Button>
           </form>
         </CardContent>

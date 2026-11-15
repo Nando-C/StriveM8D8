@@ -1,4 +1,4 @@
-import { Alert, AlertAction, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { CopyX, LoaderCircle, WifiOff } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import type { Phase } from '@/lib/chatState'
 
@@ -9,38 +9,43 @@ interface ConnectionBannerProps {
   onReconnect: () => void
 }
 
+const BAR = 'flex flex-wrap items-center gap-x-3 gap-y-2 border-b px-4 py-2 text-sm'
+
 /** Explains why the chat is not live right now. Renders nothing when everything is fine. */
 export function ConnectionBanner({ connected, phase, username, onReconnect }: ConnectionBannerProps) {
   if (phase === 'replaced') {
     return (
-      <Alert className="rounded-none border-x-0 border-t-0">
-        <AlertTitle>Signed in from another tab</AlertTitle>
-        <AlertDescription>
-          {username} is now active in another tab. Close that tab, then reconnect here.
-        </AlertDescription>
-        <AlertAction>
-          <Button size="sm" variant="outline" onClick={onReconnect}>
-            Reconnect here
-          </Button>
-        </AlertAction>
-      </Alert>
+      <div role="alert" className={`${BAR} bg-muted`}>
+        <CopyX aria-hidden="true" className="size-4 shrink-0" />
+        <p className="min-w-0 flex-1">
+          <span className="font-medium">Signed in from another tab.</span> {username} is now active there. Close
+          that tab, then reconnect here.
+        </p>
+        <Button size="sm" variant="outline" onClick={onReconnect}>
+          Reconnect here
+        </Button>
+      </div>
     )
   }
 
   if (!connected) {
     return (
-      <Alert role="status" className="rounded-none border-x-0 border-t-0">
-        <AlertTitle>Disconnected</AlertTitle>
-        <AlertDescription>Trying to reconnect. Messages cannot be sent until the connection is back.</AlertDescription>
-      </Alert>
+      <div role="status" className={`${BAR} bg-destructive/10 text-destructive`}>
+        <WifiOff aria-hidden="true" className="size-4 shrink-0" />
+        <p className="min-w-0 flex-1">
+          <span className="font-medium">Disconnected.</span> Trying to reconnect — messages cannot be sent until
+          the connection is back.
+        </p>
+      </div>
     )
   }
 
   if (phase === 'authenticating') {
     return (
-      <Alert role="status" className="rounded-none border-x-0 border-t-0">
-        <AlertDescription>Signing back in as {username}…</AlertDescription>
-      </Alert>
+      <div role="status" className={`${BAR} bg-muted text-muted-foreground`}>
+        <LoaderCircle aria-hidden="true" className="size-4 shrink-0 animate-spin" />
+        <p>Signing back in as {username}…</p>
+      </div>
     )
   }
 

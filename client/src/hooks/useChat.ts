@@ -120,9 +120,11 @@ export const useChat = () => {
     }
   }, [state.phase, state.selected, state.loginCount])
 
+  // Allowed before the socket has connected: `login` is the one event that may be queued,
+  // and socket.io sends it as soon as the connection is up. Someone who types a name and
+  // presses Enter straight away is not made to do it twice.
   const login = useCallback(
     (username: string) => {
-      if (!socket.connected) return
       emitLogin({ username })
     },
     [emitLogin],
@@ -130,6 +132,10 @@ export const useChat = () => {
 
   const selectConversation = useCallback((username: string) => {
     dispatch({ type: 'conversationSelected', username })
+  }, [])
+
+  const closeConversation = useCallback(() => {
+    dispatch({ type: 'conversationClosed' })
   }, [])
 
   const recipientId = selectedUserId(state)
@@ -172,9 +178,11 @@ export const useChat = () => {
     selectedOnline: recipientId !== null,
     conversation: selectedConversation(state),
     conversations: state.conversations,
+    lastIncoming: state.lastIncoming,
     canSend,
     login,
     selectConversation,
+    closeConversation,
     sendMessage,
     reconnect,
   }

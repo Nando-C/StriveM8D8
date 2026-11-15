@@ -61,6 +61,8 @@ export interface ChatState {
   /** The open conversation, by username — socket ids change on reconnect, names do not. */
   selected: string | null
   conversations: Record<string, Conversation>
+  /** The latest message received from someone else, for announcing it to screen readers. */
+  lastIncoming: { id: string; from: string } | null
 }
 
 export type ChatAction =
@@ -71,6 +73,7 @@ export type ChatAction =
   | { type: 'userJoined'; payload: NewLoginPayload }
   | { type: 'userLeft'; payload: UserLeftPayload }
   | { type: 'conversationSelected'; username: string }
+  | { type: 'conversationClosed' }
   | { type: 'historyLoaded'; payload: HistoryPayload }
   | { type: 'historyFailed'; payload: HistoryErrorPayload }
   | { type: 'messageReceived'; payload: ChatMessage }
@@ -90,6 +93,7 @@ export const initialChatState = (storedUsername: string | null): ChatState => ({
   onlineUsers: [],
   selected: null,
   conversations: {},
+  lastIncoming: null,
 })
 
 // ---------- messages
@@ -242,6 +246,9 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
         selected: action.username,
       }
 
+    case 'conversationClosed':
+      return { ...state, selected: null }
+
     case 'historyLoaded': {
       const ownUsername = state.username
       if (ownUsername === null) return state
@@ -266,11 +273,12 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
     case 'messageReceived': {
       const { from } = action.payload
       const alreadyKnown = conversationOf(state, from).messages.some(message => message.id === action.payload.id)
-      return withConversation(state, from, conversation => ({
+      const next = withConversation(state, from, conversation => ({
         ...conversation,
         messages: mergeConfirmed(conversation.messages, [fromLive(action.payload)]),
         unread: state.selected === from || alreadyKnown ? conversation.unread : conversation.unread + 1,
       }))
+      return alreadyKnown ? next : { ...next, lastIncoming: { id: action.payload.id, from } }
     }
 
     case 'sendStarted': {
