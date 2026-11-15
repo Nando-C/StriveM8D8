@@ -21,16 +21,17 @@
   },
   "homepage": "https://github.com/Nando-C/StriveM8D8#readme",
   "devDependencies": {
-    "nodemon": "^2.0.12",
-    "socket.io-client": "^4.2.0"
+    "nodemon": "^3.1.14",
+    "socket.io-client": "^4.8.4"
   },
   "dependencies": {
-    "cors": "^2.8.5",
-    "dotenv": "^10.0.0",
-    "express": "^4.17.1",
-    "express-list-endpoints": "^6.0.0",
-    "http-errors": "^1.8.0",
-    "mongoose": "^6.0.3",
-    "socket.io": "^4.2.0"
-  }
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.10",
+    "express": "^4.22.3",
+    "express-list-endpoints": "^7.1.1",
+    "http-errors": "^2.0.1",
+    "mongoose": "^9.12.1",
+    "socket.io": "^4.8.4"
+  },
+  "packageManager": "pnpm@12.18.0"
 }
