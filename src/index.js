@@ -16,5 +16,8 @@ server.listen(port, () => {
     console.log(" ✅  Server is running on port: " + port)
 })
 server.on('error', (error) => {
-    console.log(" 🚫 Server crashed due to: ", error)
+    console.error(" 🚫 Server could not start: ", error)
+    // Exit instead of lingering: the database connection would otherwise keep a
+    // process alive that is not listening on anything.
+    process.exit(1)
 })

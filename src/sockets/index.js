@@ -25,7 +25,7 @@ export const registerSocketHandlers = io => {
     const getOnlineUsers = () => onlineUsers.map(publicUser)
 
     io.on('connection', socket => {
-        console.log(socket.id)
+        console.log("socket connected:", socket.id)
 
         socket.on('login', payload => {
             const username = isObject(payload) && typeof payload.username === 'string'
@@ -123,8 +123,13 @@ export const registerSocketHandlers = io => {
             const id = saved._id.toString()
             const timestamp = saved.createdAt.getTime()
 
-            // Delivered only into the recipient's own room, never broadcast.
-            socket.to(toUserId).emit('message', { id, from: sender.username, fromId: socket.id, text, timestamp })
+            // Delivered only into the recipient's own room, never broadcast. The recipient is
+            // looked up again by username: while the message was being saved they may have
+            // reconnected under a new socket id, or gone offline (it is then in their history).
+            const recipientNow = onlineUsers.find(user => user.username === recipient.username)
+            if (recipientNow) {
+                socket.to(recipientNow.id).emit('message', { id, from: sender.username, fromId: socket.id, text, timestamp })
+            }
             reply({ ok: true, id, timestamp })
         })
 

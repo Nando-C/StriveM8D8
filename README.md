@@ -55,7 +55,7 @@ Connect with any Socket.IO v4 client. Browser clients must come from an origin l
 `sendmessage` is always answered through its acknowledgement callback:
 
 ```js
-{ ok: true, id, timestamp }     // saved and delivered; id is the stored message's id
+{ ok: true, id, timestamp }     // saved, and delivered if the recipient is still online; id is the stored message's id
 { ok: false, message }          // nothing was saved or delivered
 ```
 
@@ -115,8 +115,8 @@ pnpm dev
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `PORT` | No | Port to listen on. Defaults to `3001`. |
-| `FRONTEND_URL` | For browser clients | Comma-separated list of origins allowed to connect, e.g. `http://localhost:5173`. Requests with no `Origin` header (non-browser clients) are always allowed. If unset, no browser origin is allowed. |
-| `MONGO_CONNECTION` | For messaging | MongoDB connection string, including the database name. If unset or unreachable the server still runs and serves presence; sending and history fail with a clear error, and the connection is retried until it succeeds. |
+| `FRONTEND_URL` | For browser clients | Comma-separated list of origins allowed to connect, e.g. `http://localhost:5173` (a trailing slash is fine). Requests with no `Origin` header (non-browser clients) are always allowed. If unset, no browser origin is allowed. |
+| `MONGO_CONNECTION` | For messaging | MongoDB connection string, including the database name. If unset or unreachable the server still runs and serves presence; sending and history fail with a clear error, and the connection is retried until it succeeds. A malformed connection string is reported once and not retried. |
 
 ### Scripts
 

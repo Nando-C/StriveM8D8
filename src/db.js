@@ -13,7 +13,7 @@ export const isDatabaseReady = () => mongoose.connection.readyState === 1
 
 // Connects to MongoDB, retrying until it succeeds: Mongoose does not retry a failed
 // first connection by itself. Resolves once connected (or at once, after a warning,
-// when no URI is given) and never rejects, so callers may leave it un-awaited.
+// when no URI is given or the URI is malformed) and never rejects, so callers may leave it un-awaited.
 export const connectDB = async (uri, options = {}) => {
     if (!uri) {
         console.warn(" ⚠️  MONGO_CONNECTION is not set: messages cannot be saved or loaded")
@@ -29,8 +29,15 @@ export const connectDB = async (uri, options = {}) => {
             console.log(" ✅  Connected to MongoDB")
             return
         } catch (error) {
-            // Only the error name is logged: driver messages can include connection details.
-            console.error(` 🚫 MongoDB connection failed (${error.name}), retrying in ${delay / 1000}s`)
+            // A malformed connection string will never start working: say so and stop.
+            if (error.name === 'MongoParseError') {
+                console.error(" 🚫 MONGO_CONNECTION is not a valid MongoDB connection string: fix it and restart. Messages cannot be saved or loaded.")
+                return
+            }
+            // Only the error name and server code name are logged (e.g. "AuthenticationFailed"):
+            // full driver messages can include connection details.
+            const reason = error.codeName ? `${error.name}: ${error.codeName}` : error.name
+            console.error(` 🚫 MongoDB connection failed (${reason}), retrying in ${delay / 1000}s`)
             await wait(delay)
             delay = Math.min(delay * 2, maxRetryDelayMs)
         }

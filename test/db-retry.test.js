@@ -32,6 +32,17 @@ describe('connectDB', () => {
         expect(mongoose.connection.readyState).toBe(0)
     })
 
+    it('reports a malformed connection string once and does not retry it', async () => {
+        const failures = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+        await expect(connectDB('not-a-connection-string', { retryDelayMs: 50 })).resolves.toBeUndefined()
+        await new Promise(resolve => setTimeout(resolve, 300))
+
+        expect(failures).toHaveBeenCalledOnce()
+        expect(failures.mock.calls[0][0]).toMatch(/not a valid MongoDB connection string/)
+        expect(mongoose.connection.readyState).toBe(0)
+    })
+
     it('keeps retrying while the database is unreachable and connects once it appears', async () => {
         const failures = vi.spyOn(console, 'error').mockImplementation(() => {})
         vi.spyOn(console, 'log').mockImplementation(() => {})
