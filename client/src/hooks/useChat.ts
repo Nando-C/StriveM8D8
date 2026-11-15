@@ -80,7 +80,7 @@ export const useChat = () => {
     }
     const onNewLogin = (payload: NewLoginPayload) => dispatch({ type: 'userJoined', payload })
     const onUserLeft = (payload: UserLeftPayload) => dispatch({ type: 'userLeft', payload })
-    const onMessage = (payload: ChatMessage) => dispatch({ type: 'messageReceived', payload })
+    const onMessage = (payload: ChatMessage) => dispatch({ type: 'messageReceived', payload, receivedAt: Date.now() })
     const onHistory = (payload: HistoryPayload) => dispatch({ type: 'historyLoaded', payload })
     const onHistoryError = (payload: HistoryErrorPayload) => dispatch({ type: 'historyFailed', payload })
 

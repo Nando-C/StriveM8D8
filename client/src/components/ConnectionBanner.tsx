@@ -1,6 +1,9 @@
+import { AnimatePresence, motion } from 'motion/react'
 import { CopyX, LoaderCircle, WifiOff } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import type { Phase } from '@/lib/chatState'
+import { notice } from '@/lib/motion'
+import { cn } from '@/lib/utils'
 
 interface ConnectionBannerProps {
   connected: boolean
@@ -9,45 +12,66 @@ interface ConnectionBannerProps {
   onReconnect: () => void
 }
 
-const BAR = 'flex flex-wrap items-center gap-x-3 gap-y-2 border-b px-4 py-2 text-sm'
+type Kind = 'replaced' | 'disconnected' | 'authenticating' | null
 
-/** Explains why the chat is not live right now. Renders nothing when everything is fine. */
+/**
+ * Explains why the chat is not live right now; renders nothing when everything is fine.
+ *
+ * It floats over the bottom of the screen instead of sitting in the layout, so it can
+ * slide in and out without pushing — and re-laying-out — everything else.
+ */
 export function ConnectionBanner({ connected, phase, username, onReconnect }: ConnectionBannerProps) {
-  if (phase === 'replaced') {
-    return (
-      <div role="alert" className={`${BAR} bg-muted`}>
-        <CopyX aria-hidden="true" className="size-4 shrink-0" />
-        <p className="min-w-0 flex-1">
-          <span className="font-medium">Signed in from another tab.</span> {username} is now active there. Close
-          that tab, then reconnect here.
-        </p>
-        <Button size="sm" variant="outline" onClick={onReconnect}>
-          Reconnect here
-        </Button>
-      </div>
-    )
-  }
+  const kind: Kind =
+    phase === 'replaced' ? 'replaced' : !connected ? 'disconnected' : phase === 'authenticating' ? 'authenticating' : null
 
-  if (!connected) {
-    return (
-      <div role="status" className={`${BAR} bg-destructive/10 text-destructive`}>
-        <WifiOff aria-hidden="true" className="size-4 shrink-0" />
-        <p className="min-w-0 flex-1">
-          <span className="font-medium">Disconnected.</span> Trying to reconnect — messages cannot be sent until
-          the connection is back.
-        </p>
-      </div>
-    )
-  }
-
-  if (phase === 'authenticating') {
-    return (
-      <div role="status" className={`${BAR} bg-muted text-muted-foreground`}>
-        <LoaderCircle aria-hidden="true" className="size-4 shrink-0 animate-spin" />
-        <p>Signing back in as {username}…</p>
-      </div>
-    )
-  }
-
-  return null
+  return (
+    <div className="pointer-events-none fixed inset-x-0 bottom-20 z-20 flex justify-center px-3">
+      <AnimatePresence mode="wait">
+        {kind !== null && (
+          <motion.div
+            key={kind}
+            variants={notice}
+            initial="hidden"
+            animate="visible"
+            exit="exit"
+            role={kind === 'replaced' ? 'alert' : 'status'}
+            className={cn(
+              'pointer-events-auto flex max-w-xl flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border px-4 py-2.5 text-sm shadow-lg',
+              kind === 'disconnected'
+                ? 'border-destructive/30 bg-background text-destructive'
+                : 'bg-background text-foreground',
+            )}
+          >
+            {kind === 'replaced' && (
+              <>
+                <CopyX aria-hidden="true" className="size-4 shrink-0" />
+                <p className="min-w-0 flex-1">
+                  <span className="font-medium">Signed in from another tab.</span> {username} is now active there.
+                  Close that tab, then reconnect here.
+                </p>
+                <Button size="sm" variant="outline" onClick={onReconnect}>
+                  Reconnect here
+                </Button>
+              </>
+            )}
+            {kind === 'disconnected' && (
+              <>
+                <WifiOff aria-hidden="true" className="size-4 shrink-0" />
+                <p className="min-w-0 flex-1">
+                  <span className="font-medium">Disconnected.</span> Trying to reconnect — messages cannot be sent
+                  until the connection is back.
+                </p>
+              </>
+            )}
+            {kind === 'authenticating' && (
+              <>
+                <LoaderCircle aria-hidden="true" className="size-4 shrink-0 animate-spin" />
+                <p>Signing back in as {username}…</p>
+              </>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  )
 }

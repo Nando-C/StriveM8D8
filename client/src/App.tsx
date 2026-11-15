@@ -1,3 +1,4 @@
+import { AnimatePresence, motion } from 'motion/react'
 import { ArrowLeft, MessagesSquare } from 'lucide-react'
 import { ConnectionBanner } from '@/components/ConnectionBanner'
 import { LoginForm } from '@/components/LoginForm'
@@ -7,22 +8,35 @@ import { Sidebar } from '@/components/Sidebar'
 import { Button } from '@/components/ui/button'
 import { UserAvatar } from '@/components/UserAvatar'
 import { useChat } from '@/hooks/useChat'
+import { fade } from '@/lib/motion'
 import { cn } from '@/lib/utils'
 
 function App() {
   const chat = useChat()
 
-  // No identity yet (or the last login was refused): the login form is the whole screen.
-  if (chat.username === null) {
-    return (
-      <LoginForm
-        connected={chat.connected}
-        pending={chat.phase === 'authenticating'}
-        error={chat.loginError}
-        onLogin={chat.login}
-      />
-    )
-  }
+  // The login form and the chat cross-fade into each other.
+  return (
+    <AnimatePresence mode="wait" initial={false}>
+      {chat.username === null ? (
+        // No identity yet (or the last login was refused): the login form is the whole screen.
+        <motion.div key="login" variants={fade} initial="hidden" animate="visible" exit="exit">
+          <LoginForm
+            connected={chat.connected}
+            pending={chat.phase === 'authenticating'}
+            error={chat.loginError}
+            onLogin={chat.login}
+          />
+        </motion.div>
+      ) : (
+        <motion.div key="chat" variants={fade} initial="hidden" animate="visible" exit="exit">
+          <ChatShell chat={chat} username={chat.username} />
+        </motion.div>
+      )}
+    </AnimatePresence>
+  )
+}
+
+function ChatShell({ chat, username }: { chat: ReturnType<typeof useChat>; username: string }) {
 
   const blockedReason = !chat.connected
     ? 'Disconnected'
@@ -41,7 +55,7 @@ function App() {
       <ConnectionBanner
         connected={chat.connected}
         phase={chat.phase}
-        username={chat.username}
+        username={username}
         onReconnect={chat.reconnect}
       />
       <p role="status" aria-live="polite" className="sr-only">
@@ -50,7 +64,7 @@ function App() {
       <div className="flex min-h-0 flex-1">
         {/* On a phone the list and the conversation are separate views; from md up they sit side by side. */}
         <Sidebar
-          username={chat.username}
+          username={username}
           users={chat.users}
           selected={chat.selected}
           selectedOnline={chat.selectedOnline}
@@ -60,7 +74,12 @@ function App() {
         />
         <main className={cn('min-w-0 flex-1 flex-col', chat.selected === null ? 'hidden md:flex' : 'flex')}>
           {chat.selected === null ? (
-            <div className="m-auto flex max-w-sm flex-col items-center gap-3 p-6 text-center">
+            <motion.div
+              variants={fade}
+              initial="hidden"
+              animate="visible"
+              className="m-auto flex max-w-sm flex-col items-center gap-3 p-6 text-center"
+            >
               <div className="flex size-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
                 <MessagesSquare aria-hidden="true" className="size-6" />
               </div>
@@ -70,9 +89,17 @@ function App() {
                   ? 'Nobody else is online yet. Open this page in a second tab and join with another name to try it out.'
                   : 'Pick someone from the list to start chatting. Messages are saved, so the conversation will still be here when you come back.'}
               </p>
-            </div>
+            </motion.div>
           ) : (
-            <>
+            // Keyed by the person: switching conversations fades the new one in. There is no
+            // exit animation, so the switch itself is never held up.
+            <motion.div
+              key={chat.selected}
+              variants={fade}
+              initial="hidden"
+              animate="visible"
+              className="flex min-h-0 flex-1 flex-col"
+            >
               <header className="flex items-center gap-3 border-b px-3 py-3 sm:px-4">
                 <Button
                   variant="ghost"
@@ -97,7 +124,7 @@ function App() {
                 blockedReason={blockedReason}
                 onSend={chat.sendMessage}
               />
-            </>
+            </motion.div>
           )}
         </main>
       </div>

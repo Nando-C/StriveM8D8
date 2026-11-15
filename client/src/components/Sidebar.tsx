@@ -1,7 +1,9 @@
+import { AnimatePresence, motion } from 'motion/react'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { UserAvatar } from '@/components/UserAvatar'
 import type { Conversation } from '@/lib/chatState'
+import { listItem, pop, transition } from '@/lib/motion'
 import { cn } from '@/lib/utils'
 import type { OnlineUser } from '@/types/protocol'
 
@@ -54,22 +56,42 @@ export function Sidebar({
             </div>
           ) : (
             <ul className="flex flex-col gap-1 px-2 pb-2">
+              {/* People fade in and out, and the rest glide to their new places. popLayout
+                  takes a leaving entry out of the flow at once, so nothing waits for it. */}
+              <AnimatePresence mode="popLayout" initial={false}>
               {listed.map(name => {
                 const online = names.includes(name)
                 const unread = conversations[name]?.unread ?? 0
                 const current = name === selected
                 return (
-                  <li key={name}>
+                  <motion.li
+                    key={name}
+                    layout
+                    variants={listItem}
+                    initial="hidden"
+                    animate="visible"
+                    exit="exit"
+                    transition={transition.base}
+                  >
                     <button
                       type="button"
                       onClick={() => onSelect(name)}
                       aria-current={current ? 'true' : undefined}
                       className={cn(
-                        'flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left text-sm outline-none',
-                        'transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50',
-                        current && 'bg-sidebar-accent font-medium text-sidebar-accent-foreground',
+                        'relative isolate flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left text-sm outline-none',
+                        'transition-[background-color,scale] hover:bg-sidebar-accent/60 active:scale-[0.98] motion-reduce:active:scale-100',
+                        'focus-visible:ring-3 focus-visible:ring-ring/50',
+                        current && 'font-medium text-sidebar-accent-foreground',
                       )}
                     >
+                      {/* One shared highlight that slides between entries instead of blinking. */}
+                      {current && (
+                        <motion.span
+                          layoutId="selected-person"
+                          transition={transition.base}
+                          className="absolute inset-0 -z-10 rounded-lg bg-sidebar-accent"
+                        />
+                      )}
                       <UserAvatar username={name} online={online} className="size-8" />
                       <span className="flex min-w-0 flex-1 flex-col">
                         <span className={cn('truncate', unread > 0 && 'font-semibold')}>{name}</span>
@@ -77,18 +99,24 @@ export function Sidebar({
                           {online ? 'Online' : 'Offline'}
                         </span>
                       </span>
-                      {unread > 0 && (
-                        <Badge>
-                          <span aria-hidden="true">{unread > 99 ? '99+' : unread}</span>
-                          <span className="sr-only">
-                            {unread} unread {unread === 1 ? 'message' : 'messages'}
-                          </span>
-                        </Badge>
-                      )}
+                      <AnimatePresence initial={false}>
+                        {unread > 0 && (
+                          // Keyed by the count, so the badge pops again each time it goes up.
+                          <motion.span key={unread} variants={pop} initial="hidden" animate="visible" exit="exit">
+                            <Badge>
+                              <span aria-hidden="true">{unread > 99 ? '99+' : unread}</span>
+                              <span className="sr-only">
+                                {unread} unread {unread === 1 ? 'message' : 'messages'}
+                              </span>
+                            </Badge>
+                          </motion.span>
+                        )}
+                      </AnimatePresence>
                     </button>
-                  </li>
+                  </motion.li>
                 )
               })}
+              </AnimatePresence>
             </ul>
           )}
         </ScrollArea>

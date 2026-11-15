@@ -31,6 +31,11 @@ export interface LocalMessage {
   status: MessageStatus
   /** Why a failed message failed. */
   error?: string
+  /**
+   * When this client saw the message arrive or sent it (its own clock), or `null` for a
+   * message that came from history. Only used to decide whether it animates in.
+   */
+  arrivedAt: number | null
 }
 
 export interface Conversation {
@@ -76,7 +81,7 @@ export type ChatAction =
   | { type: 'conversationClosed' }
   | { type: 'historyLoaded'; payload: HistoryPayload }
   | { type: 'historyFailed'; payload: HistoryErrorPayload }
-  | { type: 'messageReceived'; payload: ChatMessage }
+  | { type: 'messageReceived'; payload: ChatMessage; receivedAt: number }
   | { type: 'sendStarted'; to: string; clientId: string; text: string; timestamp: number }
   | { type: 'sendConfirmed'; to: string; clientId: string; id: string; timestamp: number }
   | { type: 'sendFailed'; to: string; clientId: string; reason: string }
@@ -110,10 +115,11 @@ const fromHistory = (message: HistoryMessage, ownUsername: string): LocalMessage
     timestamp: message.timestamp,
     own,
     status: 'sent',
+    arrivedAt: null,
   }
 }
 
-const fromLive = (message: ChatMessage): LocalMessage => ({
+const fromLive = (message: ChatMessage, arrivedAt: number): LocalMessage => ({
   key: message.id,
   id: message.id,
   clientId: null,
@@ -122,6 +128,7 @@ const fromLive = (message: ChatMessage): LocalMessage => ({
   timestamp: message.timestamp,
   own: false,
   status: 'sent',
+  arrivedAt,
 })
 
 const byTimeThenId = (a: LocalMessage, b: LocalMessage) =>
@@ -275,7 +282,7 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
       const alreadyKnown = conversationOf(state, from).messages.some(message => message.id === action.payload.id)
       const next = withConversation(state, from, conversation => ({
         ...conversation,
-        messages: mergeConfirmed(conversation.messages, [fromLive(action.payload)]),
+        messages: mergeConfirmed(conversation.messages, [fromLive(action.payload, action.receivedAt)]),
         unread: state.selected === from || alreadyKnown ? conversation.unread : conversation.unread + 1,
       }))
       return alreadyKnown ? next : { ...next, lastIncoming: { id: action.payload.id, from } }
@@ -292,6 +299,7 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
         timestamp: action.timestamp,
         own: true,
         status: 'pending',
+        arrivedAt: action.timestamp,
       }
       return withConversation(state, action.to, conversation => ({
         ...conversation,
