@@ -1,4 +1,4 @@
-import { AnimatePresence, motion } from 'motion/react'
+import { AnimatePresence, motion, useIsPresent } from 'motion/react'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { UserAvatar } from '@/components/UserAvatar'
@@ -16,6 +16,26 @@ interface SidebarProps {
   conversations: Record<string, Conversation>
   onSelect: (username: string) => void
   className?: string
+}
+
+/**
+ * One shared highlight that slides between entries instead of blinking.
+ *
+ * It is dropped as soon as its entry starts leaving the list. An entry that is fading out
+ * while still holding the shared highlight keeps Motion waiting for a hand-over that, when
+ * the list has no measurable size (hidden on a phone, or in tests), never completes — and
+ * the entry would stay in the list indefinitely.
+ */
+function SelectionHighlight({ current }: { current: boolean }) {
+  const present = useIsPresent()
+  if (!current || !present) return null
+  return (
+    <motion.span
+      layoutId="selected-person"
+      transition={transition.base}
+      className="absolute inset-0 -z-10 rounded-lg bg-sidebar-accent"
+    />
+  )
 }
 
 export function Sidebar({
@@ -84,14 +104,7 @@ export function Sidebar({
                         current && 'font-medium text-sidebar-accent-foreground',
                       )}
                     >
-                      {/* One shared highlight that slides between entries instead of blinking. */}
-                      {current && (
-                        <motion.span
-                          layoutId="selected-person"
-                          transition={transition.base}
-                          className="absolute inset-0 -z-10 rounded-lg bg-sidebar-accent"
-                        />
-                      )}
+                      <SelectionHighlight current={current} />
                       <UserAvatar username={name} online={online} className="size-8" />
                       <span className="flex min-w-0 flex-1 flex-col">
                         <span className={cn('truncate', unread > 0 && 'font-semibold')}>{name}</span>
