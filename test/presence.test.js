@@ -129,6 +129,7 @@ describe('session takeover', () => {
         const second = await app.client()
         const kicked = nextEvent(first, 'disconnect')
         const announced = nextEvent(bob, 'newLogin')
+        const leftSeenByBob = record(bob, 'userLeft')
         const reply = await login(second, { username: 'alice', sessionToken: firstSession.sessionToken })
 
         expect(reply.ok).toBe(true)
@@ -140,6 +141,9 @@ describe('session takeover', () => {
         const users = await onlineUsers(app)
         expect(users.filter(user => user.username === 'alice')).toEqual([{ username: 'alice', id: second.id }])
         expect(users).toHaveLength(2)
+        // Alice has not left: she is online under a new id, so nobody is told she went away.
+        await settle()
+        expect(leftSeenByBob).toEqual([])
     })
 
     it('does not accept the old token once it has been replaced', async () => {
@@ -156,6 +160,43 @@ describe('session takeover', () => {
 })
 
 describe('disconnect', () => {
+    it('tells the other clients which user left', async () => {
+        const alice = await app.client()
+        const bob = await app.client()
+        const carol = await app.client()
+        await login(alice, { username: 'alice' })
+        await login(bob, { username: 'bob' })
+        await login(carol, { username: 'carol' })
+        const aliceId = alice.id
+
+        const toldBob = nextEvent(bob, 'userLeft')
+        const toldCarol = nextEvent(carol, 'userLeft')
+        alice.close()
+
+        expect(await toldBob).toEqual({ id: aliceId })
+        expect(await toldCarol).toEqual({ id: aliceId })
+    })
+
+    it('says nothing when a socket that never logged in disconnects', async () => {
+        const alice = await app.client()
+        const visitor = await app.client()
+        const lurker = await app.client()
+        await login(alice, { username: 'alice' })
+        await login(visitor, { username: 'visitor' })
+        const leftSeenByAlice = record(alice, 'userLeft')
+
+        lurker.close()
+        // A logged-in user leaving afterwards is the signal that the server has
+        // processed the earlier disconnect too: only this one may be announced.
+        const visitorId = visitor.id
+        const toldAlice = nextEvent(alice, 'userLeft')
+        visitor.close()
+        await toldAlice
+        await settle()
+
+        expect(leftSeenByAlice).toEqual([{ id: visitorId }])
+    })
+
     it('removes the user from the online list and frees the username', async () => {
         const alice = await app.client()
         const bob = await app.client()

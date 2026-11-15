@@ -176,7 +176,14 @@ export const registerSocketHandlers = io => {
 
         socket.on('disconnect', () => {
             console.log("socket disconnected:", socket.id)
+            // Only a socket that is still listed has "left". One that never logged in was
+            // never announced, and one replaced by a session takeover is still online
+            // under its new id, which the others already learned from `newLogin`.
+            const wasOnline = onlineUsers.some(user => user.id === socket.id)
+            if (!wasOnline) return
+
             onlineUsers = onlineUsers.filter(user => user.id !== socket.id)
+            socket.broadcast.emit('userLeft', { id: socket.id })
         })
     })
 
