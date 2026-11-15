@@ -1,5 +1,7 @@
 # Strive Chat — real-time 1:1 chat
 
+[![CI](https://github.com/Nando-C/StriveM8D8/actions/workflows/ci.yml/badge.svg)](https://github.com/Nando-C/StriveM8D8/actions/workflows/ci.yml)
+
 A full-stack chat app where every message goes to exactly one recipient, conversations are stored in MongoDB, and history survives reconnects. The server is Node.js, Express, Socket.IO and Mongoose; the client is React and TypeScript, in the same repository.
 
 **Server**
@@ -155,7 +157,7 @@ shadcn/ui is not a component library you install: its CLI copies each component'
 
 ## Getting started
 
-Requirements: Node.js 22 or newer, [pnpm](https://pnpm.io) (the version is pinned in each `package.json`; `corepack enable pnpm` sets it up), and a MongoDB database — a local `mongod` or a hosted cluster.
+Requirements: Node.js 22.22 or newer (the client's test tooling needs a recent 22.x or 24.x release; CI runs on both), [pnpm](https://pnpm.io) (the version is pinned in each `package.json`; `corepack enable pnpm` sets it up), and a MongoDB database — a local `mongod` or a hosted cluster.
 
 ```bash
 # 1. Server (repository root)
@@ -226,6 +228,8 @@ cd client && pnpm test  # client
 ```
 
 **Server.** The suite is integration-level: each test boots a fresh server on a free port, connects real Socket.IO clients to it, and talks to an in-memory MongoDB, so nothing needs to be running and no external database is touched. The first run downloads a MongoDB binary and takes longer; after that a full run takes a few seconds. It covers login and username rules, session-token takeover, presence broadcasts, targeted delivery (including that third parties receive nothing), every send-failure path, malformed payloads, the origin allowlist, rate limits and the payload cap, the demo bot, message expiry, history after a reconnect, the 100-message cap and ordering, and behaviour when the database is down, has never connected, or comes back.
+
+Both suites, plus lint and the client build, run in GitHub Actions on every push and pull request (`.github/workflows/ci.yml`).
 
 **Client.** The tests render the real app against a fake socket, so each test plays the server: it checks what the app sent and sends events back. They cover logging in and being refused, the people list through arrivals, reconnects and departures, history and exactly-once merging, unread counts, sending and both kinds of acknowledgement, lost acknowledgements, re-login with the session token, the stored session, being signed in from another tab, and the reduced-motion setting. Elements are found by role and label, the way assistive technology finds them.
 

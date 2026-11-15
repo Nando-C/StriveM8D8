@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A newer push to the same branch makes the older run pointless.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Nothing here needs to write to the repository, and nothing needs a secret.
+permissions:
+  contents: read
+
+# The server (repository root) and the client (client/) are independent packages, each
+# with its own package.json and pnpm-lock.yaml, so each job installs only its own.
+# Both run on the two supported Node lines: the oldest (22) and the current LTS (24).
+jobs:
+  server:
+    name: Server — lint and test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v7
+
+      # Installs the pnpm version named in package.json's "packageManager" field.
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+          cache_dependency_path: pnpm-lock.yaml
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+
+      # The tests run against an in-memory MongoDB, whose binary is downloaded on first use.
+      - name: Cache the MongoDB test binary
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/mongodb-binaries
+          key: mongodb-binaries-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm test
+
+  client:
+    name: Client — lint, test and build (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: client/package.json
+          cache: true
+          cache_dependency_path: client/pnpm-lock.yaml
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm test
+      # Also the type check: the build runs tsc first.
+      - run: pnpm build
