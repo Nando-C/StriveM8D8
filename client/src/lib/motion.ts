@@ -2,7 +2,7 @@ import type { Transition, Variants } from 'motion/react'
 
 // One place for how the app moves, so every animation shares the same timing.
 //
-// Rules these follow (see CLAUDE.md): short, never blocking input, only `transform` and
+// Rules these follow: short, never blocking input, only `transform` and
 // `opacity` (plus Motion's layout animations), and nothing that delays a state change.
 // Reduced motion is handled once, by <MotionConfig reducedMotion="user"> around the app:
 // with that preference set, Motion drops movement and scaling and keeps plain fades.

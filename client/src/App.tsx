@@ -54,6 +54,7 @@ function ChatShell({ chat, username }: { chat: ReturnType<typeof useChat>; usern
     <div className="flex h-svh flex-col">
       <ConnectionBanner
         connected={chat.connected}
+        everConnected={chat.everConnected}
         phase={chat.phase}
         username={username}
         onReconnect={chat.reconnect}

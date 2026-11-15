@@ -4,7 +4,12 @@
 
 A real-time, one-to-one chat application: a Node.js + Socket.IO server with MongoDB persistence, and a React + TypeScript client. Messages go to exactly one recipient, conversations are saved, and the app keeps working through dropped connections, server restarts and page reloads.
 
+<!-- TODO(owner): replace the placeholder below with the deployed client's URL, then delete this comment. -->
+**Live demo:** `https://REPLACE-WITH-DEPLOYED-URL` — pick any name and message **demo-bot**, who is always online, or open the page in a second tab under another name and talk to yourself. The demo runs on free hosting, so the first connection can take up to a minute while the server wakes.
+
 ![Strive Chat: a conversation open, with the list of people online on the left](docs/screenshots/desktop-light.png)
+
+<!-- TODO(owner): add a short screen recording of two people chatting (e.g. docs/demo.gif) and embed it here: ![Two users chatting](docs/demo.gif) -->
 
 <table>
   <tr>
@@ -23,9 +28,9 @@ A real-time, one-to-one chat application: a Node.js + Socket.IO server with Mong
 - **Conversations that persist.** History is stored in MongoDB per pair of users and reloads when a conversation is opened, including after either side reconnects.
 - **Built for unreliable networks.** The client reconnects and signs back in by itself, catches up on messages it missed, and never shows a message twice or loses one that was not sent.
 - **Honest about delivery.** Every message the user sends is shown as sending, sent, or not sent with the reason. Nothing fails silently.
-- **Stays up when things break.** If the database is unreachable the server keeps running and keeps showing who is online; only sending and history report an error, and the connection is retried until it returns.
+- **Stays up when things break.** If the database is unreachable the server keeps running and keeps showing who is online; only sending and history report an error, and the connection is retried until it returns. If the server itself is slow to start, the client says it is waking rather than looking broken.
 - **Accessible and responsive.** Usable from the keyboard alone, announced to screen readers, laid out for desktop and phone, with light and dark themes and motion that is switched off when the system asks for reduced motion.
-- **130 automated tests**, run on every push by GitHub Actions on two Node.js versions.
+- **138 automated tests**, run on every push by GitHub Actions on two Node.js versions.
 
 ## Tech stack
 
@@ -85,7 +90,7 @@ src/                        SERVER
 ├── index.js                Bootstrap only: create the app, connect to MongoDB, listen
 ├── app.js                  createApp() — builds Express + HTTP server + Socket.IO, no side effects
 ├── db.js                   connectDB() with retry, isDatabaseReady()
-├── routes.js               REST routes (GET /online-users)
+├── routes.js               REST routes (GET /online-users, GET /health)
 ├── bot.js                  The demo bot's identity and replies
 ├── rateLimit.js            Sliding-window rate limiter
 ├── sockets/index.js        All socket events; owns the online-users state for its app instance
@@ -128,7 +133,7 @@ The parts of this project that took the most thought, and why they are the way t
 
 | | Server | Client |
 |---|---|---|
-| Tests | 82, in 10 files | 48, in 6 files |
+| Tests | 84, in 10 files | 54, in 7 files |
 | Approach | Real Socket.IO clients against a fresh server per test, with an in-memory MongoDB | The real app rendered against a fake socket; each test plays the server |
 | Lint | oxlint | oxlint, including React hooks rules |
 | Types | — | TypeScript, checked on every build |
@@ -214,6 +219,56 @@ Client (`client/`):
 | `pnpm test` | Run the client test suite |
 | `pnpm lint` | Lint with oxlint |
 
+## Deployment
+
+The app deploys as three separate pieces. Nothing in the repository is tied to a particular provider.
+
+| Piece | What it needs from a host |
+|-------|---------------------------|
+| **Database** | A hosted MongoDB cluster |
+| **Server** (repository root) | A host that runs a long-lived Node.js process and accepts WebSocket connections. Serverless function platforms do not qualify: the socket connection has to stay open. |
+| **Client** (`client/`) | Any static file host |
+
+### Order
+
+1. **Database.** Create the cluster and a database user with read and write access to one database only. Allow connections from the server's host. If that host has no fixed outbound address you will have to allow all addresses, which leaves the database password as the only protection — use a long random one.
+2. **Server.** Deploy it and note its public `https://` URL. `FRONTEND_URL` can be left empty for now.
+3. **Client.** Build it with `VITE_BACKEND_URL` set to the server's URL, publish it, and note its public URL.
+4. **Back to the server.** Set `FRONTEND_URL` to the client's URL and restart. Until this is done the client stays on "Waking the server…", because the server refuses its origin.
+
+### Server settings
+
+| Setting | Value |
+|---------|-------|
+| Root directory | the repository root |
+| Install command | `pnpm install --frozen-lockfile` |
+| Start command | `pnpm start` |
+| Health check path | `/health` |
+| Instances | **1** — see [Known limitations](#known-limitations) |
+| `MONGO_CONNECTION` | the cluster's connection string, ending in the database name |
+| `FRONTEND_URL` | the client's origin, e.g. `https://chat.example.com` |
+| `DEMO_BOT` | `true` |
+| `MESSAGE_TTL_HOURS` | `24` |
+| `PORT` | leave unset; hosts provide it |
+
+### Client settings
+
+| Setting | Value |
+|---------|-------|
+| Root directory | `client` |
+| Install command | `pnpm install --frozen-lockfile` |
+| Build command | `pnpm build` |
+| Publish directory | `client/dist` (`dist` if the root directory is already `client`) |
+| `VITE_BACKEND_URL` | the server's `https://` URL. It is compiled into the build, so changing it means rebuilding. |
+
+The client has no routes of its own, so no rewrite or fallback rules are needed. Both packages pin their pnpm version in `package.json` (`packageManager`); check how your host picks that up.
+
+### After deploying
+
+- `https://<server>/health` answers `{ "status": "ok", "db": "up" }`.
+- The client loads, shows `demo-bot` after you join, and the bot answers.
+- Two browsers under different names can exchange messages.
+
 ## Protocol reference
 
 Connect with any Socket.IO v4 client. Browser clients must come from an origin listed in `FRONTEND_URL`.
@@ -269,6 +324,7 @@ With `DEMO_BOT=true` the server adds a user called `demo-bot` who is always onli
 | Method | Path | Response |
 |--------|------|----------|
 | `GET` | `/online-users` | `{ onlineUsers: [{ username, id }] }` |
+| `GET` | `/health` | `{ status: "ok", db: "up" \| "down" }` — always `200` while the process is alive, including when the database is down |
 
 Clients do not need this endpoint — presence arrives over the socket, and the client in this repository never calls it — but it is handy for inspection. Unknown routes return `404` with a JSON body.
 
@@ -278,6 +334,7 @@ Clients do not need this endpoint — presence arrives over the socket, and the 
 - **Online recipients only.** A message can only be sent to a user who is connected; there is no offline delivery queue.
 - **History is capped** at the most recent 100 messages per conversation.
 - **Single instance.** The list of who is online lives in the server's memory, so the server cannot be scaled to several instances as it stands.
+- **On the live demo:** messages are deleted automatically a day after they are sent, and because the server sleeps when idle on free hosting, the first visitor after a quiet spell waits for it to wake. The client says so while it waits.
 
 ### What would come next
 

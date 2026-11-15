@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef } from 'react'
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import {
   UNCONFIRMED,
   chatReducer,
@@ -37,6 +37,11 @@ const ACK_TIMEOUT_MS = 10_000
  */
 export const useChat = () => {
   const connected = useSocketConnected()
+  // Whether a connection has ever been established. Until it has, "not connected" means
+  // "still reaching the server for the first time" — on free hosting, possibly a server
+  // that is waking up — which is a different thing to tell the user than "disconnected".
+  const [everConnected, setEverConnected] = useState(connected)
+  if (connected && !everConnected) setEverConnected(true)
   const [state, dispatch] = useReducer(chatReducer, undefined, () =>
     initialChatState(loadSession()?.username ?? null),
   )
@@ -170,6 +175,7 @@ export const useChat = () => {
 
   return {
     connected,
+    everConnected,
     phase: state.phase,
     username: state.username,
     loginError: state.loginError,

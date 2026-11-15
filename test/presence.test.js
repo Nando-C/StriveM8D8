@@ -222,6 +222,13 @@ describe('REST', () => {
         expect(response.body).toEqual({ onlineUsers: [{ username: 'alice', id: alice.id }] })
     })
 
+    it('reports itself healthy, with the database up', async () => {
+        const response = await getJson(`${app.url}/health`)
+
+        expect(response.status).toBe(200)
+        expect(response.body).toEqual({ status: 'ok', db: 'up' })
+    })
+
     it('answers an unknown route with 404 JSON', async () => {
         const response = await getJson(`${app.url}/nope`)
 

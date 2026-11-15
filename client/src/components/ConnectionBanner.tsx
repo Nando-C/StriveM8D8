@@ -3,16 +3,19 @@ import { CopyX, LoaderCircle, WifiOff } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import type { Phase } from '@/lib/chatState'
 import { notice } from '@/lib/motion'
+import { WAKING_HINT } from '@/lib/waking'
 import { cn } from '@/lib/utils'
 
 interface ConnectionBannerProps {
   connected: boolean
+  /** Whether a connection has ever been established in this page's lifetime. */
+  everConnected: boolean
   phase: Phase
   username: string
   onReconnect: () => void
 }
 
-type Kind = 'replaced' | 'disconnected' | 'authenticating' | null
+type Kind = 'replaced' | 'waking' | 'disconnected' | 'authenticating' | null
 
 /**
  * Explains why the chat is not live right now; renders nothing when everything is fine.
@@ -20,9 +23,17 @@ type Kind = 'replaced' | 'disconnected' | 'authenticating' | null
  * It floats over the bottom of the screen instead of sitting in the layout, so it can
  * slide in and out without pushing — and re-laying-out — everything else.
  */
-export function ConnectionBanner({ connected, phase, username, onReconnect }: ConnectionBannerProps) {
+export function ConnectionBanner({ connected, everConnected, phase, username, onReconnect }: ConnectionBannerProps) {
   const kind: Kind =
-    phase === 'replaced' ? 'replaced' : !connected ? 'disconnected' : phase === 'authenticating' ? 'authenticating' : null
+    phase === 'replaced'
+      ? 'replaced'
+      : !connected
+        ? everConnected
+          ? 'disconnected'
+          : 'waking'
+        : phase === 'authenticating'
+          ? 'authenticating'
+          : null
 
   return (
     <div className="pointer-events-none fixed inset-x-0 bottom-20 z-20 flex justify-center px-3">
@@ -60,6 +71,14 @@ export function ConnectionBanner({ connected, phase, username, onReconnect }: Co
                 <p className="min-w-0 flex-1">
                   <span className="font-medium">Disconnected.</span> Trying to reconnect — messages cannot be sent
                   until the connection is back.
+                </p>
+              </>
+            )}
+            {kind === 'waking' && (
+              <>
+                <LoaderCircle aria-hidden="true" className="size-4 shrink-0 animate-spin" />
+                <p className="min-w-0 flex-1">
+                  <span className="font-medium">Connecting to the server…</span> {WAKING_HINT}
                 </p>
               </>
             )}

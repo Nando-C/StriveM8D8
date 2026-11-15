@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { WAKING_HINT, WAKING_NOTICE_DELAY_MS, useDelayed } from '@/lib/waking'
 
 interface LoginFormProps {
   connected: boolean
@@ -19,6 +20,8 @@ export function LoginForm({ connected, pending, error, onLogin }: LoginFormProps
   // The form works before the connection is up; the request is sent once it is.
   const busy = pending
   const trimmed = username.trim()
+  // Only while the very first connection is slow: the server is probably waking up.
+  const waking = useDelayed(!connected, WAKING_NOTICE_DELAY_MS)
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
@@ -60,6 +63,15 @@ export function LoginForm({ connected, pending, error, onLogin }: LoginFormProps
                 Up to 30 letters, digits, hyphens or underscores. No password — this is a demo.
               </p>
             </div>
+            {waking && (
+              <Alert role="status">
+                <LoaderCircle aria-hidden="true" className="animate-spin" />
+                <AlertDescription>
+                  <span className="font-medium text-foreground">Waking the server…</span> {WAKING_HINT} You can
+                  enter your name now; you will be signed in as soon as it is up.
+                </AlertDescription>
+              </Alert>
+            )}
             {error !== null && (
               <Alert variant="destructive">
                 <AlertDescription>{error}</AlertDescription>

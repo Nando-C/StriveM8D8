@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import mongoose from 'mongoose'
-import { getHistory, login, messageTo, onlineUsers, send, startApp } from './helpers.js'
+import { getHistory, getJson, login, messageTo, onlineUsers, send, startApp } from './helpers.js'
 
 // Its own file: this process never connects to a database at all, which is the state the
 // server is in while it is still retrying its first connection. Mongoose would queue
@@ -28,5 +28,12 @@ describe('before the database has ever connected', () => {
 
         expect(Date.now() - startedAt).toBeLessThan(2000)
         expect(await onlineUsers(app)).toHaveLength(2)
+    })
+
+    it('still answers the health check with 200, and says the database is down', async () => {
+        const response = await getJson(`${app.url}/health`)
+
+        expect(response.status).toBe(200)
+        expect(response.body).toEqual({ status: 'ok', db: 'down' })
     })
 })
