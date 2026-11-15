@@ -154,7 +154,7 @@ Neither suite needs anything running. The server suite downloads a MongoDB binar
 
 You need:
 
-- **Node.js 22.22 or newer** (CI runs on Node 22 and 24)
+- **Node.js 22 (22.22 or newer) or 24** — the two versions CI runs on
 - **[pnpm](https://pnpm.io)** — the version is pinned in each `package.json`; `corepack enable pnpm` sets it up
 - **A MongoDB database** — a local `mongod` or a hosted cluster
 
@@ -262,6 +262,43 @@ The app deploys as three separate pieces. Nothing in the repository is tied to a
 | `VITE_BACKEND_URL` | the server's `https://` URL. It is compiled into the build, so changing it means rebuilding. |
 
 The client has no routes of its own, so no rewrite or fallback rules are needed. Both packages pin their pnpm version in `package.json` (`packageManager`); check how your host picks that up.
+
+### Worked example: Atlas, Render and Vercel
+
+This is the combination the live demo runs on, all on free tiers. The notes below were checked against each provider's documentation in November 2026; dashboards and free-tier terms change, so treat the provider docs as the authority.
+
+**1. MongoDB Atlas — the database.** Create a cluster, a database user limited to read and write on one database, and copy the connection string, ending it with the database name. Leave the IP access list for step 2.
+
+**2. Render — the server**, as a *Web Service* from this repository.
+
+| Field | Value |
+|-------|-------|
+| Language | Node |
+| Root Directory | leave empty (the repository root) |
+| Build Command | `pnpm install --frozen-lockfile` |
+| Start Command | `pnpm start` |
+| Health check path (under Advanced) | `/health` |
+| Environment variables | `MONGO_CONNECTION`, `DEMO_BOT=true`, `MESSAGE_TTL_HOURS=24`; `FRONTEND_URL` after step 3 |
+
+- **Node version.** Render picks it from `engines` in `package.json`, which here allows 22 and 24, so it runs the newest Node 24. (An open-ended range would resolve to whatever Node is newest, which this project is not tested on.)
+- **Database access.** A Render service calls out from a shared range of addresses for its region, listed under the service's **Connect → Outbound** tab. Add those ranges to the Atlas project's IP access list instead of allowing every address.
+- **Sleeping.** A free web service is stopped after 15 minutes without inbound traffic and takes about a minute to start again on the next request. An open chat tab keeps it awake; the client's "Waking the server…" notice covers the wait for the first visitor. Free services share a monthly allowance of instance hours per workspace.
+- **Optional:** under **Build Filters**, ignore `client/**`, `docs/**` and `README.md`, so that a change to the client alone does not restart the server and disconnect everyone.
+
+**3. Vercel — the client**, as a project from the same repository.
+
+| Field | Value |
+|-------|-------|
+| Root Directory | `client` |
+| Framework Preset | Vite (detected) |
+| Build Command / Output Directory | the defaults: `pnpm build` and `dist` |
+| Environment variables | `VITE_BACKEND_URL` = the Render service's `https://` URL, and `ENABLE_EXPERIMENTAL_COREPACK` = `1` |
+
+- **pnpm version.** Vercel chooses a pnpm version from the lockfile's format, which here would be an older major than the one this project pins. With `ENABLE_EXPERIMENTAL_COREPACK=1` it uses the version named in `package.json` instead.
+- **Node version.** Taken from `engines` in `client/package.json`: the newest Node 24.
+- **Preview deployments** get their own URLs, which are not in the server's `FRONTEND_URL`, so a preview build loads but cannot connect. Only the production domain is allowed.
+
+**4. Back on Render,** set `FRONTEND_URL` to the Vercel production URL (for example `https://your-project.vercel.app`) and let the service restart.
 
 ### After deploying
 
