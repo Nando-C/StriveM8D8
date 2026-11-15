@@ -37,6 +37,8 @@ src/                        SERVER
 ├── app.js                  createApp() — builds Express + HTTP server + Socket.IO, no side effects
 ├── db.js                   connectDB() with retry, isDatabaseReady()
 ├── routes.js               REST routes (GET /online-users)
+├── bot.js                  The demo bot's identity and replies
+├── rateLimit.js            Sliding-window rate limiter
 ├── sockets/index.js        All socket events; owns the online-users state for its app instance
 └── models/message.js       Message model and the conversation key helper
 test/                       Server integration tests (real socket clients, in-memory MongoDB)
@@ -79,23 +81,31 @@ Connect with any Socket.IO v4 client. Browser clients must come from an origin l
 { ok: false, message }          // nothing was saved or delivered
 ```
 
-Failure messages: `Invalid message`, `Not logged in`, `Cannot message yourself`, `Recipient is not online`, `Message could not be saved`.
+Failure messages: `Invalid message`, `Not logged in`, `Cannot message yourself`, `Recipient is not online`, `Message could not be saved`, `Too many requests, slow down`.
 
 ### Server → client
 
 | Event | Sent to | Payload | Meaning |
 |-------|---------|---------|---------|
 | `loggedin` | The socket that logged in | `{ username, id, sessionToken, onlineUsers }` | Login accepted. `onlineUsers` is the current list (`{ username, id }[]`, including you). `sessionToken` is private to this client. |
-| `loginError` | The socket that tried | `{ message }` | `Invalid username`, `Username already in use`, or `Already logged in`. |
+| `loginError` | The socket that tried | `{ message }` | `Invalid username`, `Username already in use`, `Already logged in`, or `Too many requests, slow down`. |
 | `newLogin` | Everyone else | `{ username, id }` | A user came online, or an online user now has a new socket id. Treat as an upsert by username. |
 | `userLeft` | Everyone else | `{ id }` | The user with that socket id went offline. |
 | `message` | The recipient only | `{ id, from, fromId, text, timestamp }` | A message for you. `from` is the sender's username, `fromId` their socket id. |
 | `history` | The requester only | `{ withUsername, messages }` | The most recent 100 messages of that conversation, oldest first. Each is `{ id, clientId, from, to, text, timestamp }`. |
-| `historyError` | The requester only | `{ withUsername, message }` | `Invalid username`, `Not logged in`, or `History could not be loaded`. |
+| `historyError` | The requester only | `{ withUsername, message }` | `Invalid username`, `Not logged in`, `History could not be loaded`, or `Too many requests, slow down`. |
 
 `timestamp` is milliseconds since the Unix epoch. The same message has the same `id` and `timestamp` in the live `message` event, in the sender's acknowledgement, and in `history`. `clientId` is `null` in history for messages that were not sent by a client.
 
 `disconnect` is Socket.IO's built-in event; there is no logout event. Closing the connection takes the user offline.
+
+### Limits
+
+The server is meant to be reachable by anyone, with no accounts, so each socket is rate-limited: 10 messages per 10 seconds, 10 history requests per 10 seconds, and 5 logins per 10 seconds. A request over the limit is refused with `Too many requests, slow down` and has no other effect. A single socket payload may not exceed 10 kB; a connection that sends more is closed.
+
+### Demo bot
+
+With `DEMO_BOT=true` the server adds a user called `demo-bot` who is always online and answers every message after a short pause, so that someone who opens the app alone has somebody to talk to. To clients it is an ordinary user — it appears in the online list, its conversation is stored and reloaded like any other — and the protocol has no special case for it. The name `demo-bot` is reserved whether or not the bot is switched on.
 
 ### REST
 
@@ -174,6 +184,8 @@ Server — `.env` in the repository root:
 |----------|----------|-------------|
 | `PORT` | No | Port to listen on. Defaults to `3001`. |
 | `FRONTEND_URL` | For browser clients | Comma-separated list of origins allowed to connect. It must include the client's origin, e.g. `http://localhost:5173` (a trailing slash is fine). Requests with no `Origin` header (non-browser clients) are always allowed. If unset, no browser origin is allowed. |
+| `DEMO_BOT` | No | Set to `true` to add the always-online [demo bot](#demo-bot). Off by default. |
+| `MESSAGE_TTL_HOURS` | No | A positive number makes MongoDB delete each message that many hours after it was sent; `0` turns expiry off. Left unset, the database's current setting is not touched — so a development machine pointed at a shared database cannot change it by accident. |
 | `MONGO_CONNECTION` | For messaging | MongoDB connection string, including the database name. If unset or unreachable the server still runs and serves presence; sending and history fail with a clear error, and the connection is retried until it succeeds. A malformed connection string is reported once and not retried. |
 
 Client — `client/.env`:
@@ -213,7 +225,7 @@ pnpm test               # server
 cd client && pnpm test  # client
 ```
 
-**Server.** The suite is integration-level: each test boots a fresh server on a free port, connects real Socket.IO clients to it, and talks to an in-memory MongoDB, so nothing needs to be running and no external database is touched. The first run downloads a MongoDB binary and takes longer; after that a full run takes a few seconds. It covers login and username rules, session-token takeover, presence broadcasts, targeted delivery (including that third parties receive nothing), every send-failure path, malformed payloads, the origin allowlist, history after a reconnect, the 100-message cap and ordering, and behaviour when the database is down, has never connected, or comes back.
+**Server.** The suite is integration-level: each test boots a fresh server on a free port, connects real Socket.IO clients to it, and talks to an in-memory MongoDB, so nothing needs to be running and no external database is touched. The first run downloads a MongoDB binary and takes longer; after that a full run takes a few seconds. It covers login and username rules, session-token takeover, presence broadcasts, targeted delivery (including that third parties receive nothing), every send-failure path, malformed payloads, the origin allowlist, rate limits and the payload cap, the demo bot, message expiry, history after a reconnect, the 100-message cap and ordering, and behaviour when the database is down, has never connected, or comes back.
 
 **Client.** The tests render the real app against a fake socket, so each test plays the server: it checks what the app sent and sends events back. They cover logging in and being refused, the people list through arrivals, reconnects and departures, history and exactly-once merging, unread counts, sending and both kinds of acknowledgement, lost acknowledgements, re-login with the session token, the stored session, being signed in from another tab, and the reduced-motion setting. Elements are found by role and label, the way assistive technology finds them.
 

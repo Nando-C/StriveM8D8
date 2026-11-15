@@ -22,8 +22,8 @@ export const disconnectTestDatabase = async () => {
 
 // Boots a fresh app instance on an ephemeral port. Presence state lives inside the
 // instance, so a new one per test means every test starts with nobody online.
-export const startApp = async () => {
-    const { server, io } = createApp()
+export const startApp = async (options = {}) => {
+    const { server, io } = createApp(options)
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
     const url = `http://127.0.0.1:${server.address().port}`
     const clients = []

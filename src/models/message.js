@@ -14,5 +14,42 @@ messageSchema.index({ conversationKey: 1, createdAt: 1, _id: 1 })
 
 export const Message = mongoose.model('Message', messageSchema)
 
+const TTL_INDEX_NAME = 'message_expiry'
+
+/**
+ * Makes the collection's expiry rule match `ttlHours`:
+ *
+ * - a positive number: messages are deleted by MongoDB that many hours after they were
+ *   created (a TTL index on `createdAt`, created or re-timed as needed);
+ * - anything else (0, undefined): no expiry — the TTL index is removed if it exists.
+ *
+ * This is a function, not part of the schema, because the schema is built once at import
+ * time and must not depend on configuration. The other indexes are never touched.
+ */
+export const ensureMessageIndexes = async ({ ttlHours } = {}) => {
+    const collection = Message.collection
+    const seconds = Number.isFinite(ttlHours) && ttlHours > 0 ? Math.round(ttlHours * 3600) : null
+
+    // A collection that does not exist yet has no indexes to list.
+    const indexes = await collection.indexes().catch(() => [])
+    const existing = indexes.find(index => index.name === TTL_INDEX_NAME)
+
+    if (seconds === null) {
+        if (existing) await collection.dropIndex(TTL_INDEX_NAME)
+        return
+    }
+    if (!existing) {
+        await collection.createIndex({ createdAt: 1 }, { name: TTL_INDEX_NAME, expireAfterSeconds: seconds })
+        return
+    }
+    if (existing.expireAfterSeconds !== seconds) {
+        // An index cannot be re-created with different options; its duration is changed in place.
+        await mongoose.connection.db.command({
+            collMod: collection.collectionName,
+            index: { name: TTL_INDEX_NAME, expireAfterSeconds: seconds },
+        })
+    }
+}
+
 // History is keyed by the two usernames, not by socket ids: ids change on every reconnect.
 export const conversationKeyFor = (usernameA, usernameB) => [usernameA, usernameB].sort().join('::')

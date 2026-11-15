@@ -18,7 +18,8 @@ const toOrigin = value => {
 
 // Builds the Express app, HTTP server and Socket.IO server, fully wired, without
 // listening or connecting to the database — the caller decides when to do both.
-export const createApp = () => {
+// `demoBot` adds an always-online user that replies (see bot.js).
+export const createApp = ({ demoBot = false } = {}) => {
     // Browser origins allowed to talk to this server, from a comma-separated FRONTEND_URL.
     const configured = (process.env.FRONTEND_URL || '')
         .split(',')
@@ -43,6 +44,8 @@ export const createApp = () => {
     const server = createServer(app)
 
     const io = new Server(server, {
+        // The largest legitimate payload is a 2000-character message; the default is 1 MB.
+        maxHttpBufferSize: 10_000,
         // Covers the long-polling transport.
         cors: { origin: allowedOrigins },
         // Covers the WebSocket handshake, which CORS does not apply to.
@@ -53,7 +56,7 @@ export const createApp = () => {
         },
     })
 
-    const { getOnlineUsers } = registerSocketHandlers(io)
+    const { getOnlineUsers } = registerSocketHandlers(io, { demoBot })
 
     app.use(createRouter({ getOnlineUsers }))
 

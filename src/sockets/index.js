@@ -1,6 +1,8 @@
 import { randomUUID } from 'crypto'
+import { BOT, BOT_REPLY_DELAY_MS, botReply } from '../bot.js'
 import { isDatabaseReady } from '../db.js'
 import { Message, conversationKeyFor } from '../models/message.js'
+import { createRateLimiter } from '../rateLimit.js'
 
 // Usernames are restricted because two of them are joined with "::" to key a conversation.
 const USERNAME_PATTERN = /^[A-Za-z0-9_-]{1,30}$/
@@ -8,6 +10,16 @@ const CLIENT_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/
 const MAX_TEXT_LENGTH = 2000
 const MAX_ID_LENGTH = 100
 const HISTORY_LIMIT = 100
+
+// Per socket. The server is public and has no accounts, so every event that costs
+// something — a database write, a query, a broadcast to everyone — is capped.
+const RATE_LIMITS = {
+    sendmessage: { limit: 10, windowMs: 10_000 },
+    getHistory: { limit: 10, windowMs: 10_000 },
+    // Each successful login is broadcast to every connected client.
+    login: { limit: 5, windowMs: 10_000 },
+}
+const SLOW_DOWN = 'Too many requests, slow down'
 
 const isObject = value => typeof value === 'object' && value !== null
 const isNonEmptyString = (value, maxLength) =>
@@ -17,10 +29,39 @@ const publicUser = user => ({ username: user.username, id: user.id })
 
 // Wires every socket event onto `io`. Presence state is created here, per call, so each
 // app instance has its own. Returns read access to the public view of that state.
-export const registerSocketHandlers = io => {
+export const registerSocketHandlers = (io, { demoBot = false } = {}) => {
     // Entries are { username, id, sessionToken }. The token is private to its own socket:
     // everything sent to other clients goes through getOnlineUsers().
-    let onlineUsers = []
+    // The demo bot, when enabled, is a permanent entry: it has no socket, so it never
+    // disconnects, and no token, so its name can never be taken over.
+    let onlineUsers = demoBot ? [{ username: BOT.username, id: BOT.id, sessionToken: null }] : []
+
+    const rateLimiter = createRateLimiter()
+    const allowed = (socket, event) => rateLimiter.allow(socket.id, event, RATE_LIMITS[event])
+
+    // Saves the bot's answer and delivers it to wherever the user is connected by then.
+    const replyFromBot = async (toUsername, text) => {
+        try {
+            if (!isDatabaseReady()) return
+            const saved = await Message.create({
+                conversationKey: conversationKeyFor(BOT.username, toUsername),
+                from: BOT.username,
+                to: toUsername,
+                text,
+            })
+            const recipientNow = onlineUsers.find(user => user.username === toUsername)
+            if (!recipientNow) return
+            io.to(recipientNow.id).emit('message', {
+                id: saved._id.toString(),
+                from: BOT.username,
+                fromId: BOT.id,
+                text,
+                timestamp: saved.createdAt.getTime(),
+            })
+        } catch (error) {
+            console.error("demo bot failed to reply:", error.name)
+        }
+    }
 
     const getOnlineUsers = () => onlineUsers.map(publicUser)
 
@@ -28,12 +69,24 @@ export const registerSocketHandlers = io => {
         console.log("socket connected:", socket.id)
 
         socket.on('login', payload => {
+            if (!allowed(socket, 'login')) {
+                socket.emit('loginError', { message: SLOW_DOWN })
+                return
+            }
+
             const username = isObject(payload) && typeof payload.username === 'string'
                 ? payload.username.trim()
                 : ''
 
             if (!USERNAME_PATTERN.test(username)) {
                 socket.emit('loginError', { message: 'Invalid username' })
+                return
+            }
+
+            // The bot's name is reserved even where the bot is switched off: otherwise
+            // someone could pose as it, or read the conversations people had with it.
+            if (username === BOT.username) {
+                socket.emit('loginError', { message: 'Username already in use' })
                 return
             }
 
@@ -73,6 +126,11 @@ export const registerSocketHandlers = io => {
                 payload = undefined
             }
             const reply = typeof ack === 'function' ? ack : () => {}
+
+            if (!allowed(socket, 'sendmessage')) {
+                reply({ ok: false, message: SLOW_DOWN })
+                return
+            }
 
             if (
                 !isObject(payload) ||
@@ -126,6 +184,15 @@ export const registerSocketHandlers = io => {
             // Delivered only into the recipient's own room, never broadcast. The recipient is
             // looked up again by username: while the message was being saved they may have
             // reconnected under a new socket id, or gone offline (it is then in their history).
+            if (recipient.username === BOT.username) {
+                // No socket to deliver to: the bot answers instead, a moment later.
+                const turn = sender.botReplies ?? 0
+                sender.botReplies = turn + 1
+                setTimeout(() => replyFromBot(sender.username, botReply(text, turn)), BOT_REPLY_DELAY_MS).unref()
+                reply({ ok: true, id, timestamp })
+                return
+            }
+
             const recipientNow = onlineUsers.find(user => user.username === recipient.username)
             if (recipientNow) {
                 socket.to(recipientNow.id).emit('message', { id, from: sender.username, fromId: socket.id, text, timestamp })
@@ -138,6 +205,11 @@ export const registerSocketHandlers = io => {
                 ? payload.withUsername
                 : null
             const fail = message => socket.emit('historyError', { withUsername, message })
+
+            if (!allowed(socket, 'getHistory')) {
+                fail(SLOW_DOWN)
+                return
+            }
 
             if (withUsername === null || !USERNAME_PATTERN.test(withUsername)) {
                 fail('Invalid username')
@@ -181,6 +253,7 @@ export const registerSocketHandlers = io => {
 
         socket.on('disconnect', () => {
             console.log("socket disconnected:", socket.id)
+            rateLimiter.forget(socket.id)
             // Only a socket that is still listed has "left". One that never logged in was
             // never announced, and one replaced by a session takeover is still online
             // under its new id, which the others already learned from `newLogin`.
