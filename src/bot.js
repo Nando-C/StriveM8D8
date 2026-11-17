@@ -1,0 +1,36 @@
+// The demo bot: a user that exists only on the server, is always online, and replies.
+// It is there so that someone who opens the demo alone has somebody to talk to. To every
+// client it looks like any other online user — nothing in the protocol is special-cased.
+
+export const BOT = Object.freeze({ username: 'demo-bot', id: 'demo-bot' })
+
+/** Long enough to read as a reply rather than an echo. */
+export const BOT_REPLY_DELAY_MS = 600
+
+const ECHO_LIMIT = 80
+
+// Every line states something the app really does.
+const TIPS = [
+    "I'm a bot that lives on the server, so there is always someone here to talk to. Send me anything.",
+    "Your message was saved before I answered it. Reload the page and this conversation will still be here.",
+    "Messages here go to exactly one person. Open this page in a second tab, join with another name, and the two of you can talk.",
+    "If the connection drops, the app reconnects and signs you back in by itself, then catches up on anything it missed.",
+    "If a message cannot be delivered you will see the reason under it. Nothing is dropped silently.",
+    "There are no passwords in this demo, so please don't share anything private.",
+]
+
+/**
+ * The bot's answer to `text`. Pure: the same text and turn always give the same reply.
+ * `turn` is how many replies this user has already had, and walks through the tips.
+ */
+export const botReply = (text, turn = 0) => {
+    const tip = TIPS[Math.abs(Math.trunc(turn)) % TIPS.length]
+    const said = String(text).trim().replace(/\s+/g, ' ')
+
+    if (/^(hi|hello|hey|hola|yo)\b/i.test(said)) {
+        return `Hello! ${tip}`
+    }
+
+    const echo = said.length > ECHO_LIMIT ? `${said.slice(0, ECHO_LIMIT)}…` : said
+    return `You said “${echo}”. ${tip}`
+}

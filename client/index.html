@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="description" content="Real-time one-to-one chat built with React, Socket.IO and MongoDB." />
+    <title>Strive Chat</title>
+    <script>
+      // Follow the system colour scheme. Inline and first, so the page never flashes the
+      // wrong theme: shadcn/ui's styles switch on a "dark" class on the root element.
+      (function () {
+        var query = window.matchMedia('(prefers-color-scheme: dark)')
+        var apply = function () { document.documentElement.classList.toggle('dark', query.matches) }
+        apply()
+        query.addEventListener('change', apply)
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
