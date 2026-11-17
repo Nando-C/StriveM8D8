@@ -4,23 +4,9 @@
 
 A real-time, one-to-one chat application: a Node.js + Socket.IO server with MongoDB persistence, and a React + TypeScript client. Messages go to exactly one recipient, conversations are saved, and the app keeps working through dropped connections, server restarts and page reloads.
 
-<!-- TODO(owner): replace the placeholder below with the deployed client's URL, then delete this comment. -->
-**Live demo:** `https://REPLACE-WITH-DEPLOYED-URL` — pick any name and message **demo-bot**, who is always online, or open the page in a second tab under another name and talk to yourself. The demo runs on free hosting, so the first connection can take up to a minute while the server wakes.
+**Live demo:** <https://strive-chat.vercel.app> — pick any name and message **demo-bot**, who is always online, or open the page in a second tab under another name and talk to yourself. The demo runs on free hosting, so the first connection can take up to a minute while the server wakes.
 
-![Strive Chat: a conversation open, with the list of people online on the left](docs/screenshots/desktop-light.png)
-
-<!-- TODO(owner): add a short screen recording of two people chatting (e.g. docs/demo.gif) and embed it here: ![Two users chatting](docs/demo.gif) -->
-
-<table>
-  <tr>
-    <td width="72%"><img src="docs/screenshots/desktop-dark.png" alt="The same conversation in the dark theme" /></td>
-    <td width="28%"><img src="docs/screenshots/mobile-conversation.png" alt="A conversation on a phone-sized screen" /></td>
-  </tr>
-  <tr>
-    <td align="center"><sub>Dark theme, following the system setting</sub></td>
-    <td align="center"><sub>Phone layout</sub></td>
-  </tr>
-</table>
+![Two people chatting in real time: one on a desktop browser, one on a phone](docs/demo.gif)
 
 ## Highlights
 
