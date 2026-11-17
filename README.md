@@ -369,3 +369,11 @@ Clients do not need this endpoint — presence arrives over the socket, and the 
 ## Background
 
 This began as a bootcamp exercise at Strive School: build a one-to-one chat on top of Socket.IO's per-socket rooms, with a list of users and their previous messages. The first version, written during the course, used two shared rooms and stored nothing. It was later rebuilt to do what the brief asked for, and then taken further: a redesigned protocol, persistence, a new client, tests and CI.
+
+## Author
+
+Built by [Nando-C](https://github.com/Nando-C).
+
+## License
+
+[MIT](LICENSE)
