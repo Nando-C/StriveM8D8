@@ -99,6 +99,24 @@ export const useChat = () => {
     socket.on('history', onHistory)
     socket.on('historyError', onHistoryError)
 
+    // Leaving the page: say so. Closing a tab only drops the connection, and a host's proxy
+    // can take several seconds to pass that on, during which others still see this user.
+    let leftOnPageHide = false
+    const onPageHide = () => {
+      if (!socket.connected) return
+      leftOnPageHide = true
+      socket.disconnect()
+    }
+    // The browser can bring a page back from its back/forward cache exactly as it was left;
+    // the connection closed above then has to be opened again.
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (!event.persisted || !leftOnPageHide) return
+      leftOnPageHide = false
+      socket.connect()
+    }
+    window.addEventListener('pagehide', onPageHide)
+    window.addEventListener('pageshow', onPageShow)
+
     // The socket may already be connected by the time this component mounts.
     if (socket.connected) onConnect()
 
@@ -114,6 +132,8 @@ export const useChat = () => {
       socket.off('message', onMessage)
       socket.off('history', onHistory)
       socket.off('historyError', onHistoryError)
+      window.removeEventListener('pagehide', onPageHide)
+      window.removeEventListener('pageshow', onPageShow)
     }
   }, [emitLogin])
 

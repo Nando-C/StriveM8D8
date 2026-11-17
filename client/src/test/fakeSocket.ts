@@ -53,6 +53,12 @@ class FakeSocket {
 
   connect = vi.fn()
 
+  /** Like the real client: closing on purpose reports "io client disconnect". */
+  disconnect = vi.fn(() => {
+    if (this.connected) this.simulateDisconnect('io client disconnect')
+    return this
+  })
+
   // ---------- test controls
 
   /** Deliver a server event to the app. */
@@ -100,6 +106,7 @@ class FakeSocket {
     this.emit.mockClear()
     this.timeout.mockClear()
     this.connect.mockClear()
+    this.disconnect.mockClear()
   }
 }
 

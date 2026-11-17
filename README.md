@@ -16,7 +16,7 @@ A real-time, one-to-one chat application: a Node.js + Socket.IO server with Mong
 - **Honest about delivery.** Every message the user sends is shown as sending, sent, or not sent with the reason. Nothing fails silently.
 - **Stays up when things break.** If the database is unreachable the server keeps running and keeps showing who is online; only sending and history report an error, and the connection is retried until it returns. If the server itself is slow to start, the client says it is waking rather than looking broken.
 - **Accessible and responsive.** Usable from the keyboard alone, announced to screen readers, laid out for desktop and phone, with light and dark themes and motion that is switched off when the system asks for reduced motion.
-- **138 automated tests**, run on every push by GitHub Actions on two Node.js versions.
+- **143 automated tests**, run on every push by GitHub Actions on two Node.js versions.
 
 ## Tech stack
 
@@ -119,7 +119,7 @@ The parts of this project that took the most thought, and why they are the way t
 
 | | Server | Client |
 |---|---|---|
-| Tests | 84, in 10 files | 54, in 7 files |
+| Tests | 84, in 10 files | 59, in 7 files |
 | Approach | Real Socket.IO clients against a fresh server per test, with an in-memory MongoDB | The real app rendered against a fake socket; each test plays the server |
 | Lint | oxlint | oxlint, including React hooks rules |
 | Types | — | TypeScript, checked on every build |

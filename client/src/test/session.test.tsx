@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react'
+import { act, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 import {
@@ -102,6 +102,65 @@ describe('reconnecting', () => {
     disconnect()
     connectAs('socket-3')
     expect(fakeSocket.sent('login')).toHaveLength(2)
+  })
+})
+
+describe('leaving the page', () => {
+  const pageHide = () => act(() => void window.dispatchEvent(new PageTransitionEvent('pagehide')))
+  const pageShow = (persisted: boolean) =>
+    act(() => void window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted })))
+
+  it('tells the server straight away, and keeps the session for a reload', async () => {
+    renderApp()
+    await loginAs('alice', [user('bob')])
+
+    pageHide()
+
+    expect(fakeSocket.disconnect).toHaveBeenCalledTimes(1)
+    expect(stored()).toEqual({ username: 'alice', sessionToken: 'token-1' })
+  })
+
+  it('does nothing when there is no connection to close', async () => {
+    renderApp()
+    await loginAs('alice')
+    disconnect()
+
+    pageHide()
+
+    expect(fakeSocket.disconnect).not.toHaveBeenCalled()
+  })
+
+  it('connects and logs in again when the browser restores the page from its cache', async () => {
+    renderApp()
+    await loginAs('alice', [user('bob')])
+    pageHide()
+
+    pageShow(true)
+    expect(fakeSocket.connect).toHaveBeenCalledTimes(1)
+
+    connectAs('socket-2')
+    expect(fakeSocket.sent('login').at(-1)).toEqual({ username: 'alice', sessionToken: 'token-1' })
+  })
+
+  it('does not reconnect on an ordinary page show, or one it did not close for', async () => {
+    renderApp()
+    await loginAs('alice')
+
+    pageShow(false)
+    pageShow(true)
+
+    expect(fakeSocket.connect).not.toHaveBeenCalled()
+  })
+
+  it('stays signed out after a restore if another tab had taken the session over', async () => {
+    renderApp()
+    await loginAs('alice')
+    disconnect('io server disconnect')
+
+    pageHide()
+    pageShow(true)
+
+    expect(fakeSocket.connect).not.toHaveBeenCalled()
   })
 })
 
