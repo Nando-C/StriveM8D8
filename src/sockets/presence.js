@@ -4,10 +4,8 @@ import { BOT } from '../bot.js'
 // Who is connected right now, kept in memory, one instance per app instance.
 //
 // A user is online while at least one of their sockets is. A guest holds one socket; an
-// account may hold several (one per device or tab). To everyone else a user is still a
-// single `{ username, id }` entry, where `id` is the socket others address messages to:
-// the user's longest-standing socket. If that socket closes while another remains, the
-// entry is announced again with the new id, exactly like a reconnect.
+// account may hold several (one per device or tab). To everyone else a user is a single
+// `{ userId, username, kind }` entry: nobody outside this module learns a socket id.
 //
 // Each socket entry is { sessionToken, deviceSessionId }. Both are private to that socket:
 // everything sent to other clients goes through getOnlineUsers().
@@ -18,27 +16,22 @@ export const createPresence = (io, { demoBot = false } = {}) => {
     const bySocket = new Map()
 
     // The demo bot is a permanent entry: it has no socket, so it never disconnects.
-    const bot = { userId: BOT.id, username: BOT.username, kind: 'bot', admin: false, sockets: new Map(), botReplies: 0 }
-    if (demoBot) users.set(bot.userId, bot)
+    if (demoBot) {
+        users.set(BOT.id, { userId: BOT.id, username: BOT.username, kind: 'bot', admin: false, sockets: new Map(), botReplies: 0 })
+    }
 
-    const publicId = user => (user.kind === 'bot' ? BOT.id : user.sockets.keys().next().value ?? null)
-    const publicUser = user => ({ username: user.username, id: publicId(user) })
+    const publicUser = user => ({ userId: user.userId, username: user.username, kind: user.kind })
     const getOnlineUsers = () => [...users.values()].map(publicUser)
 
-    /** The online user a client means by `id`: any of their sockets, or the bot. */
-    const findByAddress = id => bySocket.get(id) ?? (demoBot && id === BOT.id ? bot : null)
-
-    const tellEveryoneElse = (user, event, payload) => io.except([...user.sockets.keys()]).emit(event, payload)
-
     /**
-     * Records `socket` as a connection of `identity` and announces the user if that is news
-     * to anyone. `replaceSocketId` names one of the user's own sockets that this one takes
-     * over from (a reconnect whose old connection the server has not noticed dropping yet):
-     * it is closed without anyone being told the user left.
+     * Records `socket` as a connection of `identity`, and announces the user if they were
+     * not online already. `replaceSocketId` names one of the user's own sockets that this
+     * one takes over from (a reconnect whose old connection the server has not noticed
+     * dropping yet): it is closed without anyone being told the user left.
      */
     const attach = (socket, identity, { deviceSessionId = null, replaceSocketId = null } = {}) => {
         let user = users.get(identity.userId)
-        const idBefore = user ? publicId(user) : null
+        const wasOnline = user !== undefined
         if (!user) {
             user = { userId: identity.userId, sockets: new Map(), botReplies: 0 }
             users.set(user.userId, user)
@@ -57,7 +50,7 @@ export const createPresence = (io, { demoBot = false } = {}) => {
         user.sockets.set(socket.id, { sessionToken, deviceSessionId })
         bySocket.set(socket.id, user)
 
-        if (publicId(user) !== idBefore) tellEveryoneElse(user, 'newLogin', publicUser(user))
+        if (!wasOnline) io.except([...user.sockets.keys()]).emit('newLogin', publicUser(user))
         return { user, sessionToken }
     }
 
@@ -68,18 +61,18 @@ export const createPresence = (io, { demoBot = false } = {}) => {
     const detach = socketId => {
         const user = bySocket.get(socketId)
         if (!user) return null
-        const idBefore = publicId(user)
         user.sockets.delete(socketId)
         bySocket.delete(socketId)
 
         if (user.sockets.size === 0) {
             users.delete(user.userId)
-            io.except(socketId).emit('userLeft', { id: idBefore })
-        } else if (publicId(user) !== idBefore) {
-            tellEveryoneElse(user, 'newLogin', publicUser(user))
+            io.except(socketId).emit('userLeft', { userId: user.userId })
         }
         return user
     }
+
+    /** A connected user's kind changed (a guest became an account): everyone's entry for them is replaced. */
+    const announceChange = user => io.emit('newLogin', publicUser(user))
 
     /**
      * Ends connections on purpose: tells each socket why (`sessionRevoked`), forgets it and
@@ -96,5 +89,8 @@ export const createPresence = (io, { demoBot = false } = {}) => {
         }
     }
 
-    return { users, bySocket, publicId, getOnlineUsers, findByAddress, attach, detach, revoke }
+    /** Every socket that is logged in as somebody. */
+    const loggedInSockets = () => [...bySocket.keys()]
+
+    return { users, bySocket, getOnlineUsers, publicUser, attach, detach, revoke, announceChange, loggedInSockets }
 }

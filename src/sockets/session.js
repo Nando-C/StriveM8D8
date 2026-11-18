@@ -5,6 +5,7 @@ import {
     fingerprint, isSecret, newRecoveryCode, newSecret, normaliseRecoveryCode, sameString,
 } from '../auth/secrets.js'
 import { BOT } from '../bot.js'
+import { conversationsFor } from '../conversations.js'
 import { addressOfSocket } from '../clientAddress.js'
 import { isDatabaseReady } from '../db.js'
 import { Identity } from '../models/identity.js'
@@ -24,6 +25,8 @@ const MAX_LABEL_LENGTH = 60
 const MAX_SOCKETS_PER_ACCOUNT = 5
 const MAX_SESSIONS_PER_ACCOUNT = 20
 const MAX_OPEN_INVITATIONS = 50
+/** How many accounts the member directory lists. */
+const MAX_DIRECTORY = 200
 /** How long an idle guest keeps their name where no message expiry is configured. */
 const DEFAULT_GUEST_IDLE_HOURS = 30 * 24
 const HOUR = 60 * 60_000
@@ -74,7 +77,7 @@ const waitText = ms => {
     return seconds < 90 ? `${seconds} s` : `${Math.ceil(seconds / 60)} min`
 }
 
-export const createSessionHandlers = ({ presence, settings, rateLimiter }) => {
+export const createSessionHandlers = ({ io, presence, settings, rateLimiter, onIdentityRemoved = async () => {} }) => {
     const hasher = createPasswordHasher({ params: settings.passwordParams })
     // Failed sign-ins and recoveries, counted per address and per (address, username).
     const failuresByAddress = createAttemptLimiter({ freeFailures: 20 })
@@ -161,17 +164,54 @@ export const createSessionHandlers = ({ presence, settings, rateLimiter }) => {
             // The socket that asked stays connected, but is nobody now.
             if (keepSocketId !== null) presence.detach(keepSocketId)
         }
+        // Their conversations are told, and the member directory (where there is one).
+        await onIdentityRemoved(userId)
+        if (removed.kind === 'account') tellDirectory('memberLeft', { userId })
         return true
     }
 
-    const sendLoggedIn = (socket, user, sessionToken, extra = {}) => {
+    // ---------- the member directory
+    //
+    // Where it is switched on, accounts are shown every other account, online or not:
+    // otherwise nobody could start a conversation with someone who is not connected at
+    // that moment. It goes to signed-in accounts only, and is capped.
+    const directoryOn = settings.memberDirectory === 'all'
+    const seesDirectory = user => directoryOn && user.kind === 'account'
+
+    const directory = async () => {
+        const accounts = await Identity.find({ kind: 'account' }, { userId: 1, username: 1 })
+            .sort({ username: 1 }).limit(MAX_DIRECTORY).lean()
+        return accounts.map(account => ({ userId: account.userId, username: account.username, kind: 'account' }))
+    }
+
+    const tellDirectory = (event, payload) => {
+        if (!directoryOn) return
+        const sockets = [...presence.users.values()].filter(seesDirectory).flatMap(user => [...user.sockets.keys()])
+        if (sockets.length > 0) io.to(sockets).emit(event, payload)
+    }
+
+    // Completes a login on a socket that has just been attached: everything the client
+    // needs to draw itself, in one event. If that cannot be gathered the login is undone,
+    // so the client is never left logged in with half a picture.
+    const sendLoggedIn = async (socket, user, sessionToken, extra = {}, { undoOnFailure = true } = {}) => {
+        let conversations, members
+        try {
+            conversations = await conversationsFor(user.userId)
+            if (seesDirectory(user)) members = await directory()
+        } catch (error) {
+            if (undoOnFailure) presence.detach(socket.id)
+            throw error
+        }
+        if (!socket.connected) return
         socket.emit('loggedin', {
+            userId: user.userId,
             username: user.username,
-            id: presence.publicId(user),
             kind: user.kind,
             admin: user.admin,
             sessionToken,
             onlineUsers: presence.getOnlineUsers(),
+            conversations,
+            ...(members === undefined ? {} : { members }),
             ...extra,
         })
     }
@@ -217,7 +257,7 @@ export const createSessionHandlers = ({ presence, settings, rateLimiter }) => {
         const online = presence.users.get(identity.userId)
         const replaceSocketId = online ? online.sockets.keys().next().value ?? null : null
         const { user, sessionToken } = presence.attach(socket, identity, { replaceSocketId })
-        sendLoggedIn(socket, user, sessionToken, reservation === null ? {} : { reservation })
+        await sendLoggedIn(socket, user, sessionToken, reservation === null ? {} : { reservation })
     }
 
     // Shared end of both account logins. `deviceSession` is the stored session being
@@ -245,7 +285,7 @@ export const createSessionHandlers = ({ presence, settings, rateLimiter }) => {
             return
         }
         const { user, sessionToken } = presence.attach(socket, identity, { deviceSessionId, replaceSocketId })
-        sendLoggedIn(socket, user, sessionToken, created ? { session: created.token } : {})
+        await sendLoggedIn(socket, user, sessionToken, created ? { session: created.token } : {})
     }
 
     const loginWithPassword = async (socket, username, payload, startedAt) => {
@@ -286,7 +326,8 @@ export const createSessionHandlers = ({ presence, settings, rateLimiter }) => {
             // The same socket asking again for the name it already has changes nothing.
             const repeat = payload.session === undefined && payload.password === undefined && username === current.username
             if (!repeat) refuse('Already logged in')
-            sendLoggedIn(socket, current, current.sockets.get(socket.id).sessionToken)
+            requireDatabase()
+            await sendLoggedIn(socket, current, current.sockets.get(socket.id).sessionToken, {}, { undoOnFailure: false })
             return
         }
 
@@ -374,7 +415,10 @@ export const createSessionHandlers = ({ presence, settings, rateLimiter }) => {
             const own = online.sockets.get(socket.id)
             if (own) own.deviceSessionId = deviceSessionId
             presence.revoke(online, { reason: 'This name is now an account — sign in', except: socket.id })
+            // Whoever is still connected as them is now listed as an account.
+            if (presence.users.has(online.userId)) presence.announceChange(online)
         }
+        tellDirectory('memberJoined', { userId: identity.userId, username: identity.username, kind: 'account' })
         return { session: token, recoveryCode, kind: 'account', admin: identity.admin === true }
     }
 

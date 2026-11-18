@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import {
-  UNCONFIRMED,
-  chatReducer,
-  initialChatState,
-  otherOnlineUsers,
-  selectedConversation,
-  selectedUserId,
-} from '@/lib/chatState'
+  chatList, openConversation, peopleList, selectedThread, totalUnread,
+} from '@/lib/chatSelectors'
+import { chatReducer, initialChatState } from '@/lib/chatState'
+import { directConversationId } from '@/lib/conversationId'
 import { deviceLabel } from '@/lib/device'
+import { UNCONFIRMED } from '@/lib/messages'
+import { comparePositions, positionOf } from '@/lib/positions'
 import { ask } from '@/lib/request'
 import {
   clearAccount, clearSession, loadAccount, loadReservation, saveAccount, saveReservation, saveSession,
@@ -16,16 +15,20 @@ import {
 import { socket } from '@/lib/socket'
 import { useSocketConnected } from '@/lib/useSocketConnected'
 import type {
-  ChatMessage,
+  ConversationUpdatedPayload,
   HistoryErrorPayload,
   HistoryPayload,
   LoggedInPayload,
   LoginErrorPayload,
   LoginPayload,
-  NewLoginPayload,
+  Message,
+  Position,
+  PublicUser,
   SessionRevokedPayload,
   UserLeftPayload,
 } from '@/types/protocol'
+
+const BASE_TITLE = 'Strive Chat'
 
 /** How long to wait for the server to acknowledge a message before calling it unconfirmed. */
 const ACK_TIMEOUT_MS = 10_000
@@ -64,7 +67,9 @@ const reLogin = (session: Session): LoginPayload | null => {
  * - whenever the socket connects and a session is held, it logs in again, proving the
  *   name is its own with the reservation the server gave it;
  * - after every `loggedin`, history for the open conversation is requested again, because
- *   messages can be saved while this client was away.
+ *   messages can be saved while this client was away;
+ * - a conversation that is on screen is reported to the server as read, so that its
+ *   unread count is right on every device and at the next login.
  */
 export const useChat = () => {
   const connected = useSocketConnected()
@@ -73,6 +78,8 @@ export const useChat = () => {
   // that is waking up — which is a different thing to tell the user than "disconnected".
   const [everConnected, setEverConnected] = useState(connected)
   if (connected && !everConnected) setEverConnected(true)
+  // The server refused this page's version of the protocol: only a reload can help.
+  const [outdated, setOutdated] = useState(false)
   const [state, dispatch] = useReducer(chatReducer, undefined, () =>
     initialChatState(startingSession()?.username ?? null),
   )
@@ -164,9 +171,19 @@ export const useChat = () => {
       clearSession()
       dispatch({ type: 'loginFailed', message: reason })
     }
-    const onNewLogin = (payload: NewLoginPayload) => dispatch({ type: 'userJoined', payload })
+    const onNewLogin = (payload: PublicUser) => dispatch({ type: 'userJoined', payload })
     const onUserLeft = (payload: UserLeftPayload) => dispatch({ type: 'userLeft', payload })
-    const onMessage = (payload: ChatMessage) => dispatch({ type: 'messageReceived', payload, receivedAt: Date.now() })
+    const onMemberJoined = (payload: PublicUser) => dispatch({ type: 'memberJoined', payload })
+    const onMemberLeft = (payload: UserLeftPayload) => dispatch({ type: 'memberLeft', payload })
+    const onConversationUpdated = ({ conversation }: ConversationUpdatedPayload) =>
+      dispatch({ type: 'conversationUpdated', conversation })
+    const onMessage = (payload: Message) => dispatch({ type: 'messageReceived', payload, receivedAt: Date.now() })
+    // Server and client are deployed separately, so for a few minutes after a release
+    // this page can be older than the server. socket.io does not retry a refused
+    // connection, which is right: the same page would be refused again.
+    const onConnectError = (error: Error & { data?: { code?: string } }) => {
+      if (error.data?.code === 'protocol') setOutdated(true)
+    }
     const onHistory = (payload: HistoryPayload) => dispatch({ type: 'historyLoaded', payload })
     const onHistoryError = (payload: HistoryErrorPayload) => dispatch({ type: 'historyFailed', payload })
 
@@ -175,8 +192,12 @@ export const useChat = () => {
     socket.on('loggedin', onLoggedIn)
     socket.on('loginError', onLoginError)
     socket.on('sessionRevoked', onSessionRevoked)
+    socket.on('connect_error', onConnectError)
     socket.on('newLogin', onNewLogin)
     socket.on('userLeft', onUserLeft)
+    socket.on('memberJoined', onMemberJoined)
+    socket.on('memberLeft', onMemberLeft)
+    socket.on('conversationUpdated', onConversationUpdated)
     socket.on('message', onMessage)
     socket.on('history', onHistory)
     socket.on('historyError', onHistoryError)
@@ -211,8 +232,12 @@ export const useChat = () => {
       socket.off('loggedin', onLoggedIn)
       socket.off('loginError', onLoginError)
       socket.off('sessionRevoked', onSessionRevoked)
+      socket.off('connect_error', onConnectError)
       socket.off('newLogin', onNewLogin)
       socket.off('userLeft', onUserLeft)
+      socket.off('memberJoined', onMemberJoined)
+      socket.off('memberLeft', onMemberLeft)
+      socket.off('conversationUpdated', onConversationUpdated)
       socket.off('message', onMessage)
       socket.off('history', onHistory)
       socket.off('historyError', onHistoryError)
@@ -225,9 +250,35 @@ export const useChat = () => {
   // A conversation selected while offline is loaded as soon as the login completes.
   useEffect(() => {
     if (state.phase === 'loggedIn' && state.selected !== null) {
-      socket.emit('getHistory', { withUsername: state.selected })
+      socket.emit('getHistory', { conversationId: state.selected })
     }
   }, [state.phase, state.selected, state.loginCount])
+
+  // Tell the server how far the open conversation has been read: up to its newest
+  // confirmed message, once per position.
+  const thread = selectedThread(state)
+  const newestConfirmed = thread.messages.findLast(message => message.id !== null)
+  const newestId = newestConfirmed?.id ?? null
+  const newestTimestamp = newestConfirmed?.timestamp ?? 0
+  const reported = useRef(new Map<string, Position>())
+  useEffect(() => {
+    if (state.phase !== 'loggedIn' || state.selected === null || newestId === null) return
+    const position = positionOf({ id: newestId, timestamp: newestTimestamp })
+    if (comparePositions(position, reported.current.get(state.selected)) <= 0) return
+    reported.current.set(state.selected, position)
+    dispatch({ type: 'readUpTo', conversationId: state.selected, position })
+    void ask('markRead', { conversationId: state.selected, upTo: position })
+  }, [state.phase, state.selected, newestId, newestTimestamp])
+  // What was reported is only remembered for the identity it was reported as.
+  useEffect(() => {
+    if (state.userId === null) reported.current.clear()
+  }, [state.userId])
+
+  // Unread messages show in the tab's title, where they can be seen from another tab.
+  const unread = totalUnread(state)
+  useEffect(() => {
+    document.title = unread > 0 ? `(${unread > 99 ? '99+' : unread}) ${BASE_TITLE}` : BASE_TITLE
+  }, [unread])
 
   // Allowed before the socket has connected: `login` is the one event that may be queued,
   // and socket.io sends it as soon as the connection is up. Someone who types a name and
@@ -284,37 +335,65 @@ export const useChat = () => {
     forget()
   }, [forget])
 
-  const selectConversation = useCallback((username: string) => {
-    dispatch({ type: 'conversationSelected', username })
+  const selectConversation = useCallback((conversationId: string) => {
+    dispatch({ type: 'conversationSelected', conversationId })
   }, [])
+
+  /** Opens the direct conversation with someone, whether or not anything has been said in it. */
+  const ownUserId = state.userId
+  const openChatWith = useCallback(
+    (person: { userId: string; username: string }) => {
+      if (ownUserId === null) return
+      dispatch({
+        type: 'conversationSelected',
+        conversationId: directConversationId(ownUserId, person.userId),
+        peer: { userId: person.userId, username: person.username },
+      })
+    },
+    [ownUserId],
+  )
 
   const closeConversation = useCallback(() => {
     dispatch({ type: 'conversationClosed' })
   }, [])
 
-  const recipientId = selectedUserId(state)
-  const canSend = connected && state.phase === 'loggedIn' && recipientId !== null
+  const open = openConversation(state)
+  // The other person does not have to be online: the message waits for them.
+  const canSend = connected && state.phase === 'loggedIn' && open !== null && open.counterpart?.gone !== true
 
   const sendMessage = (text: string) => {
-    const to = state.selected
-    if (!canSend || to === null || recipientId === null) return
+    const conversationId = state.selected
+    if (!canSend || conversationId === null) return
 
     const clientId = crypto.randomUUID()
-    dispatch({ type: 'sendStarted', to, clientId, text, timestamp: Date.now() })
+    dispatch({ type: 'sendStarted', conversationId, clientId, text, timestamp: Date.now() })
 
     // Without a timeout the callback is never called if the connection drops first,
     // and the message would stay "pending" forever.
     socket
       .timeout(ACK_TIMEOUT_MS)
-      .emit('sendmessage', { toUserId: recipientId, text, clientId }, (error, response) => {
+      .emit('sendmessage', { conversationId, text, clientId }, (error, response) => {
         if (error) {
-          dispatch({ type: 'sendFailed', to, clientId, reason: UNCONFIRMED })
+          dispatch({ type: 'sendFailed', conversationId, clientId, reason: UNCONFIRMED })
         } else if (response.ok) {
-          dispatch({ type: 'sendConfirmed', to, clientId, id: response.id, timestamp: response.timestamp })
+          dispatch({ type: 'sendConfirmed', conversationId, clientId, id: response.id, timestamp: response.timestamp })
         } else {
-          dispatch({ type: 'sendFailed', to, clientId, reason: response.message })
+          dispatch({ type: 'sendFailed', conversationId, clientId, reason: response.message })
         }
       })
+  }
+
+  /** Asks for the page of messages before the oldest one held for the open conversation. */
+  const oldestConfirmed = thread.messages.find(message => message.id !== null)
+  const loadEarlier = () => {
+    const conversationId = state.selected
+    if (state.phase !== 'loggedIn' || !connected || conversationId === null) return
+    if (oldestConfirmed === undefined || oldestConfirmed.id === null || thread.loadingEarlier) return
+    dispatch({ type: 'earlierRequested', conversationId })
+    socket.emit('getHistory', {
+      conversationId,
+      before: positionOf({ id: oldestConfirmed.id, timestamp: oldestConfirmed.timestamp }),
+    })
   }
 
   /** After being replaced by another tab: connect again, which logs back in. */
@@ -325,16 +404,19 @@ export const useChat = () => {
   return {
     connected,
     everConnected,
+    outdated,
     phase: state.phase,
     username: state.username,
     kind: state.kind,
     admin: state.admin,
     loginError: state.loginError,
-    users: otherOnlineUsers(state),
+    chats: chatList(state),
+    people: peopleList(state),
+    /** Whether the people list covers every account, or only who is connected. */
+    listsEveryone: state.directory !== null,
     selected: state.selected,
-    selectedOnline: recipientId !== null,
-    conversation: selectedConversation(state),
-    conversations: state.conversations,
+    open,
+    thread,
     lastIncoming: state.lastIncoming,
     canSend,
     login,
@@ -344,8 +426,10 @@ export const useChat = () => {
     logout,
     forget,
     selectConversation,
+    openChatWith,
     closeConversation,
     sendMessage,
+    loadEarlier,
     reconnect,
   }
 }

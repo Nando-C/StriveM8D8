@@ -3,7 +3,10 @@ import { inject } from 'vitest'
 import mongoose from 'mongoose'
 import { io as connectSocket } from 'socket.io-client'
 import { createApp } from '../src/app.js'
+import { directConversationId } from '../src/conversations.js'
 import { connectDB } from '../src/db.js'
+import { Conversation } from '../src/models/conversation.js'
+import { Message } from '../src/models/message.js'
 import { Identity } from '../src/models/identity.js'
 import { Invitation } from '../src/models/invitation.js'
 import { Session } from '../src/models/session.js'
@@ -28,8 +31,8 @@ export const FAST_PASSWORD_PARAMS = { N: 2 ** 10, r: 8, p: 1 }
 
 // Boots a fresh app instance on an ephemeral port. Presence state lives inside the
 // instance, so a new one per test means every test starts with nobody online.
-// Names are stored now, so each instance also starts with nobody registered: stopping it
-// removes every identity (messages are left to the tests that create them).
+// Everything is stored now, so each instance also starts from nothing: stopping it
+// removes every identity, conversation and message.
 export const startApp = async (options = {}) => {
     const { server, io, runMaintenance, hasherStats } = createApp({ passwordParams: FAST_PASSWORD_PARAMS, ...options })
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
@@ -38,10 +41,12 @@ export const startApp = async (options = {}) => {
 
     // `address` makes the connection look as if a proxy had forwarded it for that client
     // (only believed by an app started with `trustedProxyHops`).
-    const client = ({ address } = {}) => new Promise((resolve, reject) => {
+    // `protocol` is the version the client says it speaks; null says nothing at all.
+    const client = ({ address, protocol = 2 } = {}) => new Promise((resolve, reject) => {
         const socket = connectSocket(url, {
             transports: ['websocket'],
             reconnection: false,
+            auth: protocol === null ? {} : { protocol },
             extraHeaders: address ? { 'X-Forwarded-For': address } : {},
         })
         clients.push(socket)
@@ -53,7 +58,10 @@ export const startApp = async (options = {}) => {
         clients.forEach(socket => socket.close())
         await new Promise(resolve => io.close(resolve))
         if (mongoose.connection.readyState === 1) {
-            await Promise.all([Identity.deleteMany({}), Session.deleteMany({}), Invitation.deleteMany({})])
+            await Promise.all([
+                Identity.deleteMany({}), Session.deleteMany({}), Invitation.deleteMany({}),
+                Conversation.deleteMany({}), Message.deleteMany({}),
+            ])
         }
     }
 
@@ -118,7 +126,23 @@ export const getHistory = (socket, payload) => request(socket, 'getHistory', pay
 // Resolves with the acknowledgement the server sends for this message.
 export const send = (socket, payload) => socket.timeout(3000).emitWithAck('sendmessage', payload)
 
-export const messageTo = (toUserId, text = 'hello') => ({ toUserId, text, clientId: randomUUID() })
+export const messageTo = (conversationId, text = 'hello') => ({ conversationId, text, clientId: randomUUID() })
+
+/** The id of the direct conversation between two logged-in users (login replies or userIds). */
+export const dm = (a, b) => directConversationId(a.userId ?? a, b.userId ?? b)
+
+// Connects and logs in as a guest. Resolves with the socket and everything `loggedin` said.
+export const join = async (app, username) => {
+    const socket = await app.client()
+    const session = await login(socket, { username })
+    if (!session.ok) throw new Error(`could not join as ${username}: ${session.message}`)
+    return { socket, ...session }
+}
+
+export const markRead = (socket, conversationId, upTo) => ask(socket, 'markRead', { conversationId, upTo })
+
+/** The position of a message, from its acknowledgement or from the message itself. */
+export const positionOf = message => ({ ts: message.timestamp, id: message.id })
 
 export const getJson = async url => {
     const response = await fetch(url)

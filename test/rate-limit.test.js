@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { Message } from '../src/models/message.js'
 import { createRateLimiter } from '../src/rateLimit.js'
 import {
-    connectTestDatabase, disconnectTestDatabase, getHistory, login, messageTo, nextEvent, onlineUsers,
+    connectTestDatabase, disconnectTestDatabase, dm, getHistory, login, messageTo, nextEvent, onlineUsers,
     record, send, settle, startApp,
 } from './helpers.js'
 
@@ -24,12 +24,12 @@ describe('rate limits', () => {
     it('refuses the 11th message in a burst, saves and delivers only the first ten', async () => {
         const alice = await app.client()
         const bob = await app.client()
-        await login(alice, { username: 'alice' })
-        await login(bob, { username: 'bob' })
+        const a = await login(alice, { username: 'alice' })
+        const b = await login(bob, { username: 'bob' })
         const delivered = record(bob, 'message')
 
         const acks = []
-        for (let index = 1; index <= 12; index++) acks.push(await send(alice, messageTo(bob.id, `message ${index}`)))
+        for (let index = 1; index <= 12; index++) acks.push(await send(alice, messageTo(dm(a, b), `message ${index}`)))
 
         expect(acks.slice(0, 10).every(ack => ack.ok)).toBe(true)
         expect(acks.slice(10)).toEqual([
@@ -44,21 +44,21 @@ describe('rate limits', () => {
     it('counts each socket separately', async () => {
         const alice = await app.client()
         const bob = await app.client()
-        await login(alice, { username: 'alice' })
-        await login(bob, { username: 'bob' })
-        for (let index = 0; index < 11; index++) await send(alice, messageTo(bob.id))
+        const a = await login(alice, { username: 'alice' })
+        const b = await login(bob, { username: 'bob' })
+        for (let index = 0; index < 11; index++) await send(alice, messageTo(dm(a, b)))
 
-        expect((await send(bob, messageTo(alice.id))).ok).toBe(true)
+        expect((await send(bob, messageTo(dm(a, b)))).ok).toBe(true)
     })
 
     it('counts invalid messages too, and messages to the bot', async () => {
         const alice = await app.client()
-        await login(alice, { username: 'alice' })
+        const a = await login(alice, { username: 'alice' })
 
         for (let index = 0; index < 5; index++) await send(alice, { nonsense: true })
-        for (let index = 0; index < 5; index++) await send(alice, messageTo('demo-bot'))
+        for (let index = 0; index < 5; index++) await send(alice, messageTo(dm(a, 'demo-bot')))
 
-        expect(await send(alice, messageTo('demo-bot'))).toEqual({ ok: false, message: SLOW_DOWN })
+        expect(await send(alice, messageTo(dm(a, 'demo-bot')))).toEqual({ ok: false, message: SLOW_DOWN })
     })
 
     it('refuses the 6th login in a burst without telling anyone else', async () => {
@@ -77,19 +77,20 @@ describe('rate limits', () => {
         ])
         await settle()
         // Announced once, for the first login; the repeats and the refusals are silent.
-        expect(announced).toEqual([{ username: 'hammer', id: hammer.id }])
+        expect(announced).toEqual([{ userId: replies[0].userId, username: 'hammer', kind: 'guest' }])
         expect(await onlineUsers(app)).toHaveLength(3)
     })
 
     it('refuses the 11th history request in a burst', async () => {
         const alice = await app.client()
-        await login(alice, { username: 'alice' })
+        const a = await login(alice, { username: 'alice' })
+        const conversationId = dm(a, 'demo-bot')
 
         const replies = []
-        for (let index = 0; index < 11; index++) replies.push(await getHistory(alice, { withUsername: 'bob' }))
+        for (let index = 0; index < 11; index++) replies.push(await getHistory(alice, { conversationId }))
 
         expect(replies.slice(0, 10).every(reply => reply.ok)).toBe(true)
-        expect(replies[10]).toEqual({ ok: false, withUsername: 'bob', message: SLOW_DOWN })
+        expect(replies[10]).toEqual({ ok: false, conversationId, message: SLOW_DOWN })
     })
 
     it('does not carry a limit over to a new connection', async () => {
@@ -108,10 +109,10 @@ describe('payload size cap', () => {
     it('accepts the largest legitimate message, even made of 4-byte characters', async () => {
         const alice = await app.client()
         const bob = await app.client()
-        await login(alice, { username: 'alice' })
-        await login(bob, { username: 'bob' })
+        const a = await login(alice, { username: 'alice' })
+        const b = await login(bob, { username: 'bob' })
 
-        const ack = await send(alice, messageTo(bob.id, '🙂'.repeat(1000))) // 2000 UTF-16 units, 4 kB
+        const ack = await send(alice, messageTo(dm(a, b), '🙂'.repeat(1000))) // 2000 UTF-16 units, 4 kB
 
         expect(ack.ok).toBe(true)
     })

@@ -36,7 +36,7 @@ describe('GET /config', () => {
         const response = await getJson(`${app.url}/config`)
 
         expect(response.status).toBe(200)
-        expect(response.body).toEqual({ signup: 'open', guests: true, protocol: 1 })
+        expect(response.body).toEqual({ signup: 'open', guests: true, protocol: 2 })
     })
 
     it('describes a private deployment, with modes only: no names, no codes', async () => {
@@ -44,7 +44,7 @@ describe('GET /config', () => {
 
         const response = await getJson(`${app.url}/config`)
 
-        expect(response.body).toEqual({ signup: 'invite', guests: false, protocol: 1 })
+        expect(response.body).toEqual({ signup: 'invite', guests: false, protocol: 2 })
         expect(JSON.stringify(response.body)).not.toMatch(/owner|bootstrap/i)
     })
 })
@@ -63,7 +63,7 @@ describe('with guests switched off', () => {
         expect(response.status).toBe(404)
         expect(JSON.stringify(response.body)).not.toContain('owner')
         // Members still get presence, over their socket.
-        expect((await login(socket, { username: 'owner' })).onlineUsers).toEqual([{ username: 'owner', id: socket.id }])
+        expect((await login(socket, { username: 'owner' })).onlineUsers.map(user => user.username)).toEqual(['owner'])
     })
 })
 
@@ -293,6 +293,89 @@ describe('administrator names', () => {
         const session = await login(await app.client(), { username: 'owner', password: PASSWORD })
 
         expect(session).toMatchObject({ ok: true, admin: true })
+    })
+})
+
+describe('the member directory', () => {
+    const DIRECTORY = { ...PRIVATE, signupMode: 'open', guests: true, memberDirectory: 'all' }
+    // Registers an account and logs a socket in as it.
+    const member = async username => {
+        const socket = await app.client()
+        const account = await register(socket, username)
+        return { socket, account, session: await login(socket, { session: account.session }) }
+    }
+
+    it('is not sent on the public demo: strangers’ account names are not listed to every visitor', async () => {
+        app = await startApp()
+        await register(await app.client(), 'offline-member')
+
+        const ana = await member('ana')
+
+        expect(ana.session).not.toHaveProperty('members')
+    })
+
+    it('lists every account to an account, online or not, by name', async () => {
+        app = await startApp(DIRECTORY)
+        const zed = await register(await app.client(), 'zed')
+        await register(await app.client(), 'bea')
+        expect(zed.ok).toBe(true)
+
+        const ana = await member('ana')
+
+        expect(ana.session.members.map(entry => entry.username)).toEqual(['ana', 'bea', 'zed'])
+        expect(sortedKeys(ana.session.members[0])).toEqual(['kind', 'userId', 'username'])
+        // Only ana is connected; the others can still be written to.
+        expect(ana.session.onlineUsers.map(user => user.username)).toEqual(['ana'])
+        const bea = ana.session.members.find(entry => entry.username === 'bea')
+        const ack = await ana.socket.timeout(3000).emitWithAck('sendmessage', {
+            conversationId: `dm:${[ana.session.userId, bea.userId].sort().join('::')}`, text: 'see you later', clientId: 'c-1',
+        })
+        expect(ack.ok).toBe(true)
+    })
+
+    it('is for accounts only: a guest gets no list and no updates', async () => {
+        app = await startApp(DIRECTORY)
+        await register(await app.client(), 'bea')
+        const guest = await app.client()
+        const seen = []
+        guest.onAny(event => seen.push(event))
+
+        const session = await login(guest, { username: 'visitor' })
+        await register(await app.client(), 'cal')
+        await new Promise(resolve => setTimeout(resolve, 150))
+
+        expect(session).not.toHaveProperty('members')
+        expect(seen).not.toContain('memberJoined')
+    })
+
+    it('tells accounts when someone registers or deletes their account, and nobody who is not logged in', async () => {
+        app = await startApp(DIRECTORY)
+        const ana = await member('ana')
+        const lurker = await app.client()
+        const seenByLurker = []
+        lurker.onAny(event => seenByLurker.push(event))
+
+        const joined = nextEvent(ana.socket, 'memberJoined')
+        const bea = await member('bea')
+        expect(await joined).toEqual({ userId: bea.session.userId, username: 'bea', kind: 'account' })
+
+        const left = nextEvent(ana.socket, 'memberLeft')
+        await ask(bea.socket, 'deleteAccount', { password: PASSWORD })
+        expect(await left).toEqual({ userId: bea.session.userId })
+
+        expect(seenByLurker.filter(event => event.startsWith('member'))).toEqual([])
+    })
+
+    it('stops at 200 names', async () => {
+        app = await startApp(DIRECTORY)
+        await Identity.insertMany(Array.from({ length: 205 }, (_unused, index) => ({
+            userId: randomUUID(), username: `member-${String(index).padStart(3, '0')}`, kind: 'account', passwordHash: 'x',
+        })))
+
+        const ana = await member('ana')
+
+        expect(ana.session.members).toHaveLength(200)
+        expect(ana.session.members[0].username).toBe('ana')
     })
 })
 

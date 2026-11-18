@@ -1,23 +1,14 @@
 import { screen, waitFor } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-import { fakeSocket, listedPeople, loginAs, personButton, renderApp, serverSays, user } from '@/test/harness'
+import { dm, fakeSocket, idOf, listedPeople, loginAs, messageBox, personButton, renderApp, serverSays, user } from '@/test/harness'
 
 describe('the people list', () => {
-  it('shows everyone from the login snapshot except the user themself', async () => {
+  it('shows everyone from the login snapshot except the user themself, by name', async () => {
     renderApp()
 
     await loginAs('alice', [user('carol'), user('bob')])
 
     expect(listedPeople()).toEqual(['bob', 'carol'])
-  })
-
-  it('leaves the user out by name even when the snapshot holds their previous socket id', async () => {
-    renderApp()
-
-    // After a reconnect the list can briefly still carry the user's old id.
-    await loginAs('alice', [user('alice', 'an-older-socket-id'), user('bob')])
-
-    expect(listedPeople()).toEqual(['bob'])
   })
 
   it('adds a user who comes online', async () => {
@@ -29,56 +20,53 @@ describe('the people list', () => {
     expect(listedPeople()).toEqual(['bob', 'carol'])
   })
 
-  it('replaces the socket id of a user who reconnects, without a duplicate row', async () => {
+  it('keeps one row per person when they are announced again, and shows what changed', async () => {
     renderApp()
-    const events = await loginAs('alice', [user('bob', 'bob-1')])
+    await loginAs('alice', [user('bob')])
+    expect(personButton('bob')).toHaveTextContent('Guest · Online')
 
-    serverSays('newLogin', user('bob', 'bob-2'))
+    // The guest became an account: the same person, announced again.
+    serverSays('newLogin', user('bob', 'account'))
 
     expect(listedPeople()).toEqual(['bob'])
-    // The old id is gone for good: a late "left" for it must not remove bob.
-    serverSays('userLeft', { id: 'bob-1' })
-    expect(listedPeople()).toEqual(['bob'])
-    // And the new id is the one in use.
-    await events.click(personButton('bob'))
-    serverSays('userLeft', { id: 'bob-2' })
-    expect(personButton('bob')).toHaveTextContent('Offline')
+    expect(personButton('bob')).not.toHaveTextContent('Guest')
   })
 
-  it('never lists one socket id under two names', async () => {
+  it('labels guests and the bot, and leaves accounts unmarked', async () => {
     renderApp()
-    await loginAs('alice', [user('bob', 'shared-id'), user('carol')])
+    await loginAs('alice', [user('bob', 'account'), user('carol', 'guest'), user('demo-bot', 'bot')])
 
-    serverSays('newLogin', user('dave', 'shared-id'))
-
-    // A removed entry fades out, so it is gone a moment later rather than at once.
-    await waitFor(() => expect(listedPeople()).toEqual(['carol', 'dave']))
+    expect(personButton('bob')).toHaveTextContent(/^BObobOnline$/)
+    expect(personButton('carol')).toHaveTextContent('Guest · Online')
+    expect(personButton('demo-bot')).toHaveTextContent('Bot · Online')
   })
 
-  it('removes a user who leaves, and ignores a leave for an id it does not know', async () => {
+  it('removes a user who leaves, and ignores a leave for someone it does not know', async () => {
     renderApp()
     await loginAs('alice', [user('bob'), user('carol')])
 
-    serverSays('userLeft', { id: 'nobody-has-this-id' })
+    serverSays('userLeft', { userId: 'nobody-has-this-id' })
     expect(listedPeople()).toEqual(['bob', 'carol'])
 
-    serverSays('userLeft', { id: 'bob-1' })
+    serverSays('userLeft', { userId: idOf('bob') })
+    // A removed entry fades out, so it is gone a moment later rather than at once.
     await waitFor(() => expect(listedPeople()).toEqual(['carol']))
   })
 
-  it('keeps a selected user in the list, marked offline, after they leave', async () => {
+  it('keeps the open conversation usable after the other person leaves: they are shown as offline, not locked out', async () => {
     renderApp()
     const events = await loginAs('alice', [user('bob'), user('carol')])
     await events.click(personButton('bob'))
+    expect(screen.getByRole('heading', { name: 'bob' }).parentElement).toHaveTextContent('Guest · Online')
 
-    serverSays('userLeft', { id: 'bob-1' })
+    serverSays('userLeft', { userId: idOf('bob') })
 
-    expect(listedPeople()).toEqual(['carol', 'bob'])
-    expect(personButton('bob')).toHaveTextContent('Offline')
-    // Deselecting lets the entry go.
-    await events.click(personButton('carol'))
     await waitFor(() => expect(listedPeople()).toEqual(['carol']))
-    expect(fakeSocket.sent('getHistory')).toEqual([{ withUsername: 'bob' }, { withUsername: 'carol' }])
+    expect(screen.getByRole('heading', { name: 'bob' }).parentElement).toHaveTextContent('Offline')
+    // A message can still be written: it waits for them.
+    expect(messageBox('bob')).toBeEnabled()
+    await events.click(personButton('carol'))
+    expect(fakeSocket.sent('getHistory')).toEqual([{ conversationId: dm('alice', 'bob') }, { conversationId: dm('alice', 'carol') }])
   })
 
   it('explains what to do when nobody else is online', async () => {
@@ -88,5 +76,46 @@ describe('the people list', () => {
 
     expect(listedPeople()).toEqual([])
     expect(screen.getByText('Nobody else is here yet')).toBeInTheDocument()
+  })
+})
+
+describe('where every account is listed', () => {
+  const directory = [user('alice', 'account'), user('bea', 'account'), user('zed', 'account')]
+  const login = async () => {
+    renderApp()
+    serverSays('loggedin', {
+      userId: idOf('alice'), username: 'alice', kind: 'account', admin: false, sessionToken: 't', conversations: [],
+      onlineUsers: [user('alice', 'account'), user('zed', 'account'), user('visitor', 'guest')],
+      members: directory,
+    })
+    return screen.findByRole('navigation', { name: 'People' })
+  }
+  const names = (list: HTMLElement) => [...list.querySelectorAll('button .truncate')].map(element => element.textContent)
+  const row = (list: HTMLElement, name: string) =>
+    [...list.querySelectorAll('button')].find(button => button.querySelector('.truncate')?.textContent === name)!
+
+  it('lists people who are not connected too, so a chat can be started with them', async () => {
+    window.localStorage.setItem('strive-chat.account', JSON.stringify({ username: 'alice', session: 's' }))
+    const list = await login()
+
+    // Every account, plus whoever else is connected; never the user themself.
+    expect(names(list)).toEqual(['bea', 'visitor', 'zed'])
+    expect(row(list, 'bea')).toHaveTextContent('Offline')
+    expect(row(list, 'zed')).toHaveTextContent('Online')
+    expect(screen.queryByRole('navigation', { name: 'People online' })).not.toBeInTheDocument()
+  })
+
+  it('follows accounts being created and removed, and presence as before', async () => {
+    window.localStorage.setItem('strive-chat.account', JSON.stringify({ username: 'alice', session: 's' }))
+    const list = await login()
+
+    serverSays('memberJoined', user('cal', 'account'))
+    expect(names(list)).toEqual(['bea', 'cal', 'visitor', 'zed'])
+
+    serverSays('memberLeft', { userId: idOf('bea') })
+    serverSays('userLeft', { userId: idOf('zed') })
+    await waitFor(() => expect(names(list)).toEqual(['cal', 'visitor', 'zed']))
+    // Offline now, but still a member.
+    expect(row(list, 'zed')).toHaveTextContent('Offline')
   })
 })

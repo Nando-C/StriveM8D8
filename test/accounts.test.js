@@ -3,7 +3,7 @@ import { Identity } from '../src/models/identity.js'
 import { Message } from '../src/models/message.js'
 import { Session } from '../src/models/session.js'
 import {
-    PASSWORD, ask, connectTestDatabase, disconnectTestDatabase, getHistory, login, messageTo, nextEvent,
+    PASSWORD, ask, connectTestDatabase, disconnectTestDatabase, dm, getHistory, join, login, messageTo, nextEvent,
     onlineUsers, record, register, send, settle, sortedKeys, startApp,
 } from './helpers.js'
 
@@ -131,9 +131,10 @@ describe('signing in', () => {
     it('logs in with the session from sign-up, as an account', async () => {
         const { socket, session } = await signUp('alice')
 
-        expect(sortedKeys(session)).toEqual(['admin', 'id', 'kind', 'ok', 'onlineUsers', 'sessionToken', 'username'])
-        expect(session).toMatchObject({ ok: true, username: 'alice', kind: 'account', admin: false, id: socket.id })
-        expect(await onlineUsers(app)).toEqual([{ username: 'alice', id: socket.id }])
+        expect(sortedKeys(session)).toEqual(['admin', 'conversations', 'kind', 'ok', 'onlineUsers', 'sessionToken', 'userId', 'username'])
+        expect(session).toMatchObject({ ok: true, username: 'alice', kind: 'account', admin: false })
+        expect(await onlineUsers(app)).toEqual([{ userId: session.userId, username: 'alice', kind: 'account' }])
+        expect(JSON.stringify(session)).not.toContain(socket.id)
     })
 
     it('logs in with the password from another device, which gets a session of its own', async () => {
@@ -208,75 +209,45 @@ describe('signing in', () => {
 })
 
 describe('several devices on one account', () => {
-    it('announces the user once, and says they left only when the last device goes', async () => {
-        const watcher = await app.client()
-        await login(watcher, { username: 'watcher' })
-        const joins = record(watcher, 'newLogin')
-        const leaves = record(watcher, 'userLeft')
+    it('announces the user once, and says they left only when the last device goes — in whatever order they go', async () => {
+        const watcher = await join(app, 'watcher')
+        const joins = record(watcher.socket, 'newLogin')
+        const leaves = record(watcher.socket, 'userLeft')
 
         const first = await signUp('alice')
         const second = await anotherDevice('alice')
+        const alice = { userId: first.session.userId, username: 'alice', kind: 'account' }
 
-        expect(second.session.id).toBe(first.socket.id)
-        expect(second.session.onlineUsers).toEqual([
-            { username: 'watcher', id: watcher.id },
-            { username: 'alice', id: first.socket.id },
-        ])
+        expect(second.session.userId).toBe(first.session.userId)
+        expect(second.session.onlineUsers).toEqual([{ userId: watcher.userId, username: 'watcher', kind: 'guest' }, alice])
 
-        second.socket.close()
-        // A third login is the signal that the server has processed the close.
+        // The device that connected first goes first: nothing changes for anyone else.
+        first.socket.close()
+        await expect.poll(() => app.io.sockets.sockets.has(first.socket.id)).toBe(false)
         const third = await anotherDevice('alice')
-        await settle()
-        expect(joins).toEqual([{ username: 'alice', id: first.socket.id }])
-        expect(leaves).toEqual([])
-
-        const firstId = first.socket.id
         third.socket.close()
         await expect.poll(() => app.io.sockets.sockets.has(third.socket.id)).toBe(false)
-        const left = nextEvent(watcher, 'userLeft')
-        first.socket.close()
+        await settle()
+        expect(joins).toEqual([alice])
+        expect(leaves).toEqual([])
+        expect(await onlineUsers(app)).toContainEqual(alice)
 
-        expect(await left).toEqual({ id: firstId })
+        const left = nextEvent(watcher.socket, 'userLeft')
+        second.socket.close()
+
+        expect(await left).toEqual({ userId: alice.userId })
         await settle()
         expect(leaves).toHaveLength(1)
         expect(joins).toHaveLength(1)
     })
 
-    it('re-announces the user under a new id when the device others knew them by goes first', async () => {
-        const watcher = await app.client()
-        await login(watcher, { username: 'watcher' })
+    it('cannot be used to message yourself from one device to another', async () => {
         const first = await signUp('alice')
         const second = await anotherDevice('alice')
-        const leaves = record(watcher, 'userLeft')
+        const id = first.session.userId
 
-        const moved = nextEvent(watcher, 'newLogin')
-        first.socket.close()
-
-        expect(await moved).toEqual({ username: 'alice', id: second.socket.id })
-        await settle()
-        expect(leaves).toEqual([])
-        expect(await onlineUsers(app)).toContainEqual({ username: 'alice', id: second.socket.id })
-    })
-
-    it('delivers a message to every device, and a message from any device comes from the same person', async () => {
-        const bob = await app.client()
-        await login(bob, { username: 'bob' })
-        const first = await signUp('alice')
-        const second = await anotherDevice('alice')
-
-        const onFirst = nextEvent(first.socket, 'message')
-        const onSecond = nextEvent(second.socket, 'message')
-        await send(bob, messageTo(first.socket.id, 'to both'))
-        expect((await onFirst).text).toBe('to both')
-        expect((await onSecond).text).toBe('to both')
-
-        const toBob = nextEvent(bob, 'message')
-        expect((await send(second.socket, messageTo(bob.id, 'from the second device'))).ok).toBe(true)
-        // The id bob knows alice by, not the socket the message happened to come from.
-        expect(await toBob).toMatchObject({ from: 'alice', fromId: first.socket.id })
-
-        expect(await send(second.socket, messageTo(first.socket.id)))
-            .toEqual({ ok: false, message: 'Cannot message yourself' })
+        expect(await send(second.socket, messageTo(`dm:${id}::${id}`)))
+            .toEqual({ ok: false, message: 'Unknown conversation' })
     })
 
     it('admits five connections and refuses a sixth, unless it replaces one of them', async () => {
@@ -366,12 +337,13 @@ describe('devices', () => {
 
         expect(await ask(first.socket, 'logout')).toEqual({ ok: true })
 
-        expect(await send(first.socket, messageTo(second.socket.id))).toEqual({ ok: false, message: 'Not logged in' })
+        expect(await send(first.socket, messageTo('dm:a::b'))).toEqual({ ok: false, message: 'Not logged in' })
         expect(await ask(first.socket, 'listSessions')).toEqual({ ok: false, message: 'Not logged in' })
         expect(await login(await app.client(), { session: first.account.session })).toEqual(ENDED)
         await settle()
         expect(closed).toEqual([])
-        expect(await onlineUsers(app)).toEqual([{ username: 'alice', id: second.socket.id }])
+        expect((await onlineUsers(app)).map(user => user.username)).toEqual(['alice'])
+        expect(app.io.sockets.sockets.has(second.socket.id)).toBe(true)
         // The same connection can be used to sign in again.
         expect((await login(first.socket, { username: 'alice', password: PASSWORD })).ok).toBe(true)
     })
@@ -513,15 +485,17 @@ describe('deleting an account', () => {
 
 describe('turning a guest into an account', () => {
     it('keeps the identity and its conversations, from the guest’s own connection', async () => {
-        const bob = await app.client()
-        await login(bob, { username: 'bob' })
-        const guest = await app.client()
-        await login(guest, { username: 'alice' })
-        await send(guest, messageTo(bob.id, 'sent as a guest'))
-        const { userId } = await Identity.findOne({ username: 'alice' }).lean()
-        const seenByBob = record(bob, 'userLeft')
+        const bob = await join(app, 'bob')
+        const { socket: guest, userId, ...alice } = await join(app, 'alice')
+        expect(alice.kind).toBe('guest')
+        await send(guest, messageTo(dm(userId, bob), 'sent as a guest'))
+        const seenByBob = record(bob.socket, 'userLeft')
+        const relisted = nextEvent(bob.socket, 'newLogin')
 
         const account = await register(guest, 'alice')
+
+        // Everyone's entry for her now says she is an account; she never left.
+        expect(await relisted).toEqual({ userId, username: 'alice', kind: 'account' })
 
         expect(account).toMatchObject({ ok: true, kind: 'account' })
         const stored = await Identity.findOne({ username: 'alice' }).lean()
@@ -529,8 +503,11 @@ describe('turning a guest into an account', () => {
         expect(stored.secretHash).toBeUndefined()
         // Still logged in, now as an account with a device session of its own.
         expect((await ask(guest, 'listSessions')).sessions).toEqual([expect.objectContaining({ current: true })])
-        expect((await getHistory(guest, { withUsername: 'bob' })).messages.map(message => message.text))
+        expect((await getHistory(guest, { conversationId: dm(userId, bob) })).messages.map(message => message.text))
             .toEqual(['sent as a guest'])
+        // The same identity, so the same conversations, on any device that signs in.
+        const elsewhere = await login(await app.client(), { username: 'alice', password: PASSWORD })
+        expect(elsewhere.conversations.map(conversation => conversation.id)).toEqual([dm(userId, bob)])
         await settle()
         expect(seenByBob).toEqual([])
         // And from now on, from any device, with the password or the session.
@@ -567,6 +544,8 @@ describe('what other people can see', () => {
         // Everything an account can do, while the watcher looks on.
         const first = await signUp('alice')
         const second = await anotherDevice('alice')
+        // (A conversation with the watcher, so that account activity has somewhere to leak to.)
+        await send(first.socket, messageTo(dm(first.session, watcherSession), 'hello watcher'))
         await login(await app.client(), { username: 'alice', password: 'a wrong password' })
         await ask(first.socket, 'listSessions')
         const newPassword = 'a brand new password'
@@ -586,7 +565,7 @@ describe('what other people can see', () => {
             second.session.session, second.session.sessionToken,
             reset.recoveryCode, guestSession.reservation, guestSession.sessionToken,
             upgraded.session, upgraded.recoveryCode, watcherSession.reservation,
-            ...stored.flatMap(identity => [identity.passwordHash, identity.recoveryHash, identity.secretHash, identity.userId]),
+            ...stored.flatMap(identity => [identity.passwordHash, identity.recoveryHash, identity.secretHash]),
             ...(await Session.find().lean()).map(session => session.tokenHash),
         ].filter(Boolean)
         expect(secrets.length).toBeGreaterThan(15)
@@ -600,5 +579,7 @@ describe('what other people can see', () => {
         }
         expect(seen.length).toBeGreaterThan(0)
         expect(visible).not.toMatch(/sessionToken|reservation|recoveryCode|passwordHash|"session"/)
+        // Nor does anything say which connection anyone is on.
+        for (const socket of [first.socket, second.socket, guest]) expect(visible).not.toContain(socket.id ?? 'no-id')
     })
 })

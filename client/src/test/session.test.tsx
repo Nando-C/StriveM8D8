@@ -2,7 +2,7 @@ import { act, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import {
-  RESERVATIONS_KEY, SESSION_KEY, connectAs, disconnect, fakeSocket, listedPeople, loggedInPayload, loginAs,
+  RESERVATIONS_KEY, SESSION_KEY, connectAs, disconnect, dm, fakeSocket, listedPeople, loggedInPayload, loginAs,
   messageBox, personButton, renderApp, reservations, secretFor, serverSays, stored, user,
 } from '@/test/harness'
 import { LOGIN_RETRY_MS } from '@/hooks/useChat'
@@ -29,7 +29,7 @@ describe('reconnecting', () => {
     expect(messageBox('bob')).toBeDisabled()
     expect(await screen.findByText('Signing back in as alice…')).toBeInTheDocument()
 
-    serverSays('loggedin', loggedInPayload('alice', [user('bob', 'bob-2'), user('carol')], 'token-2'))
+    serverSays('loggedin', loggedInPayload('alice', [user('bob'), user('carol')], 'token-2'))
     expect(messageBox('bob')).toBeEnabled()
     // The new snapshot replaced the old list.
     expect(listedPeople()).toEqual(['bob', 'carol'])
@@ -66,14 +66,14 @@ describe('reconnecting', () => {
     renderApp()
     const events = await loginAs('alice', [user('bob')])
     await events.click(personButton('bob'))
-    expect(fakeSocket.sent('getHistory')).toEqual([{ withUsername: 'bob' }])
+    expect(fakeSocket.sent('getHistory')).toEqual([{ conversationId: dm('alice', 'bob') }])
 
     disconnect()
     connectAs('socket-2')
     expect(fakeSocket.sent('getHistory')).toHaveLength(1)
     serverSays('loggedin', loggedInPayload('alice', [user('bob')], 'token-2'))
 
-    expect(fakeSocket.sent('getHistory')).toEqual([{ withUsername: 'bob' }, { withUsername: 'bob' }])
+    expect(fakeSocket.sent('getHistory')).toEqual([{ conversationId: dm('alice', 'bob') }, { conversationId: dm('alice', 'bob') }])
   })
 
   it('emits nothing but login while logged out: a chat picked offline loads after the next login', async () => {
@@ -90,7 +90,7 @@ describe('reconnecting', () => {
 
     serverSays('loggedin', loggedInPayload('alice', [user('bob'), user('carol')], 'token-2'))
     expect(fakeSocket.emitted.slice(before).map(entry => entry.event)).toEqual(['login', 'getHistory'])
-    expect(fakeSocket.sent('getHistory').at(-1)).toEqual({ withUsername: 'carol' })
+    expect(fakeSocket.sent('getHistory').at(-1)).toEqual({ conversationId: dm('alice', 'carol') })
   })
 
   it('returns to the form, with the reason, if logging back in is refused', async () => {

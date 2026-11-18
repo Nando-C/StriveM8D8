@@ -3,7 +3,7 @@ import createError from 'http-errors'
 import { isDatabaseReady } from './db.js'
 
 /** The socket protocol's version. A client built for another one should say so, not misbehave. */
-export const PROTOCOL_VERSION = 1
+export const PROTOCOL_VERSION = 2
 
 export const createRouter = ({ getOnlineUsers, settings }) => {
     const router = Router()

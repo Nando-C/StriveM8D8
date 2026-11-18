@@ -4,7 +4,7 @@ import createError from 'http-errors'
 import { createServer } from 'http'
 import { Server } from 'socket.io'
 import { registerSocketHandlers } from './sockets/index.js'
-import { createRouter } from './routes.js'
+import { PROTOCOL_VERSION, createRouter } from './routes.js'
 import { resolveSettings } from './settings.js'
 
 // Returns the origin part of a URL ("http://localhost:5173"), or null if it is not one.
@@ -60,6 +60,19 @@ export const createApp = (options = {}) => {
             const origin = req.headers.origin
             callback(null, !origin || allowedOrigins.includes(origin))
         },
+    })
+
+    // The client and the server are deployed from different hosts, minutes apart, so a
+    // page built for another version of the protocol will really turn up. It is refused
+    // at the door with a reason it can show ("reload"), instead of half-working.
+    io.use((socket, next) => {
+        if (socket.handshake.auth?.protocol === PROTOCOL_VERSION) {
+            next()
+            return
+        }
+        const error = new Error('Unsupported protocol version')
+        error.data = { code: 'protocol', protocol: PROTOCOL_VERSION }
+        next(error)
     })
 
     const { getOnlineUsers, runMaintenance, hasherStats } = registerSocketHandlers(io, settings)

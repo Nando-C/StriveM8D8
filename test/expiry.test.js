@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { Conversation, ensureConversationIndexes } from '../src/models/conversation.js'
 import { Message, ensureMessageIndexes } from '../src/models/message.js'
 import { connectTestDatabase, disconnectTestDatabase } from './helpers.js'
 
@@ -66,9 +67,38 @@ describe('message expiry', () => {
     it('still lets messages be saved and read with expiry on', async () => {
         await ensureMessageIndexes({ ttlHours: 24 })
 
-        await Message.create({ conversationKey: 'alice::bob', from: 'alice', to: 'bob', text: 'kept for a day' })
+        await Message.create({ conversationKey: 'dm:a::b', from: 'a', fromName: 'alice', text: 'kept for a day' })
 
         expect(await Message.countDocuments()).toBe(1)
         await Message.deleteMany({})
+    })
+})
+
+describe('conversation expiry', () => {
+    const expiry = async () => (await Conversation.collection.indexes()).find(index => index.name === 'conversation_expiry')
+    const memberIndex = async () => (await Conversation.collection.indexes()).find(index => 'members.userId' in index.key)
+
+    beforeAll(() => Conversation.init())
+    afterEach(() => ensureConversationIndexes())
+
+    it('follows the same rule as messages, counted from the last activity', async () => {
+        expect(await expiry()).toBeUndefined()
+
+        await ensureConversationIndexes({ ttlHours: 24 })
+        expect(await expiry()).toMatchObject({ key: { lastActivityAt: 1 }, expireAfterSeconds: 86_400 })
+
+        await ensureConversationIndexes({ ttlHours: 1 })
+        expect((await expiry()).expireAfterSeconds).toBe(3_600)
+    })
+
+    it.each([[undefined], [0]])('is switched off by %s, leaving the index that lists conversations alone', async ttlHours => {
+        const before = await memberIndex()
+        expect(before).toBeDefined()
+        await ensureConversationIndexes({ ttlHours: 24 })
+
+        await ensureConversationIndexes({ ttlHours })
+
+        expect(await expiry()).toBeUndefined()
+        expect(await memberIndex()).toEqual(before)
     })
 })

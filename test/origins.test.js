@@ -20,6 +20,7 @@ const canConnectFrom = origin => new Promise(resolve => {
     const socket = connectSocket(app.url, {
         transports: ['websocket'],
         reconnection: false,
+        auth: { protocol: 2 },
         extraHeaders: origin ? { Origin: origin } : {},
     })
     socket.once('connect', () => {

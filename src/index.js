@@ -2,6 +2,7 @@ import 'dotenv/config'
 import listEndpoints from "express-list-endpoints"
 import { createApp } from './app.js'
 import { connectDB, isDatabaseReady } from './db.js'
+import { ensureConversationIndexes } from './models/conversation.js'
 import { ensureMessageIndexes } from './models/message.js'
 import { settingsFromEnv } from './settings.js'
 
@@ -21,6 +22,8 @@ connectDB(process.env.MONGO_CONNECTION)
         const ttlHours = settings.messageTtlHours
         if (!isDatabaseReady() || ttlHours === undefined) return
         await ensureMessageIndexes({ ttlHours })
+        // A conversation lasts as long as its newest message does.
+        await ensureConversationIndexes({ ttlHours })
         console.log(ttlHours > 0 ? ` ✅  Messages expire after ${ttlHours} h` : " ✅  Message expiry is off")
     })
     .catch(error => console.error(" 🚫 Could not apply message expiry:", error.name))

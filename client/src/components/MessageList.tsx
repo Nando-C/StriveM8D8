@@ -1,17 +1,22 @@
-import { Fragment, useEffect, useRef, useState } from 'react'
+import { Fragment, useLayoutEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { Check, CircleAlert, LoaderCircle } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import type { Conversation, LocalMessage } from '@/lib/chatState'
+import type { Thread } from '@/lib/chatState'
+import type { LocalMessage } from '@/lib/messages'
+import { comparePositions } from '@/lib/positions'
 import { formatDay, formatTime, isSameDay } from '@/lib/format'
 import { fade, messageIn } from '@/lib/motion'
 import { cn } from '@/lib/utils'
 
 interface MessageListProps {
-  /** The other person in the conversation. */
-  counterpart: string
-  conversation: Conversation
+  /** What the conversation is called: the other person, or the group. */
+  title: string
+  thread: Thread
+  /** Ask for the messages before the oldest one shown. */
+  onLoadEarlier: () => void
 }
 
 function MessageStatus({ message }: { message: LocalMessage }) {
@@ -46,12 +51,11 @@ function MessageStatus({ message }: { message: LocalMessage }) {
 
 interface MessageProps {
   message: LocalMessage
-  counterpart: string
   /** Arrived while this list was on screen: ease it in. Otherwise it is simply there. */
   animateIn: boolean
 }
 
-function Message({ message, counterpart, animateIn }: MessageProps) {
+function Message({ message, animateIn }: MessageProps) {
   return (
     <motion.li
       variants={messageIn(message.own)}
@@ -59,7 +63,7 @@ function Message({ message, counterpart, animateIn }: MessageProps) {
       animate="visible"
       className={cn('flex flex-col gap-1', message.own ? 'items-end' : 'items-start')}
     >
-      <span className="sr-only">{message.own ? 'You' : counterpart}:</span>
+      <span className="sr-only">{message.own ? 'You' : message.fromName}:</span>
       <p
         className={cn(
           // wrap-anywhere: a long word with no spaces must wrap instead of widening the page.
@@ -96,30 +100,64 @@ function Message({ message, counterpart, animateIn }: MessageProps) {
   )
 }
 
-export function MessageList({ counterpart, conversation }: MessageListProps) {
+export function MessageList({ title, thread, onLoadEarlier }: MessageListProps) {
+  const root = useRef<HTMLDivElement>(null)
   const end = useRef<HTMLDivElement>(null)
-  const previousCount = useRef<number | null>(null)
+  const divider = useRef<HTMLLIElement>(null)
   // Messages that arrive after this moment animate in; history and anything already
   // there when the conversation was opened does not — a long conversation appears as
   // one block, never as a hundred staggered entrances.
   const [openedAt] = useState(() => Date.now())
-  const { messages, error } = conversation
+  const { messages, error, hasMore, loadingEarlier, unreadFrom } = thread
   const newest = messages.at(-1)?.key
+  const oldest = messages[0]?.key
 
-  // Keep the newest message in view: smoothly for a single new message, instantly when
-  // the conversation opens or a batch of history lands.
-  useEffect(() => {
-    const single = previousCount.current !== null && messages.length - previousCount.current === 1
+  // The first message from someone else after where reading left off gets the
+  // "New messages" line above it.
+  const firstUnread =
+    unreadFrom === undefined
+      ? undefined
+      : messages.find(
+          message =>
+            !message.own && message.id !== null && comparePositions({ ts: message.timestamp, id: message.id }, unreadFrom) > 0,
+        )?.key
+
+  const viewport = () => root.current?.querySelector<HTMLElement>('[data-slot=scroll-area-viewport]') ?? null
+  const seen = useRef<{ newest?: string; oldest?: string; count: number; height: number }>({ count: 0, height: 0 })
+
+  // Where to be after the list changes:
+  // - opening, or the first messages arriving: at the "New messages" line if there is one,
+  //   otherwise at the newest message;
+  // - a new message at the end: follow it (smoothly, if it is just the one);
+  // - earlier messages added above: stay exactly where the reader was.
+  // A layout effect, so that the last case is corrected before anything is painted.
+  useLayoutEffect(() => {
+    const before = seen.current
+    const scroller = viewport()
     const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    end.current?.scrollIntoView({ block: 'end', behavior: single && !reduceMotion ? 'smooth' : 'instant' })
-    previousCount.current = messages.length
-  }, [newest, messages.length])
+
+    if (before.count === 0 && messages.length > 0 && divider.current !== null) {
+      divider.current.scrollIntoView({ block: 'center', behavior: 'instant' })
+    } else if (newest !== before.newest || before.count === 0) {
+      const single = before.count > 0 && messages.length - before.count === 1
+      end.current?.scrollIntoView({ block: 'end', behavior: single && !reduceMotion ? 'smooth' : 'instant' })
+    } else if (oldest !== before.oldest && scroller !== null) {
+      scroller.scrollTop += scroller.scrollHeight - before.height
+    }
+    seen.current = { newest, oldest, count: messages.length, height: scroller?.scrollHeight ?? 0 }
+  }, [newest, oldest, messages.length])
 
   return (
     // The scroll area's inner wrapper is laid out as a table, which grows to fit its
     // widest content; forcing it to a block keeps everything within the viewport width.
-    <ScrollArea className="min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:!block">
+    <ScrollArea ref={root} className="min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:!block">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 p-4">
+        {hasMore && (
+          <Button variant="ghost" size="sm" className="self-center" onClick={onLoadEarlier} disabled={loadingEarlier}>
+            {loadingEarlier && <LoaderCircle aria-hidden="true" className="animate-spin" />}
+            {loadingEarlier ? 'Loading…' : 'Load earlier messages'}
+          </Button>
+        )}
         {error !== null && (
           <Alert variant="destructive">
             <AlertDescription>Could not load earlier messages: {error}</AlertDescription>
@@ -133,11 +171,11 @@ export function MessageList({ counterpart, conversation }: MessageListProps) {
             className="py-16 text-center text-sm text-muted-foreground"
           >
             <p className="font-medium text-foreground">No messages yet</p>
-            <p className="mt-1">Say hello to {counterpart} — your conversation is saved, so it will be here next time.</p>
+            <p className="mt-1">Say hello to {title} — your conversation is saved, so it will be here next time.</p>
           </motion.div>
         )}
         {/* role="log" makes screen readers announce messages as they are added. */}
-        <ul role="log" aria-label={`Conversation with ${counterpart}`} className="flex flex-col gap-3">
+        <ul role="log" aria-label={`Conversation with ${title}`} className="flex flex-col gap-3">
           {messages.map((message, index) => {
             const previous = messages[index - 1]
             const startsDay = previous === undefined || !isSameDay(previous.timestamp, message.timestamp)
@@ -148,9 +186,18 @@ export function MessageList({ counterpart, conversation }: MessageListProps) {
                     {formatDay(message.timestamp)}
                   </li>
                 )}
+                {message.key === firstUnread && (
+                  <li
+                    ref={divider}
+                    role="separator"
+                    aria-label="New messages"
+                    className="flex items-center gap-3 py-1 text-xs font-medium text-primary before:h-px before:flex-1 before:bg-primary/40 after:h-px after:flex-1 after:bg-primary/40"
+                  >
+                    New messages
+                  </li>
+                )}
                 <Message
                   message={message}
-                  counterpart={counterpart}
                   animateIn={message.arrivedAt !== null && message.arrivedAt >= openedAt}
                 />
               </Fragment>

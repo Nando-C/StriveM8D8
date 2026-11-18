@@ -3,6 +3,7 @@
 // reads them from the environment.
 
 export const SIGNUP_MODES = ['open', 'invite', 'closed']
+export const MEMBER_DIRECTORIES = ['online', 'all']
 
 const HOUR = 60 * 60_000
 
@@ -17,6 +18,8 @@ const DEFAULTS = Object.freeze({
     adminUsernames: [],
     /** The secret that registers those names. While unset, they cannot be registered. */
     bootstrapCode: null,
+    /** Who accounts are shown under People: whoever is `online`, or `all` accounts. */
+    memberDirectory: 'online',
     /** How many proxies in front of the server may be believed about the client's address. */
     trustedProxyHops: 0,
     /** undefined: not configured. 0: nothing expires. Positive: hours until data expires. */
@@ -37,6 +40,9 @@ export const resolveSettings = (options = {}) => {
     const settings = { ...DEFAULTS, ...options, limits: { ...DEFAULT_LIMITS, ...options.limits } }
     if (!SIGNUP_MODES.includes(settings.signupMode)) {
         throw new TypeError(`signupMode must be one of ${SIGNUP_MODES.join(', ')}`)
+    }
+    if (!MEMBER_DIRECTORIES.includes(settings.memberDirectory)) {
+        throw new TypeError(`memberDirectory must be one of ${MEMBER_DIRECTORIES.join(', ')}`)
     }
     settings.adminUsernames = [...settings.adminUsernames]
     settings.bootstrapCode = settings.bootstrapCode || null
@@ -65,6 +71,11 @@ export const settingsFromEnv = (env, warn = console.warn) => {
         warn(" ⚠️  SIGNUP_MODE is not one of open, invite, closed: sign-up is closed")
         settings.signupMode = 'closed'
     }
+
+    const directory = (env.MEMBER_DIRECTORY ?? '').trim()
+    if (MEMBER_DIRECTORIES.includes(directory)) settings.memberDirectory = directory
+    // An unreadable value lists nobody extra, which is the private side to err on.
+    else if (directory !== '') warn(" ⚠️  MEMBER_DIRECTORY is not one of online, all: only people who are online are listed")
 
     const hops = (env.TRUSTED_PROXY_HOPS ?? '').trim()
     if (hops !== '') {

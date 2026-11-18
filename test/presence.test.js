@@ -20,20 +20,25 @@ describe('login', () => {
         const reply = await login(alice, { username: '  alice ' })
 
         expect(reply.ok).toBe(true)
-        expect(sortedKeys(reply)).toEqual(['admin', 'id', 'kind', 'ok', 'onlineUsers', 'reservation', 'sessionToken', 'username'])
+        expect(sortedKeys(reply)).toEqual([
+            'admin', 'conversations', 'kind', 'ok', 'onlineUsers', 'reservation', 'sessionToken', 'userId', 'username',
+        ])
         expect(reply.kind).toBe('guest')
         expect(reply.admin).toBe(false)
         expect(reply.reservation).toEqual(expect.any(String))
         expect(reply.username).toBe('alice')
-        expect(reply.id).toBe(alice.id)
+        expect(reply.userId).toMatch(/^[0-9a-f-]{36}$/)
         expect(reply.sessionToken).toEqual(expect.any(String))
-        expect(reply.onlineUsers).toEqual([{ username: 'alice', id: alice.id }])
-        expect(await onlineUsers(app)).toEqual([{ username: 'alice', id: alice.id }])
+        expect(reply.conversations).toEqual([])
+        expect(reply.onlineUsers).toEqual([{ userId: reply.userId, username: 'alice', kind: 'guest' }])
+        expect(await onlineUsers(app)).toEqual(reply.onlineUsers)
+        // Nothing about a user says which connection they are on.
+        expect(JSON.stringify([reply, await onlineUsers(app)])).not.toContain(alice.id)
     })
 
     it('announces a new user to the others but not to the user themself', async () => {
         const alice = await app.client()
-        await login(alice, { username: 'alice' })
+        const aliceSession = await login(alice, { username: 'alice' })
         // Connected only after alice's login, so the only announcement it could see is its own.
         const bob = await app.client()
 
@@ -41,13 +46,14 @@ describe('login', () => {
         const seenByBob = record(bob, 'newLogin')
         const reply = await login(bob, { username: 'bob' })
 
-        expect(await announced).toEqual({ username: 'bob', id: bob.id })
+        expect(await announced).toEqual({ userId: reply.userId, username: 'bob', kind: 'guest' })
         await settle()
         expect(seenByBob).toEqual([])
         expect(reply.onlineUsers).toEqual([
-            { username: 'alice', id: alice.id },
-            { username: 'bob', id: bob.id },
+            { userId: aliceSession.userId, username: 'alice', kind: 'guest' },
+            { userId: reply.userId, username: 'bob', kind: 'guest' },
         ])
+        expect(JSON.stringify([await announced, reply.onlineUsers])).not.toContain(bob.id)
     })
 
     it('does not duplicate or re-announce a repeat login from the same socket', async () => {
@@ -107,7 +113,7 @@ describe('login', () => {
         // The per-connection token says which old connection to replace; it proves nothing.
         expect(await login(intruder, { username: 'alice', sessionToken: aliceSession.sessionToken }))
             .toEqual({ ok: false, message: 'Username already in use' })
-        expect(await onlineUsers(app)).toEqual([{ username: 'alice', id: alice.id }])
+        expect((await onlineUsers(app)).map(user => user.userId)).toEqual([aliceSession.userId])
     })
 
     it('does not let a logged-in socket switch to another username', async () => {
@@ -122,8 +128,7 @@ describe('login', () => {
         expect(reply).toEqual({ ok: false, message: 'Already logged in' })
         await settle()
         expect(seenByBob).toEqual([])
-        expect(await onlineUsers(app)).toContainEqual({ username: 'alice', id: alice.id })
-        expect(await onlineUsers(app)).toHaveLength(2)
+        expect((await onlineUsers(app)).map(user => user.username)).toEqual(['alice', 'bob'])
     })
 })
 
@@ -136,24 +141,25 @@ describe('session takeover', () => {
 
         const second = await app.client()
         const kicked = nextEvent(first, 'disconnect')
-        const announced = nextEvent(bob, 'newLogin')
+        const joinsSeenByBob = record(bob, 'newLogin')
         const leftSeenByBob = record(bob, 'userLeft')
         const reply = await login(second, { username: 'alice', reservation: firstSession.reservation })
 
         expect(reply.ok).toBe(true)
         // The secret is handed over once, when the name is first reserved.
         expect(reply).not.toHaveProperty('reservation')
-        expect(reply.id).toBe(second.id)
+        expect(reply.userId).toBe(firstSession.userId)
         expect(reply.sessionToken).not.toBe(firstSession.sessionToken)
         expect(await kicked).toBe('io server disconnect')
-        expect(await announced).toEqual({ username: 'alice', id: second.id })
 
         const users = await onlineUsers(app)
-        expect(users.filter(user => user.username === 'alice')).toEqual([{ username: 'alice', id: second.id }])
+        expect(users.filter(user => user.username === 'alice')).toHaveLength(1)
         expect(users).toHaveLength(2)
-        // Alice has not left: she is online under a new id, so nobody is told she went away.
+        // Alice never stopped being online as far as anyone else can tell: she is the
+        // same user on another connection, so nothing is announced either way.
         await settle()
         expect(leftSeenByBob).toEqual([])
+        expect(joinsSeenByBob).toEqual([])
     })
 
     it('keeps a guest to one connection: each new one replaces the last', async () => {
@@ -168,7 +174,8 @@ describe('session takeover', () => {
 
         expect(reply.ok).toBe(true)
         expect(await kicked).toBe('io server disconnect')
-        expect(await onlineUsers(app)).toEqual([{ username: 'alice', id: third.id }])
+        expect((await onlineUsers(app)).map(user => user.username)).toEqual(['alice'])
+        expect(app.io.sockets.sockets.has(third.id)).toBe(true)
     })
 })
 
@@ -177,17 +184,16 @@ describe('disconnect', () => {
         const alice = await app.client()
         const bob = await app.client()
         const carol = await app.client()
-        await login(alice, { username: 'alice' })
+        const { userId } = await login(alice, { username: 'alice' })
         await login(bob, { username: 'bob' })
         await login(carol, { username: 'carol' })
-        const aliceId = alice.id
 
         const toldBob = nextEvent(bob, 'userLeft')
         const toldCarol = nextEvent(carol, 'userLeft')
         alice.close()
 
-        expect(await toldBob).toEqual({ id: aliceId })
-        expect(await toldCarol).toEqual({ id: aliceId })
+        expect(await toldBob).toEqual({ userId })
+        expect(await toldCarol).toEqual({ userId })
     })
 
     it('says nothing when a socket that never logged in disconnects', async () => {
@@ -195,19 +201,18 @@ describe('disconnect', () => {
         const visitor = await app.client()
         const lurker = await app.client()
         await login(alice, { username: 'alice' })
-        await login(visitor, { username: 'visitor' })
+        const { userId: visitorId } = await login(visitor, { username: 'visitor' })
         const leftSeenByAlice = record(alice, 'userLeft')
 
         lurker.close()
         // A logged-in user leaving afterwards is the signal that the server has
         // processed the earlier disconnect too: only this one may be announced.
-        const visitorId = visitor.id
         const toldAlice = nextEvent(alice, 'userLeft')
         visitor.close()
         await toldAlice
         await settle()
 
-        expect(leftSeenByAlice).toEqual([{ id: visitorId }])
+        expect(leftSeenByAlice).toEqual([{ userId: visitorId }])
     })
 
     it('removes the user from the online list, and keeps the name for them', async () => {
@@ -218,7 +223,7 @@ describe('disconnect', () => {
 
         alice.close()
 
-        await expect.poll(() => onlineUsers(app)).toEqual([{ username: 'bob', id: bob.id }])
+        await expect.poll(async () => (await onlineUsers(app)).map(user => user.username)).toEqual(['bob'])
         const newcomer = await app.client()
         expect(await login(newcomer, { username: 'alice' }))
             .toEqual({ ok: false, message: 'Username already in use' })
@@ -227,14 +232,14 @@ describe('disconnect', () => {
 })
 
 describe('REST', () => {
-    it('serves /online-users as { username, id } entries only', async () => {
+    it('serves /online-users as { userId, username, kind } entries only', async () => {
         const alice = await app.client()
-        await login(alice, { username: 'alice' })
+        const { userId } = await login(alice, { username: 'alice' })
 
         const response = await getJson(`${app.url}/online-users`)
 
         expect(response.status).toBe(200)
-        expect(response.body).toEqual({ onlineUsers: [{ username: 'alice', id: alice.id }] })
+        expect(response.body).toEqual({ onlineUsers: [{ userId, username: 'alice', kind: 'guest' }] })
     })
 
     it('reports itself healthy, with the database up', async () => {
@@ -250,5 +255,22 @@ describe('REST', () => {
         expect(response.status).toBe(404)
         expect(response.contentType).toMatch(/json/)
         expect(response.body).toEqual({ message: 'Not Found' })
+    })
+})
+
+describe('protocol version', () => {
+    it('refuses a client built for another version, with a reason it can act on', async () => {
+        for (const protocol of [1, 3, '2', null]) {
+            const error = await app.client({ protocol }).then(() => null, refusal => refusal)
+
+            expect(error).not.toBeNull()
+            expect(error.message).toBe('Unsupported protocol version')
+            expect(error.data).toEqual({ code: 'protocol', protocol: 2 })
+        }
+        expect(app.io.sockets.sockets.size).toBe(0)
+    })
+
+    it('says which version it speaks before anyone connects', async () => {
+        expect((await getJson(`${app.url}/config`)).body.protocol).toBe(2)
     })
 })

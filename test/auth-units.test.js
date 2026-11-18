@@ -185,6 +185,7 @@ describe('settings', () => {
 
         expect(settings).toMatchObject({
             demoBot: false, signupMode: 'open', guests: true, adminUsernames: [], bootstrapCode: null, trustedProxyHops: 0,
+            memberDirectory: 'online',
         })
         expect(settings.messageTtlHours).toBeUndefined()
         expect(settingsFromEnv({})).toEqual({
@@ -197,12 +198,12 @@ describe('settings', () => {
 
         const settings = settingsFromEnv({
             SIGNUP_MODE: 'invite', GUESTS: 'false', ADMIN_USERNAMES: ' nando , ana ', SIGNUP_BOOTSTRAP_CODE: 'a-code',
-            TRUSTED_PROXY_HOPS: '1', MESSAGE_TTL_HOURS: '0', DEMO_BOT: 'false',
+            TRUSTED_PROXY_HOPS: '1', MESSAGE_TTL_HOURS: '0', DEMO_BOT: 'false', MEMBER_DIRECTORY: 'all',
         }, warn)
 
         expect(settings).toEqual({
             demoBot: false, guests: false, adminUsernames: ['nando', 'ana'], bootstrapCode: 'a-code',
-            signupMode: 'invite', trustedProxyHops: 1, messageTtlHours: 0,
+            signupMode: 'invite', trustedProxyHops: 1, messageTtlHours: 0, memberDirectory: 'all',
         })
         expect(warn).not.toHaveBeenCalled()
     })
@@ -210,17 +211,20 @@ describe('settings', () => {
     it('warns by name about a value it cannot read, and falls back to the safe side', () => {
         const warn = vi.fn()
 
-        const settings = settingsFromEnv({ SIGNUP_MODE: 'opne', TRUSTED_PROXY_HOPS: 'one', MESSAGE_TTL_HOURS: '-3' }, warn)
+        const settings = settingsFromEnv({ SIGNUP_MODE: 'opne', TRUSTED_PROXY_HOPS: 'one', MESSAGE_TTL_HOURS: '-3', MEMBER_DIRECTORY: 'everyone' }, warn)
 
         // A typo must not open a deployment that was meant to be by invitation.
         expect(settings.signupMode).toBe('closed')
         expect(settings).not.toHaveProperty('trustedProxyHops')
         expect(settings).not.toHaveProperty('messageTtlHours')
-        expect(warn).toHaveBeenCalledTimes(3)
-        expect(JSON.stringify(warn.mock.calls)).not.toMatch(/opne|"one"|-3/)
+        // Listing fewer people is the private side to err on.
+        expect(settings).not.toHaveProperty('memberDirectory')
+        expect(warn).toHaveBeenCalledTimes(4)
+        expect(JSON.stringify(warn.mock.calls)).not.toMatch(/opne|"one"|-3|everyone/)
     })
 
     it('rejects an unknown sign-up mode passed in code', () => {
         expect(() => resolveSettings({ signupMode: 'maybe' })).toThrow(TypeError)
+        expect(() => resolveSettings({ memberDirectory: 'some' })).toThrow(TypeError)
     })
 })

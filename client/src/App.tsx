@@ -16,6 +16,8 @@ function App() {
   const chat = useChat()
   const config = useServerConfig()
 
+  if (chat.outdated) return <OutdatedNotice />
+
   // The login form and the chat cross-fade into each other.
   return (
     <AnimatePresence mode="wait" initial={false}>
@@ -41,19 +43,40 @@ function App() {
   )
 }
 
+/** The server speaks a newer version of the protocol than this page was built for. */
+function OutdatedNotice() {
+  return (
+    <main className="flex min-h-svh items-center justify-center bg-muted/40 p-4">
+      <div role="alert" className="flex max-w-sm flex-col items-center gap-4 rounded-xl border bg-card p-6 text-center">
+        <div className="flex size-10 items-center justify-center rounded-xl bg-primary text-primary-foreground">
+          <MessagesSquare aria-hidden="true" className="size-5" />
+        </div>
+        <div className="flex flex-col gap-1">
+          <h1 className="font-medium">A new version is available</h1>
+          <p className="text-sm text-muted-foreground">
+            Strive Chat was updated while this page was open. Reload to carry on — nothing is lost.
+          </p>
+        </div>
+        <Button onClick={() => window.location.reload()}>Reload</Button>
+      </div>
+    </main>
+  )
+}
+
 function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat>; config: ServerConfig; username: string }) {
 
+  const open = chat.open
   const blockedReason = !chat.connected
     ? 'Disconnected'
     : chat.phase !== 'loggedIn'
       ? 'Signing in…'
-      : !chat.selectedOnline
-        ? `${chat.selected} is offline`
+      : open?.counterpart?.gone
+        ? `${open.title} is no longer here`
         : null
 
   // Announce messages that arrive in a conversation that is not on screen; the open
   // conversation announces its own through the message list.
-  const offscreen = chat.lastIncoming !== null && chat.lastIncoming.from !== chat.selected ? chat.lastIncoming : null
+  const offscreen = chat.lastIncoming !== null && chat.lastIncoming.conversationId !== chat.selected ? chat.lastIncoming : null
 
   return (
     <div className="flex h-svh flex-col">
@@ -65,7 +88,7 @@ function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat
         onReconnect={chat.reconnect}
       />
       <p role="status" aria-live="polite" className="sr-only">
-        {offscreen !== null && <span key={offscreen.id}>New message from {offscreen.from}</span>}
+        {offscreen !== null && <span key={offscreen.id}>New message from {offscreen.fromName}</span>}
       </p>
       <div className="flex min-h-0 flex-1">
         {/* On a phone the list and the conversation are separate views; from md up they sit side by side. */}
@@ -80,15 +103,17 @@ function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat
             onLogout: chat.logout,
             onDeleted: chat.forget,
           }}
-          users={chat.users}
+          chats={chat.chats}
+          people={chat.people}
+          listsEveryone={chat.listsEveryone}
           selected={chat.selected}
-          selectedOnline={chat.selectedOnline}
-          conversations={chat.conversations}
-          onSelect={chat.selectConversation}
-          className={cn('w-full md:w-72 md:shrink-0', chat.selected !== null && 'hidden md:flex')}
+          selectedUserId={open?.counterpart?.userId ?? null}
+          onSelectChat={chat.selectConversation}
+          onSelectPerson={chat.openChatWith}
+          className={cn('w-full md:w-72 md:shrink-0', open !== null && 'hidden md:flex')}
         />
-        <main className={cn('min-w-0 flex-1 flex-col', chat.selected === null ? 'hidden md:flex' : 'flex')}>
-          {chat.selected === null ? (
+        <main className={cn('min-w-0 flex-1 flex-col', open === null ? 'hidden md:flex' : 'flex')}>
+          {open === null ? (
             <motion.div
               variants={fade}
               initial="hidden"
@@ -100,16 +125,16 @@ function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat
               </div>
               <h1 className="font-medium">Your conversations</h1>
               <p className="text-sm text-muted-foreground">
-                {chat.users.length === 0
+                {chat.people.length === 0 && chat.chats.length === 0
                   ? 'Nobody else is online yet. Open this page in a second tab and join with another name to try it out.'
-                  : 'Pick someone from the list to start chatting. Messages are saved, so the conversation will still be here when you come back.'}
+                  : 'Pick a chat or a person from the list. Messages are saved and delivered even if the other person is away, so the conversation will be here when either of you comes back.'}
               </p>
             </motion.div>
           ) : (
             // Keyed by the person: switching conversations fades the new one in. There is no
             // exit animation, so the switch itself is never held up.
             <motion.div
-              key={chat.selected}
+              key={open.id}
               variants={fade}
               initial="hidden"
               animate="visible"
@@ -123,18 +148,27 @@ function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat
                   onClick={chat.closeConversation}
                 >
                   <ArrowLeft aria-hidden="true" />
-                  <span className="sr-only">Back to people</span>
+                  <span className="sr-only">Back to chats</span>
                 </Button>
-                <UserAvatar username={chat.selected} online={chat.selectedOnline} className="size-9" />
+                <UserAvatar username={open.title} online={open.online ?? undefined} className="size-9" />
                 <div className="min-w-0">
-                  <h1 className="truncate font-medium">{chat.selected}</h1>
-                  <p className="text-xs text-muted-foreground">{chat.selectedOnline ? 'Online' : 'Offline'}</p>
+                  <h1 className="truncate font-medium">{open.title}</h1>
+                  <p className="text-xs text-muted-foreground">
+                    {open.counterpart?.gone
+                      ? 'No longer here'
+                      : [
+                          open.kind === 'guest' ? 'Guest' : open.kind === 'bot' ? 'Bot' : null,
+                          open.online === null ? null : open.online ? 'Online' : 'Offline — they will see your messages when they are back',
+                        ]
+                          .filter(part => part !== null)
+                          .join(' · ')}
+                  </p>
                 </div>
               </header>
-              <MessageList key={chat.selected} counterpart={chat.selected} conversation={chat.conversation} />
+              <MessageList key={open.id} title={open.title} thread={chat.thread} onLoadEarlier={chat.loadEarlier} />
               <MessageComposer
-                key={`composer-${chat.selected}`}
-                recipient={chat.selected}
+                key={`composer-${open.id}`}
+                recipient={open.title}
                 canSend={chat.canSend}
                 blockedReason={blockedReason}
                 onSend={chat.sendMessage}
