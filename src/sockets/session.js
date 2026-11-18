@@ -44,6 +44,7 @@ const RATE_LIMITS = {
 const IN_USE = 'Username already in use'
 const RESERVED = 'That name is reserved'
 const STARTING = 'Service is starting, try again'
+const TOO_MANY_DEVICES = 'Too many devices connected at once'
 const SESSION_ENDED = 'Your session has ended — sign in again'
 const WRONG_PASSWORD = 'Wrong username or password'
 const WRONG_RECOVERY = 'Wrong username or recovery code'
@@ -106,19 +107,38 @@ export const createSessionHandlers = ({ io, presence, settings, rateLimiter, onI
     // before the first write. Cached by Mongoose after the first call.
     const indexesReady = () => Promise.all([Identity.init(), Session.init(), Invitation.init()])
 
-    /** Guards a password or recovery-code check for one (address, username). */
-    const guessGuard = (socket, username) => {
+    /**
+     * Runs one password or recovery-code check for an (address, username), under the
+     * guessing limits. `attempt` resolves to something truthy when the guess was right;
+     * that is what this resolves to as well. The attempt is counted from the moment it
+     * starts, not from when it fails: the check is slow on purpose, and guesses sent all
+     * at once must not all get in before the first has been counted.
+     */
+    const checkGuess = async (socket, username, attempt) => {
         const address = addressOf(socket)
         const pair = `${address}|${username}`
-        const wait = Math.max(failuresByAddress.retryAfter(address), failuresByPair.retryAfter(pair))
-        if (wait > 0) refuse(`Too many attempts. Try again in ${waitText(wait)}`, { retryAfterMs: wait })
-        return {
-            failed: () => {
-                failuresByAddress.fail(address)
-                failuresByPair.fail(pair)
-            },
+        const tooMany = wait => refuse(`Too many attempts. Try again in ${waitText(wait)}`, { retryAfterMs: wait })
+
+        const addressWait = failuresByAddress.begin(address)
+        if (addressWait > 0) tooMany(addressWait)
+        const pairWait = failuresByPair.begin(pair)
+        if (pairWait > 0) {
+            failuresByAddress.end(address, { failed: false })
+            tooMany(pairWait)
+        }
+
+        // Something that goes wrong while checking (the database, a full hashing queue)
+        // is not a wrong guess: the attempt is released without being counted.
+        let failed = false
+        try {
+            const result = await attempt()
+            failed = !result
             // The address keeps its count: one right answer must not reset guessing at other names.
-            passed: () => failuresByPair.clear(pair),
+            if (result) failuresByPair.clear(pair)
+            return result
+        } finally {
+            failuresByAddress.end(address, { failed })
+            failuresByPair.end(pair, { failed })
         }
     }
 
@@ -202,7 +222,7 @@ export const createSessionHandlers = ({ io, presence, settings, rateLimiter, onI
             if (undoOnFailure) presence.detach(socket.id)
             throw error
         }
-        if (!socket.connected) return
+        if (!socket.connected) return false
         socket.emit('loggedin', {
             userId: user.userId,
             username: user.username,
@@ -214,6 +234,7 @@ export const createSessionHandlers = ({ io, presence, settings, rateLimiter, onI
             ...(members === undefined ? {} : { members }),
             ...extra,
         })
+        return true
     }
 
     // ---------- login
@@ -251,13 +272,29 @@ export const createSessionHandlers = ({ io, presence, settings, rateLimiter, onI
         } else {
             await Identity.updateOne({ userId: identity.userId }, { lastSeenAt: new Date() })
         }
-        if (!socket.connected) return
+        // A name reserved a moment ago whose secret never reaches the browser is a name
+        // nobody can ever use — its own owner included, until it lapses. So if this login
+        // does not get as far as delivering the secret, the reservation is undone.
+        const undoReservation = async () => {
+            if (reservation === null) return
+            presence.detach(socket.id)
+            await Identity.deleteOne({ userId: identity.userId, kind: 'guest', secretHash: identity.secretHash }).catch(() => {})
+        }
+        if (!socket.connected) {
+            await undoReservation()
+            return
+        }
 
         // A guest holds one connection: coming back on a new one takes over from the old.
         const online = presence.users.get(identity.userId)
         const replaceSocketId = online ? online.sockets.keys().next().value ?? null : null
         const { user, sessionToken } = presence.attach(socket, identity, { replaceSocketId })
-        await sendLoggedIn(socket, user, sessionToken, reservation === null ? {} : { reservation })
+        let delivered = false
+        try {
+            delivered = await sendLoggedIn(socket, user, sessionToken, reservation === null ? {} : { reservation })
+        } finally {
+            if (!delivered) await undoReservation()
+        }
     }
 
     // Shared end of both account logins. `deviceSession` is the stored session being
@@ -271,18 +308,36 @@ export const createSessionHandlers = ({ io, presence, settings, rateLimiter, onI
             ? [...online.sockets].find(([, entry]) => entry.sessionToken === payload.sessionToken)?.[0] ?? null
             : null
         if (online && online.sockets.size - (replaceSocketId === null ? 0 : 1) >= MAX_SOCKETS_PER_ACCOUNT) {
-            refuse('Too many devices connected at once')
+            refuse(TOO_MANY_DEVICES)
         }
 
         const created = deviceSession === null ? await createDeviceSession(identity.userId, payload.deviceLabel) : null
         const deviceSessionId = created?.deviceSessionId ?? deviceSession._id.toString()
         await Identity.updateOne({ userId: identity.userId }, { lastSeenAt: new Date() })
 
-        if (wasRevokedSince(startedAt, identity.userId, deviceSessionId)) refuse(SESSION_ENDED, { sessionEnded: true })
-        if (!socket.connected) {
-            // Nobody received the new session's token, so nobody can ever use it.
+        // From here to `attach` nothing waits, so what is checked now still holds then.
+        // A session created above that will not be handed over is removed again: nobody
+        // received its token, so nobody could ever use it, and it would only sit in the
+        // account's list of devices.
+        const abandon = async () => {
             if (created) await Session.deleteOne({ _id: deviceSessionId })
+        }
+        if (wasRevokedSince(startedAt, identity.userId, deviceSessionId)) {
+            await abandon()
+            // The password was changed or reset, or this device signed out, while this
+            // login was under way: whatever it proved is no longer good enough.
+            refuse(created ? WRONG_PASSWORD : SESSION_ENDED, created ? {} : { sessionEnded: true })
+        }
+        if (!socket.connected) {
+            await abandon()
             return
+        }
+        // Counted again: several logins that started together all saw room for themselves.
+        const nowOnline = presence.users.get(identity.userId)
+        const replacing = nowOnline?.sockets.has(replaceSocketId) ? 1 : 0
+        if (nowOnline && nowOnline.sockets.size - replacing >= MAX_SOCKETS_PER_ACCOUNT) {
+            await abandon()
+            refuse(TOO_MANY_DEVICES)
         }
         const { user, sessionToken } = presence.attach(socket, identity, { deviceSessionId, replaceSocketId })
         await sendLoggedIn(socket, user, sessionToken, created ? { session: created.token } : {})
@@ -291,17 +346,14 @@ export const createSessionHandlers = ({ io, presence, settings, rateLimiter, onI
     const loginWithPassword = async (socket, username, payload, startedAt) => {
         if (typeof payload.password !== 'string' || payload.password.length > MAX_PASSWORD_LENGTH) refuse(WRONG_PASSWORD)
         requireDatabase()
-        const guard = guessGuard(socket, username)
-
-        const identity = await Identity.findOne({ username, kind: 'account' }).lean()
-        // Verified even when there is no such account, so both cases take the same time
-        // and get the same answer.
-        const matches = await hasher.verify(payload.password, identity?.passwordHash ?? null)
-        if (!identity || !matches) {
-            guard.failed()
-            refuse(WRONG_PASSWORD)
-        }
-        guard.passed()
+        const identity = await checkGuess(socket, username, async () => {
+            const found = await Identity.findOne({ username, kind: 'account' }).lean()
+            // Verified even when there is no such account, so both cases take the same time
+            // and get the same answer.
+            const matches = await hasher.verify(payload.password, found?.passwordHash ?? null)
+            return found && matches ? found : null
+        })
+        if (!identity) refuse(WRONG_PASSWORD)
         await completeAccountLogin(socket, identity, payload, startedAt, null)
     }
 
@@ -428,15 +480,12 @@ export const createSessionHandlers = ({ io, presence, settings, rateLimiter, onI
             refuse(WRONG_RECOVERY)
         }
         if (!isPassword(payload.newPassword)) refuse(PASSWORD_RULE)
-        const guard = guessGuard(socket, username)
-
-        const identity = await Identity.findOne({ username, kind: 'account' }).lean()
-        const matches = await hasher.verify(normaliseRecoveryCode(payload.recoveryCode), identity?.recoveryHash ?? null)
-        if (!identity || !matches) {
-            guard.failed()
-            refuse(WRONG_RECOVERY)
-        }
-        guard.passed()
+        const identity = await checkGuess(socket, username, async () => {
+            const found = await Identity.findOne({ username, kind: 'account' }).lean()
+            const matches = await hasher.verify(normaliseRecoveryCode(payload.recoveryCode), found?.recoveryHash ?? null)
+            return found && matches ? found : null
+        })
+        if (!identity) refuse(WRONG_RECOVERY)
 
         // A recovery code works once: a new one replaces it.
         const recoveryCode = newRecoveryCode()
@@ -452,14 +501,11 @@ export const createSessionHandlers = ({ io, presence, settings, rateLimiter, onI
     // Checks the signed-in account's own password, with the same guessing limits as sign-in.
     const confirmPassword = async (socket, user, password) => {
         if (typeof password !== 'string' || password.length > MAX_PASSWORD_LENGTH) refuse('Wrong password')
-        const guard = guessGuard(socket, user.username)
-        const identity = await Identity.findOne({ userId: user.userId, kind: 'account' }).lean()
-        const matches = await hasher.verify(password, identity?.passwordHash ?? null)
-        if (!identity || !matches) {
-            guard.failed()
-            refuse('Wrong password')
-        }
-        guard.passed()
+        const right = await checkGuess(socket, user.username, async () => {
+            const identity = await Identity.findOne({ userId: user.userId, kind: 'account' }).lean()
+            return Boolean(identity) && await hasher.verify(password, identity.passwordHash ?? null)
+        })
+        if (!right) refuse('Wrong password')
     }
 
     const changePassword = async ({ socket, user, entry, payload }) => {
@@ -468,6 +514,9 @@ export const createSessionHandlers = ({ io, presence, settings, rateLimiter, onI
 
         const passwordHash = await hasher.hash(payload.newPassword)
         await Identity.updateOne({ userId: user.userId }, { passwordHash })
+        // A sign-in with the old password that is still being completed must not finish
+        // after this: only this connection's own session carries on.
+        revokedAt.set(`u:${user.userId}`, Date.now())
         // Every other device is signed out; this one carries on.
         await endDeviceSessions(
             user.userId,

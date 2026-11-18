@@ -23,6 +23,14 @@ export const createPresence = (io, { demoBot = false } = {}) => {
     const publicUser = user => ({ userId: user.userId, username: user.username, kind: user.kind })
     const getOnlineUsers = () => [...users.values()].map(publicUser)
 
+    // Who is online is told only to sockets that are logged in as somebody. A connection
+    // that never logged in learns nothing: on a deployment without guests it would
+    // otherwise be handed every member's name just for connecting.
+    const tellLoggedIn = (event, payload, { except = null } = {}) => {
+        const sockets = [...bySocket.keys()].filter(socketId => !except?.has(socketId))
+        if (sockets.length > 0) io.to(sockets).emit(event, payload)
+    }
+
     /**
      * Records `socket` as a connection of `identity`, and announces the user if they were
      * not online already. `replaceSocketId` names one of the user's own sockets that this
@@ -50,7 +58,7 @@ export const createPresence = (io, { demoBot = false } = {}) => {
         user.sockets.set(socket.id, { sessionToken, deviceSessionId })
         bySocket.set(socket.id, user)
 
-        if (!wasOnline) io.except([...user.sockets.keys()]).emit('newLogin', publicUser(user))
+        if (!wasOnline) tellLoggedIn('newLogin', publicUser(user), { except: user.sockets })
         return { user, sessionToken }
     }
 
@@ -66,13 +74,13 @@ export const createPresence = (io, { demoBot = false } = {}) => {
 
         if (user.sockets.size === 0) {
             users.delete(user.userId)
-            io.except(socketId).emit('userLeft', { userId: user.userId })
+            tellLoggedIn('userLeft', { userId: user.userId })
         }
         return user
     }
 
     /** A connected user's kind changed (a guest became an account): everyone's entry for them is replaced. */
-    const announceChange = user => io.emit('newLogin', publicUser(user))
+    const announceChange = user => tellLoggedIn('newLogin', publicUser(user))
 
     /**
      * Ends connections on purpose: tells each socket why (`sessionRevoked`), forgets it and
@@ -89,8 +97,5 @@ export const createPresence = (io, { demoBot = false } = {}) => {
         }
     }
 
-    /** Every socket that is logged in as somebody. */
-    const loggedInSockets = () => [...bySocket.keys()]
-
-    return { users, bySocket, getOnlineUsers, publicUser, attach, detach, revoke, announceChange, loggedInSockets }
+    return { users, bySocket, getOnlineUsers, publicUser, attach, detach, revoke, announceChange }
 }

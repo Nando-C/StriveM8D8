@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { conversationsFor } from '../src/conversations.js'
 import { Conversation } from '../src/models/conversation.js'
 import { Message } from '../src/models/message.js'
@@ -26,7 +26,7 @@ const seed = async (alice, bob, count, createdAt) => {
         { $setOnInsert: { kind: 'direct', members: [alice, bob].map(({ userId, username }) => ({ userId, username })) } },
         { upsert: true },
     )
-    return Message.insertMany(
+    const seeded = await Message.insertMany(
         Array.from({ length: count }, (_unused, index) => ({
             conversationKey: id,
             from: index % 2 ? bob.userId : alice.userId,
@@ -35,6 +35,13 @@ const seed = async (alice, bob, count, createdAt) => {
             createdAt: createdAt(index),
         })),
     )
+    // As sending would have left it: the conversation knows its newest message.
+    const last = seeded.reduce((newest, message) =>
+        (message.createdAt > newest.createdAt || (+message.createdAt === +newest.createdAt && message.id > newest.id) ? message : newest))
+    await Conversation.updateOne({ _id: id }, {
+        $set: { lastMessage: { id: last.id, from: last.from, fromName: last.fromName, preview: last.text, timestamp: last.createdAt.getTime() } },
+    })
+    return seeded
 }
 
 const UNKNOWN = 'Unknown conversation'
@@ -338,6 +345,26 @@ describe('read positions', () => {
             expect(await markRead(bob.socket, dm(alice, bob), upTo)).toEqual({ ok: false, message: 'Invalid position' })
         }
         expect(await markRead(await app.client(), dm(alice, bob), positionOf(ack))).toEqual({ ok: false, message: 'Not logged in' })
+    })
+
+    it('are not counted with a query for conversations that have nothing new in them', async () => {
+        const { alice, bob } = await twoUsers()
+        // Ten conversations alice has read to the end, and one with something new.
+        for (let index = 0; index < 10; index++) {
+            const other = await join(app, `friend-${index}`)
+            const ack = await send(other.socket, messageTo(dm(alice, other), 'read already'))
+            await markRead(alice.socket, dm(alice, other), positionOf(ack))
+            other.socket.close()
+        }
+        await send(bob.socket, messageTo(dm(alice, bob), 'new'))
+        const counts = vi.spyOn(Message, 'countDocuments')
+
+        const conversations = await conversationsFor(alice.userId)
+
+        expect(conversations).toHaveLength(11)
+        expect(conversations.map(conversation => conversation.unreadCount).sort()).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
+        expect(counts).toHaveBeenCalledTimes(1)
+        counts.mockRestore()
     })
 
     it('cap the unread count shown at 99', async () => {

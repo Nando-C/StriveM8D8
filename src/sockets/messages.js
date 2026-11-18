@@ -115,25 +115,33 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
         })
         const position = positionOf(saved)
 
-        // The preview only ever moves forward, even if two saves finish out of order.
-        const updated = await Conversation.findOneAndUpdate(
-            {
-                _id: conversation._id,
-                $or: [{ 'lastMessage.timestamp': { $lte: position.ts } }, { lastMessage: null }],
-            },
-            {
-                $set: {
-                    lastMessage: {
-                        id: position.id, from: author.userId, fromName: author.username,
-                        preview: previewOf(text), timestamp: position.ts,
-                    },
-                    lastActivityAt: saved.createdAt,
+        // From here on the message exists. Nothing below may turn that into a reported
+        // failure: the sender would send it again, and both copies would be in history.
+        // If the bookkeeping fails it is logged, and corrects itself with the next message.
+        let updated = null
+        try {
+            // The preview only ever moves forward, even if two saves finish out of order.
+            updated = await Conversation.findOneAndUpdate(
+                {
+                    _id: conversation._id,
+                    $or: [{ 'lastMessage.timestamp': { $lte: position.ts } }, { lastMessage: null }],
                 },
-            },
-            { returnDocument: 'after' },
-        ).lean()
-        // Whoever wrote a message has read everything up to it.
-        await advancePosition(conversation._id, author.userId, 'readUpTo', position)
+                {
+                    $set: {
+                        lastMessage: {
+                            id: position.id, from: author.userId, fromName: author.username,
+                            preview: previewOf(text), timestamp: position.ts,
+                        },
+                        lastActivityAt: saved.createdAt,
+                    },
+                },
+                { returnDocument: 'after' },
+            ).lean()
+            // Whoever wrote a message has read everything up to it.
+            await advancePosition(conversation._id, author.userId, 'readUpTo', position)
+        } catch (error) {
+            console.error("failed to update a conversation after saving a message:", error.name)
+        }
 
         for (const member of conversation.members) {
             const sockets = socketsOf(member.userId).filter(id => id !== exceptSocketId)
@@ -142,7 +150,7 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
         // A conversation nobody has seen before is then described to each member in full
         // (who is in it, and their own unread count). It follows the message on purpose:
         // whatever a client worked out from the message alone, this replaces.
-        if (created) await tellMembers(updated ?? conversation)
+        if (created) await tellMembers(updated ?? conversation).catch(error => console.error("failed to describe a new conversation:", error.name))
         return saved
     }
 

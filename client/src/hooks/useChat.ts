@@ -89,8 +89,12 @@ export const useChat = () => {
   // The socket id a login was last emitted on, so one connection logs in once even when
   // React StrictMode runs the effect twice.
   const loginSentOn = useRef<string | null>(null)
+  // Whether an answer to a login is still wanted. Signing out while one is on its way
+  // withdraws it: the answer, when it comes, must not sign the user back in.
+  const awaitingLogin = useRef(false)
 
   const emitLogin = useCallback((payload: LoginPayload) => {
+    awaitingLogin.current = true
     loginSentOn.current = socket.id ?? null
     dispatch({ type: 'loginRequested' })
     socket.emit('login', payload)
@@ -134,6 +138,13 @@ export const useChat = () => {
 
     const onLoggedIn = (payload: LoggedInPayload) => {
       clearTimeout(retryTimer)
+      if (!awaitingLogin.current) {
+        // The user signed out while this login was under way. The server now has this
+        // connection logged in (and, after a password, a new device session): undo that.
+        void ask('logout', {})
+        return
+      }
+      awaitingLogin.current = false
       session.current = { username: payload.username, sessionToken: payload.sessionToken, kind: payload.kind }
       saveSession(session.current)
       // After a password sign-in: this device's session, for every later visit and tab.
@@ -144,6 +155,8 @@ export const useChat = () => {
       dispatch({ type: 'loggedIn', payload })
     }
     const onLoginError = ({ message, retryable, sessionEnded }: LoginErrorPayload) => {
+      // An answer to a login that was withdrawn by signing out: nothing to show for it.
+      if (!awaitingLogin.current) return
       // The device session is gone for good; asking with it again would only fail again.
       if (sessionEnded === true) clearAccount()
       // Logging back in by itself, and the server only said "not yet" (it is still
@@ -157,6 +170,7 @@ export const useChat = () => {
         }, LOGIN_RETRY_MS)
         return
       }
+      awaitingLogin.current = false
       session.current = null
       loginSentOn.current = null
       clearSession()
@@ -217,6 +231,10 @@ export const useChat = () => {
       leftOnPageHide = false
       socket.connect()
     }
+    // Whether anyone is looking: a conversation open in a hidden tab is not being read.
+    const onVisibilityChange = () => dispatch({ type: 'attentionChanged', attentive: document.visibilityState === 'visible' })
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    onVisibilityChange()
     window.addEventListener('pagehide', onPageHide)
     window.addEventListener('pageshow', onPageShow)
 
@@ -241,6 +259,7 @@ export const useChat = () => {
       socket.off('message', onMessage)
       socket.off('history', onHistory)
       socket.off('historyError', onHistoryError)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
       window.removeEventListener('pagehide', onPageHide)
       window.removeEventListener('pageshow', onPageShow)
     }
@@ -266,17 +285,18 @@ export const useChat = () => {
   const newestTimestamp = newestConfirmed?.timestamp ?? 0
   const reported = useRef(new Map<string, Position>())
   useLayoutEffect(() => {
-    if (state.phase !== 'loggedIn' || state.selected === null || newestId === null) return
+    // Only while the page is being looked at: otherwise a message that arrives in a
+    // background tab would be reported as read, and lose its badge on every device.
+    if (state.phase !== 'loggedIn' || !state.attentive || state.selected === null || newestId === null) return
     const position = positionOf({ id: newestId, timestamp: newestTimestamp })
-    if (comparePositions(position, reported.current.get(state.selected)) <= 0) return
-    reported.current.set(state.selected, position)
+    // Remembered per identity: what one user reported says nothing about the next.
+    const key = `${state.userId}|${state.selected}`
+    if (comparePositions(position, reported.current.get(key)) <= 0) return
+    reported.current.set(key, position)
     dispatch({ type: 'readUpTo', conversationId: state.selected, position })
     void ask('markRead', { conversationId: state.selected, upTo: position })
-  }, [state.phase, state.selected, newestId, newestTimestamp])
-  // What was reported is only remembered for the identity it was reported as.
-  useEffect(() => {
-    if (state.userId === null) reported.current.clear()
-  }, [state.userId])
+  }, [state.phase, state.attentive, state.userId, state.selected, newestId, newestTimestamp])
+
 
   // Unread messages show in the tab's title, where they can be seen from another tab.
   const unread = totalUnread(state)
@@ -322,6 +342,7 @@ export const useChat = () => {
   /** Back to the entry screen as nobody. `message` says why, when it was not the user's doing. */
   const forget = useCallback((message?: string) => {
     if (session.current?.kind === 'account') clearAccount()
+    awaitingLogin.current = false
     session.current = null
     loginSentOn.current = null
     clearSession()

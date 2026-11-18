@@ -483,6 +483,38 @@ describe('leaving', () => {
     expect(fakeSocket.sent('login').at(-1)).toEqual({ username: 'alice', reservation: 'secret-alice' })
   })
 
+  it('stays signed out when a login that was already on its way is answered afterwards', async () => {
+    const events = await signedIn('alice')
+    disconnect()
+    connectAs('socket-2')
+    // Logging back in by itself — and the user signs out before the answer arrives.
+    expect(fakeSocket.sent('login')).toHaveLength(2)
+    await events.click(within(await openMenu(events, 'alice')).getByRole('menuitem', { name: 'Sign out' }))
+    await screen.findByRole('tablist')
+    const logouts = fakeSocket.sent('logout').length
+
+    serverSays('loggedin', asAccount('alice'))
+
+    expect(screen.getByRole('tablist')).toBeInTheDocument()
+    expect(screen.queryByText('Signed in as')).not.toBeInTheDocument()
+    expect(account()).toBeNull()
+    expect(stored()).toBeNull()
+    // The server thinks this connection is logged in: it is told otherwise.
+    expect(fakeSocket.sent('logout')).toHaveLength(logouts + 1)
+  })
+
+  it('shows nothing for a refusal of a login that was withdrawn by signing out', async () => {
+    const events = await signedIn('alice')
+    disconnect()
+    connectAs('socket-2')
+    await events.click(within(await openMenu(events, 'alice')).getByRole('menuitem', { name: 'Sign out' }))
+    await screen.findByRole('tablist')
+
+    serverSays('loginError', { message: 'Your session has ended — sign in again', sessionEnded: true })
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('still signs out locally when there is no connection', async () => {
     const events = await signedIn('alice')
     disconnect()

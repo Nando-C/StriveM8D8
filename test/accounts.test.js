@@ -208,6 +208,83 @@ describe('signing in', () => {
     })
 })
 
+describe('guesses sent all at once', () => {
+    it('are counted from the moment they start: no more get checked than one after another would', async () => {
+        await signUp('alice')
+        const sockets = await Promise.all(Array.from({ length: 30 }, () => app.client()))
+
+        const replies = await Promise.all(sockets.map((socket, index) =>
+            login(socket, { username: 'alice', password: `wrong guess ${index}` })))
+
+        const checked = replies.filter(reply => reply.message === 'Wrong username or password')
+        const turnedAway = replies.filter(reply => reply.message?.startsWith('Too many attempts'))
+        // Five free guesses for a name from one address; everything else waits its turn.
+        expect(checked).toHaveLength(5)
+        expect(turnedAway).toHaveLength(25)
+        expect(turnedAway.every(reply => reply.retryAfterMs > 0)).toBe(true)
+        // And the right password does not get in on the back of the burst.
+        expect((await login(await app.client(), { username: 'alice', password: PASSWORD })).ok).toBe(false)
+    })
+
+    it('are released, not counted, when the check itself could not be made', async () => {
+        await signUp('alice')
+        vi.spyOn(console, 'error').mockImplementation(() => {})
+        const find = vi.spyOn(Identity, 'findOne').mockImplementation(() => {
+            throw Object.assign(new Error('down'), { name: 'MongoNetworkError' })
+        })
+        for (let index = 0; index < 8; index++) {
+            const reply = await login(await app.client(), { username: 'alice', password: PASSWORD })
+            expect(reply).toMatchObject({ ok: false, retryable: true })
+        }
+        find.mockRestore()
+
+        // Eight failed checks were not eight wrong guesses.
+        expect((await login(await app.client(), { username: 'alice', password: PASSWORD })).ok).toBe(true)
+    })
+
+    it('cannot put more than five connections on an account by starting them together', async () => {
+        const first = await signUp('alice')
+        const sockets = await Promise.all(Array.from({ length: 9 }, () => app.client()))
+
+        const replies = await Promise.all(sockets.map(socket => login(socket, { session: first.account.session })))
+
+        // The one already connected, and four more.
+        expect(replies.filter(reply => reply.ok)).toHaveLength(4)
+        expect(replies.filter(reply => !reply.ok).every(reply => reply.message === 'Too many devices connected at once')).toBe(true)
+        expect((await ask(first.socket, 'listSessions')).sessions).toHaveLength(1)
+    })
+})
+
+describe('a password change while a sign-in with the old one is under way', () => {
+    it('leaves that sign-in with nothing: no connection, and no device session', async () => {
+        const owner = await signUp('alice')
+        const stale = await app.client()
+        // The stale sign-in has had its (old) password accepted and is about to be given a
+        // device session — and is held exactly there until the password has been changed.
+        let passwordChanged
+        const changed = new Promise(resolve => { passwordChanged = resolve })
+        const create = Session.create.bind(Session)
+        const held = vi.spyOn(Session, 'create').mockImplementationOnce(async document => {
+            await changed
+            return create(document)
+        })
+
+        const signingIn = login(stale, { username: 'alice', password: PASSWORD })
+        await expect.poll(() => held.mock.calls.length).toBe(1)
+        expect(await ask(owner.socket, 'changePassword', { currentPassword: PASSWORD, newPassword: 'a brand new password' }))
+            .toEqual({ ok: true })
+        passwordChanged()
+
+        expect(await signingIn).toEqual(WRONG)
+        expect(await ask(stale, 'listSessions')).toEqual({ ok: false, message: 'Not logged in' })
+        // No phantom device either: the session made for it was taken back.
+        const { sessions } = await ask(owner.socket, 'listSessions')
+        expect(sessions).toHaveLength(1)
+        expect(sessions[0].current).toBe(true)
+        expect(await Session.countDocuments()).toBe(1)
+    })
+})
+
 describe('several devices on one account', () => {
     it('announces the user once, and says they left only when the last device goes — in whatever order they go', async () => {
         const watcher = await join(app, 'watcher')

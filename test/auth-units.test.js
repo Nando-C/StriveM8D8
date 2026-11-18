@@ -125,6 +125,43 @@ describe('attempt limiter', () => {
         expect(limiter.retryAfter('k')).toBe(4000)
     })
 
+    it('counts attempts that are still being checked against the free allowance', () => {
+        const { clock, limiter } = setup({ freeFailures: 3, baseDelayMs: 1000 })
+
+        // Three may be under way at once; a fourth has to wait for one of them.
+        expect([limiter.begin('k'), limiter.begin('k'), limiter.begin('k')]).toEqual([0, 0, 0])
+        expect(limiter.begin('k')).toBe(1000)
+        expect(limiter.begin('other')).toBe(0)
+
+        // Two turn out wrong, one right: one free guess is left, so one at a time.
+        limiter.end('k', { failed: true })
+        limiter.end('k', { failed: true })
+        limiter.end('k', { failed: false })
+        expect(limiter.begin('k')).toBe(0)
+        expect(limiter.begin('k')).toBe(1000)
+
+        // That one is wrong too: the allowance is spent, and the block starts.
+        limiter.end('k', { failed: true })
+        expect(limiter.begin('k')).toBe(1000)
+        clock.now += 1000
+        // After the block: still one at a time, however many are sent.
+        expect(limiter.begin('k')).toBe(0)
+        expect(limiter.begin('k')).toBe(1000)
+    })
+
+    it('keeps counting what is under way when the failures are cleared', () => {
+        const { limiter } = setup({ freeFailures: 2 })
+        limiter.begin('k')
+        limiter.begin('k')
+
+        limiter.clear('k')
+
+        expect(limiter.begin('k')).toBeGreaterThan(0)
+        limiter.end('k', { failed: false })
+        limiter.end('k', { failed: false })
+        expect(limiter.begin('k')).toBe(0)
+    })
+
     it('never waits longer than the ceiling', () => {
         const { limiter } = setup({ freeFailures: 1, baseDelayMs: 1000, maxDelayMs: 5000 })
 

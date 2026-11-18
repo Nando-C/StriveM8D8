@@ -1,5 +1,6 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
+import { Conversation } from '../src/models/conversation.js'
 import { Identity } from '../src/models/identity.js'
 import { Invitation } from '../src/models/invitation.js'
 import {
@@ -450,6 +451,68 @@ describe('guest names', () => {
         await expect.poll(() => onlineUsers(app)).toEqual([])
 
         expect(await app.runMaintenance({ now: Date.now() + 2 * DAY })).toEqual({ removedGuests: 0 })
+    })
+
+    it('are not left reserved to nobody when the secret could not be handed over', async () => {
+        app = await startApp()
+        vi.spyOn(console, 'error').mockImplementation(() => {})
+        // The name is stored, and then gathering the rest of the login fails.
+        vi.spyOn(Conversation, 'find').mockImplementationOnce(() => {
+            throw Object.assign(new Error('down'), { name: 'MongoNetworkError' })
+        })
+        const socket = await app.client()
+
+        const refused = await login(socket, { username: 'alice' })
+        expect(refused).toMatchObject({ ok: false, retryable: true })
+        expect(refused).not.toHaveProperty('reservation')
+        expect(await Identity.countDocuments({ username: 'alice' })).toBe(0)
+        expect(await onlineUsers(app)).toEqual([])
+
+        // Trying again simply works, and this time the secret arrives.
+        const session = await login(socket, { username: 'alice' })
+        expect(session.ok).toBe(true)
+        expect(session.reservation).toEqual(expect.any(String))
+        vi.restoreAllMocks()
+    })
+
+    it('are not left reserved to nobody when the connection drops before the secret is sent', async () => {
+        app = await startApp()
+        const socket = await app.client()
+        // The connection goes just after the name has been written.
+        const socketId = socket.id
+        const create = Identity.create.bind(Identity)
+        vi.spyOn(Identity, 'create').mockImplementationOnce(async document => {
+            const created = await create(document)
+            socket.close()
+            // Not until the server has seen the connection go.
+            await expect.poll(() => app.io.sockets.sockets.has(socketId)).toBe(false)
+            return created
+        })
+        socket.emit('login', { username: 'alice' })
+        await expect.poll(() => app.io.sockets.sockets.has(socketId)).toBe(false)
+        await expect.poll(() => Identity.countDocuments({ username: 'alice' })).toBe(0)
+        vi.restoreAllMocks()
+
+        expect((await login(await app.client(), { username: 'alice' })).ok).toBe(true)
+    })
+
+    it('stay reserved when a returning guest’s login fails: only a brand-new reservation is undone', async () => {
+        app = await startApp()
+        const first = await app.client()
+        const { reservation } = await login(first, { username: 'alice' })
+        first.close()
+        await expect.poll(() => onlineUsers(app)).toEqual([])
+        vi.spyOn(console, 'error').mockImplementation(() => {})
+        vi.spyOn(Conversation, 'find').mockImplementationOnce(() => {
+            throw Object.assign(new Error('down'), { name: 'MongoNetworkError' })
+        })
+        const back = await app.client()
+
+        expect((await login(back, { username: 'alice', reservation })).ok).toBe(false)
+        vi.restoreAllMocks()
+
+        expect(await Identity.countDocuments({ username: 'alice' })).toBe(1)
+        expect((await login(back, { username: 'alice', reservation })).ok).toBe(true)
     })
 
     it('are limited in number per client address', async () => {

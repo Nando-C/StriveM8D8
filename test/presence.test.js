@@ -132,6 +132,46 @@ describe('login', () => {
     })
 })
 
+describe('a connection that has not logged in', () => {
+    it('is told nothing about who is here: not arrivals, not departures, not changes', async () => {
+        const lurker = await app.client()
+        const seen = []
+        lurker.onAny((event, payload) => seen.push([event, payload]))
+        const alice = await app.client()
+        await login(alice, { username: 'alice' })
+        const bob = await app.client()
+        const { userId: bobId } = await login(bob, { username: 'bob' })
+
+        // Everything that is announced: a guest becoming an account, and someone leaving.
+        const relisted = nextEvent(alice, 'newLogin')
+        await bob.timeout(3000).emitWithAck('register', { username: 'bob', password: 'a long password' })
+        expect(await relisted).toEqual({ userId: bobId, username: 'bob', kind: 'account' })
+        const left = nextEvent(alice, 'userLeft')
+        bob.close()
+        await left
+        await settle()
+
+        expect(seen).toEqual([])
+    })
+
+    it('is told from the moment it logs in, and no longer once it has logged out', async () => {
+        const alice = await app.client()
+        await login(alice, { username: 'alice' })
+        const seen = record(alice, 'newLogin')
+        await alice.timeout(3000).emitWithAck('logout', {})
+
+        const bob = await app.client()
+        await login(bob, { username: 'bob' })
+        const carol = await app.client()
+        const told = nextEvent(bob, 'newLogin')
+        await login(carol, { username: 'carol' })
+        await told
+        await settle()
+
+        expect(seen).toEqual([])
+    })
+})
+
 describe('session takeover', () => {
     it('lets the same user reclaim their name from a still-connected socket', async () => {
         const first = await app.client()

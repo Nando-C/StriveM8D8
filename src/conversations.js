@@ -51,6 +51,11 @@ const seesLastMessage = (conversation, member) => {
 /** How many messages from other people the member has not read, up to 100. */
 export const unreadCountFor = async (conversation, member) => {
     const from = laterPosition(plainPosition(member.readUpTo), plainPosition(member.joinedAfter))
+    // Most conversations, most of the time, have nothing new in them — and the conversation
+    // itself already says so: its last message is not after where this member stopped.
+    // Only the ones that might have something unread cost a query.
+    const last = conversation.lastMessage
+    if (!last?.id || comparePositions({ ts: last.timestamp, id: last.id }, from) <= 0) return 0
     const count = await Message.countDocuments(
         { conversationKey: conversation._id, from: { $ne: member.userId }, ...afterPosition(from) },
         { limit: MAX_UNREAD_SHOWN + 1 },

@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Conversation } from '../src/models/conversation.js'
 import { Message } from '../src/models/message.js'
 import {
@@ -284,6 +284,30 @@ describe('send failures', () => {
 
         expect((await delivered).text).toBe('no ack')
         expect(await Message.countDocuments()).toBe(1)
+    })
+})
+
+describe('when the bookkeeping after a save fails', () => {
+    it('still acknowledges and delivers the message: it was saved, and must not be sent twice', async () => {
+        const { alice, bob } = await threeUsers()
+        await send(alice.socket, messageTo(dm(alice, bob), 'first'))
+        const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+        // The message is stored; the update of the conversation that follows is what fails.
+        vi.spyOn(Conversation, 'findOneAndUpdate').mockImplementationOnce(() => {
+            throw Object.assign(new Error('not primary'), { name: 'MongoServerError' })
+        })
+
+        const delivered = nextEvent(bob.socket, 'message')
+        const ack = await send(alice.socket, messageTo(dm(alice, bob), 'second'))
+
+        expect(ack).toEqual({ ok: true, id: expect.any(String), timestamp: expect.any(Number) })
+        expect((await delivered).id).toBe(ack.id)
+        expect(await Message.countDocuments()).toBe(2)
+        expect(logged).toHaveBeenCalledWith(expect.stringContaining('after saving a message'), 'MongoServerError')
+        // The next message puts the conversation right again.
+        const third = await send(alice.socket, messageTo(dm(alice, bob), 'third'))
+        expect((await Conversation.findById(dm(alice, bob)).lean()).lastMessage.id).toBe(third.id)
+        vi.restoreAllMocks()
     })
 })
 

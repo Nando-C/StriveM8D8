@@ -72,6 +72,11 @@ export interface ChatState {
   directory: PublicUser[] | null
   /** The open conversation, by id. */
   selected: string | null
+  /**
+   * Whether the page is actually being looked at. A conversation that is open in a tab
+   * nobody is looking at is not being read.
+   */
+  attentive: boolean
   /** By conversation id. */
   threads: Record<string, Thread>
   /** The latest message received from someone else, for announcing it to screen readers. */
@@ -94,6 +99,8 @@ export type ChatAction =
   /** `peer` is given when the conversation is opened from the people list. */
   | { type: 'conversationSelected'; conversationId: string; peer?: Peer }
   | { type: 'conversationClosed' }
+  /** The page was hidden (another tab, a minimised window) or shown again. */
+  | { type: 'attentionChanged'; attentive: boolean }
   | { type: 'earlierRequested'; conversationId: string }
   | { type: 'historyLoaded'; payload: HistoryPayload }
   | { type: 'historyFailed'; payload: HistoryErrorPayload }
@@ -126,6 +133,7 @@ export const initialChatState = (storedUsername: string | null): ChatState => ({
   onlineUsers: [],
   directory: null,
   selected: null,
+  attentive: true,
   threads: {},
   lastIncoming: null,
 })
@@ -165,12 +173,26 @@ const failPending = (threads: ChatState['threads']): ChatState['threads'] =>
     ]),
   )
 
+/** Whether a conversation is being read right now: it is the open one, and the page is being looked at. */
+const isOnScreen = (state: ChatState, conversationId: string) => state.selected === conversationId && state.attentive
+
+// Opening a conversation (or coming back to the page it is open on) reads it. Where
+// reading had left off is kept, so that what is new can be pointed out.
+const readNow = (state: ChatState, thread: Thread): Thread => {
+  const own = thread.summary?.members.find(member => member.userId === state.userId)
+  return {
+    ...thread,
+    unreadFrom: thread.unread > 0 ? (own?.readUpTo ?? null) : thread.unreadFrom,
+    unread: 0,
+  }
+}
+
 /** The server's word on a conversation replaces what was known; what is on screen is read. */
 const withSummary = (state: ChatState, summary: ConversationSummary): ChatState =>
   withThread(state, summary.id, thread => ({
     ...thread,
     summary,
-    unread: state.selected === summary.id ? 0 : summary.unreadCount,
+    unread: isOnScreen(state, summary.id) ? 0 : summary.unreadCount,
   }))
 
 // Keeps the list preview in step with messages this client has seen arrive or be
@@ -212,8 +234,13 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
 
     case 'loggedIn': {
       const { payload } = action
+      // The same name can come back as a different identity (a guest name that lapsed while
+      // this tab slept and was reserved afresh). Nothing held for the old one belongs to
+      // the new one: not its conversations, not what was open.
+      const sameIdentity = state.userId === null || state.userId === payload.userId
       const next: ChatState = {
         ...state,
+        ...(sameIdentity ? {} : { threads: {}, selected: null, lastIncoming: null }),
         phase: 'loggedIn',
         userId: payload.userId,
         username: payload.username,
@@ -268,16 +295,18 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
     case 'conversationSelected': {
       const { conversationId, peer } = action
       const selected = withThread(state, conversationId, thread => {
-        const own = thread.summary?.members.find(member => member.userId === state.userId)
-        return {
-          ...thread,
-          peer: peer ?? thread.peer,
-          // Where reading left off, so the new messages can be pointed out.
-          unreadFrom: thread.unread > 0 ? (own?.readUpTo ?? null) : undefined,
-          unread: 0,
-        }
+        // The line from the last visit is not carried over to this one.
+        const opened = { ...thread, peer: peer ?? thread.peer, unreadFrom: undefined }
+        // Opened in a page nobody is looking at: it is read when they look.
+        return state.attentive ? readNow(state, opened) : opened
       })
       return { ...selected, selected: conversationId }
+    }
+
+    case 'attentionChanged': {
+      const next = { ...state, attentive: action.attentive }
+      if (!action.attentive || next.selected === null) return next
+      return withThread(next, next.selected, thread => readNow(next, thread))
     }
 
     case 'conversationClosed':
@@ -292,9 +321,25 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
       const { conversationId, messages, hasMore } = action.payload
       // Applied to the conversation the response names, whichever one is on screen now.
       return withThread(state, conversationId, thread => {
+        const page = messages.map(message => fromServer(message, ownUserId, null))
+        // A page that starts after everything held, with more before it, does not join
+        // up with what is held: messages are missing in between (more than a page arrived
+        // while this client was away). What is held from before the gap is let go, so
+        // that the conversation is continuous again and "load earlier" pages back through
+        // the gap instead of skipping it. The user's own unconfirmed messages are kept.
+        const newestHeld = thread.messages.findLast(message => message.id !== null)
+        const disjoint =
+          hasMore &&
+          messages.length > 0 &&
+          newestHeld !== undefined &&
+          newestHeld.id !== null &&
+          comparePositions(
+            { ts: messages[0].timestamp, id: messages[0].id },
+            { ts: newestHeld.timestamp, id: newestHeld.id },
+          ) > 0
         const merged = mergeConfirmed(
-          thread.messages,
-          messages.map(message => fromServer(message, ownUserId, null)),
+          disjoint ? thread.messages.filter(message => message.id === null) : thread.messages,
+          page,
         )
         // `hasMore` speaks about what lies before this page. It only says something new
         // if this page reaches back at least as far as anything already held.
@@ -328,7 +373,7 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
           {
             ...thread,
             messages: mergeConfirmed(thread.messages, [message]),
-            unread: counts && state.selected !== conversationId ? thread.unread + 1 : thread.unread,
+            unread: counts && !isOnScreen(state, conversationId) ? thread.unread + 1 : thread.unread,
           },
           message,
         ),
