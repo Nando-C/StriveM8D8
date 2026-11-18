@@ -1,5 +1,6 @@
 import { screen, waitFor } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
+import type { Member } from '@/types/protocol'
 import { dm, fakeSocket, idOf, listedPeople, loginAs, messageBox, personButton, renderApp, serverSays, user } from '@/test/harness'
 
 describe('the people list', () => {
@@ -80,11 +81,13 @@ describe('the people list', () => {
 })
 
 describe('where every account is listed', () => {
-  const directory = [user('alice', 'account'), user('bea', 'account'), user('zed', 'account')]
+  const member = (username: string): Member => ({ userId: idOf(username), username, kind: 'account' })
+  const directory = [member('alice'), member('bea'), member('zed')]
   const login = async () => {
     renderApp()
     serverSays('loggedin', {
       userId: idOf('alice'), username: 'alice', kind: 'account', admin: false, sessionToken: 't', conversations: [],
+      ownStatus: { status: 'online', statusText: '', statusClearAt: null },
       onlineUsers: [user('alice', 'account'), user('zed', 'account'), user('visitor', 'guest')],
       members: directory,
     })
@@ -109,7 +112,7 @@ describe('where every account is listed', () => {
     window.localStorage.setItem('strive-chat.account', JSON.stringify({ username: 'alice', session: 's' }))
     const list = await login()
 
-    serverSays('memberJoined', user('cal', 'account'))
+    serverSays('memberJoined', member('cal'))
     expect(names(list)).toEqual(['bea', 'cal', 'visitor', 'zed'])
 
     serverSays('memberLeft', { userId: idOf('bea') })

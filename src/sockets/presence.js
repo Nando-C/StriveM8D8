@@ -1,27 +1,43 @@
 import { randomUUID } from 'node:crypto'
 import { BOT } from '../bot.js'
+import { BOT_STATUS_TEXT, publicPresence } from '../status.js'
 
 // Who is connected right now, kept in memory, one instance per app instance.
 //
 // A user is online while at least one of their sockets is. A guest holds one socket; an
 // account may hold several (one per device or tab). To everyone else a user is a single
-// `{ userId, username, kind }` entry: nobody outside this module learns a socket id.
+// `{ userId, username, kind, status, statusText }` entry — or nothing at all, if they
+// have chosen to be invisible. Nobody outside this module learns a socket id.
 //
-// Each socket entry is { sessionToken, deviceSessionId }. Both are private to that socket:
-// everything sent to other clients goes through getOnlineUsers().
+// Each socket entry is { sessionToken, deviceSessionId, idle }. All private to that
+// socket: everything sent to other clients goes through `publicUser`.
 export const createPresence = (io, { demoBot = false } = {}) => {
-    /** userId → { userId, username, kind, admin, sockets: Map<socketId, entry>, botReplies } */
+    /** userId → { userId, username, kind, admin, status, statusText, statusClearAt, sockets, botReplies } */
     const users = new Map()
     /** socketId → the same user object */
     const bySocket = new Map()
+    /** Told when a user's first socket connects and when their last one goes (status.js keeps timers by it). */
+    const hooks = { online: () => {}, offline: () => {} }
 
     // The demo bot is a permanent entry: it has no socket, so it never disconnects.
     if (demoBot) {
-        users.set(BOT.id, { userId: BOT.id, username: BOT.username, kind: 'bot', admin: false, sockets: new Map(), botReplies: 0 })
+        users.set(BOT.id, {
+            userId: BOT.id, username: BOT.username, kind: 'bot', admin: false,
+            status: 'online', statusText: BOT_STATUS_TEXT, statusClearAt: null,
+            sockets: new Map(), botReplies: 0,
+        })
     }
 
-    const publicUser = user => ({ userId: user.userId, username: user.username, kind: user.kind })
-    const getOnlineUsers = () => [...users.values()].map(publicUser)
+    // Idle only when every device is: someone typing on their laptop is not away because
+    // their phone is in their pocket. (The bot has no devices, and is never idle.)
+    const isIdle = user => user.sockets.size > 0 && [...user.sockets.values()].every(entry => entry.idle)
+
+    /** A user as everyone else is shown them, or null if they are shown to nobody. */
+    const publicUser = user => {
+        const shown = publicPresence({ status: user.status, statusText: user.statusText, idle: isIdle(user) })
+        return shown === null ? null : { userId: user.userId, username: user.username, kind: user.kind, ...shown }
+    }
+    const getOnlineUsers = () => [...users.values()].map(publicUser).filter(Boolean)
 
     // Who is online is told only to sockets that are logged in as somebody. A connection
     // that never logged in learns nothing: on a deployment without guests it would
@@ -31,17 +47,50 @@ export const createPresence = (io, { demoBot = false } = {}) => {
         if (sockets.length > 0) io.to(sockets).emit(event, payload)
     }
 
+    // Tells everyone else what changed in how a user is shown, given how they were shown
+    // before. The user's own connections are not told: they know what they chose.
+    const announce = (user, before) => {
+        const after = users.has(user.userId) ? publicUser(user) : null
+        const others = { except: user.sockets }
+        if (before === null && after === null) return
+        if (before === null) tellLoggedIn('newLogin', after, others)
+        else if (after === null) tellLoggedIn('userLeft', { userId: user.userId }, others)
+        else if (before.kind !== after.kind || before.username !== after.username) tellLoggedIn('newLogin', after, others)
+        else if (before.status !== after.status || before.statusText !== after.statusText) {
+            tellLoggedIn('presence', { userId: user.userId, status: after.status, statusText: after.statusText }, others)
+        }
+    }
+
     /**
-     * Records `socket` as a connection of `identity`, and announces the user if they were
-     * not online already. `replaceSocketId` names one of the user's own sockets that this
-     * one takes over from (a reconnect whose old connection the server has not noticed
+     * Changes something about a connected user (their status, an idle flag, their kind)
+     * and tells everyone else exactly what that changes for them — which, for someone
+     * invisible, is nothing.
+     */
+    const update = (user, change) => {
+        const before = users.has(user.userId) ? publicUser(user) : null
+        change(user)
+        announce(user, before)
+    }
+
+    /**
+     * Records `socket` as a connection of `identity`, and announces the user if that makes
+     * them appear. `replaceSocketId` names one of the user's own sockets that this one
+     * takes over from (a reconnect whose old connection the server has not noticed
      * dropping yet): it is closed without anyone being told the user left.
      */
     const attach = (socket, identity, { deviceSessionId = null, replaceSocketId = null } = {}) => {
         let user = users.get(identity.userId)
-        const wasOnline = user !== undefined
-        if (!user) {
-            user = { userId: identity.userId, sockets: new Map(), botReplies: 0 }
+        const first = user === undefined
+        const before = first ? null : publicUser(user)
+        if (first) {
+            user = {
+                userId: identity.userId, sockets: new Map(), botReplies: 0,
+                // What was chosen is taken from storage when the user comes online; while
+                // they are online the copy here is the one that is kept up to date.
+                status: identity.status ?? 'online',
+                statusText: identity.statusText ?? '',
+                statusClearAt: identity.statusClearAt ?? null,
+            }
             users.set(user.userId, user)
         }
         user.username = identity.username
@@ -55,32 +104,34 @@ export const createPresence = (io, { demoBot = false } = {}) => {
         }
 
         const sessionToken = randomUUID()
-        user.sockets.set(socket.id, { sessionToken, deviceSessionId })
+        // A connection that has just logged in is in use.
+        user.sockets.set(socket.id, { sessionToken, deviceSessionId, idle: false })
         bySocket.set(socket.id, user)
 
-        if (!wasOnline) tellLoggedIn('newLogin', publicUser(user), { except: user.sockets })
+        if (first) hooks.online(user)
+        announce(user, before)
         return { user, sessionToken }
     }
 
     /**
-     * Forgets a socket. Others are told the user left only when it was their last one.
-     * Returns the user it belonged to, or null if it was not logged in.
+     * Forgets a socket. Others are told the user left only when it was their last one
+     * (and only if they could see the user at all). Returns the user it belonged to, or
+     * null if it was not logged in.
      */
     const detach = socketId => {
         const user = bySocket.get(socketId)
         if (!user) return null
+        const before = publicUser(user)
         user.sockets.delete(socketId)
         bySocket.delete(socketId)
 
         if (user.sockets.size === 0) {
             users.delete(user.userId)
-            tellLoggedIn('userLeft', { userId: user.userId })
+            hooks.offline(user)
         }
+        announce(user, before)
         return user
     }
-
-    /** A connected user's kind changed (a guest became an account): everyone's entry for them is replaced. */
-    const announceChange = user => tellLoggedIn('newLogin', publicUser(user))
 
     /**
      * Ends connections on purpose: tells each socket why (`sessionRevoked`), forgets it and
@@ -97,5 +148,5 @@ export const createPresence = (io, { demoBot = false } = {}) => {
         }
     }
 
-    return { users, bySocket, getOnlineUsers, publicUser, attach, detach, revoke, announceChange }
+    return { users, bySocket, hooks, getOnlineUsers, publicUser, attach, detach, revoke, update }
 }

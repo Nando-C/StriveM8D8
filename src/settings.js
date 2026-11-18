@@ -22,8 +22,14 @@ const DEFAULTS = Object.freeze({
     memberDirectory: 'online',
     /** How many proxies in front of the server may be believed about the client's address. */
     trustedProxyHops: 0,
+    /** Serves GET /proxy-check, for working out `trustedProxyHops` on a new host. Off unless asked for. */
+    proxyCheck: false,
     /** undefined: not configured. 0: nothing expires. Positive: hours until data expires. */
     messageTtlHours: undefined,
+    /** How long a browser has to confirm it received the secret that reserves a new guest name. */
+    reservationAckTimeoutMs: 10_000,
+    /** How long a device has to acknowledge a message before it does not count as delivered there. */
+    deliveryAckTimeoutMs: 10_000,
     /** scrypt parameters for new password hashes; undefined uses the production default. */
     passwordParams: undefined,
 })
@@ -61,6 +67,7 @@ export const settingsFromEnv = (env, warn = console.warn) => {
         guests: env.GUESTS !== 'false',
         adminUsernames: list(env.ADMIN_USERNAMES),
         bootstrapCode: env.SIGNUP_BOOTSTRAP_CODE || null,
+        proxyCheck: env.PROXY_CHECK === 'true',
     }
 
     const mode = (env.SIGNUP_MODE ?? '').trim()

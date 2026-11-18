@@ -15,6 +15,40 @@ export interface PublicUser {
   userId: string
   username: string
   kind: UserKind
+  /** What they are shown as. Never `invisible`: an invisible user is not listed at all. */
+  status: ShownStatus
+  /** A line of their own, possibly empty. */
+  statusText: string
+}
+
+/** An entry of the member directory: an account, whether or not it is connected. */
+export type Member = Pick<PublicUser, 'userId' | 'username' | 'kind'>
+
+/** What a user can choose to show. */
+export type Status = 'online' | 'away' | 'dnd' | 'invisible'
+/** What others can be shown. `away` is also shown for an online user who is idle. */
+export type ShownStatus = Exclude<Status, 'invisible'>
+
+/** A user's own status: what they chose, which only they are told. */
+export interface OwnStatus {
+  status: Status
+  statusText: string
+  /** When the text clears itself, in milliseconds since the epoch; `null` if it stays. */
+  statusClearAt: number | null
+}
+
+export interface SetStatusPayload {
+  status?: Status
+  /** At most 80 characters. '' removes it. */
+  text?: string
+  /** How long the text stays, 1 minute to a week; `null` for until it is changed. */
+  clearAfterMinutes?: number | null
+}
+
+export interface PresencePayload {
+  userId: string
+  status: ShownStatus
+  statusText: string
 }
 
 /** A point in a conversation: a message's timestamp and id. See lib/positions.ts. */
@@ -154,6 +188,10 @@ export interface ConversationMember {
   username: string
   /** Groups: this member sees only what came after it. */
   joinedAfter?: Position
+  /**
+   * How far they have received and read. For other members this is what they let be
+   * known: while someone is invisible, theirs stands still.
+   */
   deliveredUpTo: Position | null
   readUpTo: Position | null
   /** Direct chats: this person's identity was removed. Nothing more can be sent. */
@@ -193,12 +231,14 @@ export interface LoggedInPayload {
   reservation?: string
   /** Accounts, after a password login: the new device session. */
   session?: string
-  /** Everyone online right now, including this user. */
+  /** What this user has chosen to show. */
+  ownStatus: OwnStatus
+  /** Everyone online who can be seen — which leaves this user out while they are invisible. */
   onlineUsers: PublicUser[]
   /** This user's conversations, most recently active first (at most 50). */
   conversations: ConversationSummary[]
   /** Only where the deployment lists every account, and only for accounts: all of them. */
-  members?: PublicUser[]
+  members?: Member[]
 }
 
 export interface LoginErrorPayload {
@@ -254,6 +294,14 @@ export interface HistoryErrorPayload {
   message: string
 }
 
+/** Where another member of a conversation now stands — as far as others may know. */
+export interface ReceiptPayload {
+  conversationId: string
+  userId: string
+  deliveredUpTo: Position | null
+  readUpTo: Position | null
+}
+
 export interface ConversationUpdatedPayload {
   conversation: ConversationSummary
 }
@@ -261,17 +309,27 @@ export interface ConversationUpdatedPayload {
 // ---------- event maps for socket.io's typed sockets
 
 export interface ServerToClientEvents {
-  loggedin: (payload: LoggedInPayload) => void
+  /** Acknowledge it (call `confirm`): for a newly reserved guest name, the server waits to hear that the secret arrived. */
+  loggedin: (payload: LoggedInPayload, confirm?: () => void) => void
   loginError: (payload: LoginErrorPayload) => void
   sessionRevoked: (payload: SessionRevokedPayload) => void
   /** A user came online, or what is known about an online user changed: upsert by `userId`. */
   newLogin: (payload: PublicUser) => void
   userLeft: (payload: UserLeftPayload) => void
-  message: (payload: Message) => void
+  /** How an online user is shown has changed. */
+  presence: (payload: PresencePayload) => void
+  /** This user's own status changed on another of their devices, or its text ran out. */
+  ownStatus: (payload: OwnStatus) => void
+  /** Acknowledge it (call `ack`): that is what tells the sender it was delivered to this device. */
+  message: (payload: Message, ack?: () => void) => void
+  /** Another member received or read up to here. */
+  receipt: (payload: ReceiptPayload) => void
   /** A conversation is new to this user, or something about it changed: replace it. */
   conversationUpdated: (payload: ConversationUpdatedPayload) => void
   /** Member directory only: an account was created / removed. */
-  memberJoined: (payload: PublicUser) => void
+  memberJoined: (payload: Member) => void
+  /** The whole directory: sent to a guest at the moment they become an account. */
+  memberDirectory: (payload: { members: Member[] }) => void
   memberLeft: (payload: UserLeftPayload) => void
   history: (payload: HistoryPayload) => void
   historyError: (payload: HistoryErrorPayload) => void
@@ -281,6 +339,9 @@ export interface ClientToServerEvents {
   login: (payload: LoginPayload) => void
   sendmessage: (payload: SendMessagePayload, ack: (response: SendMessageAck) => void) => void
   getHistory: (payload: GetHistoryPayload) => void
+  setStatus: (payload: SetStatusPayload, ack: (response: Ack<OwnStatus>) => void) => void
+  /** Nobody has used this page for a while / somebody is using it again. */
+  setIdle: (payload: { idle: boolean }, ack: (response: Ack) => void) => void
   /** "I have read this conversation up to here." */
   markRead: (payload: MarkReadPayload, ack: (response: Ack) => void) => void
   register: (payload: RegisterPayload, ack: (response: RegisterAck) => void) => void

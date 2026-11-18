@@ -6,7 +6,9 @@ import { chatReducer, initialChatState } from '@/lib/chatState'
 import { directConversationId } from '@/lib/conversationId'
 import { deviceLabel } from '@/lib/device'
 import { UNCONFIRMED } from '@/lib/messages'
-import { comparePositions, positionOf } from '@/lib/positions'
+import { useIdleReporter } from '@/lib/useIdleReporter'
+import { positionOf } from '@/lib/positions'
+import { createReadReporter } from '@/lib/readReporter'
 import { ask } from '@/lib/request'
 import {
   clearAccount, clearSession, loadAccount, loadReservation, saveAccount, saveReservation, saveSession,
@@ -21,9 +23,13 @@ import type {
   LoggedInPayload,
   LoginErrorPayload,
   LoginPayload,
+  Member,
   Message,
-  Position,
+  OwnStatus,
+  PresencePayload,
   PublicUser,
+  ReceiptPayload,
+  SetStatusPayload,
   SessionRevokedPayload,
   UserLeftPayload,
 } from '@/types/protocol'
@@ -32,6 +38,9 @@ const BASE_TITLE = 'Strive Chat'
 
 /** How long to wait for the server to acknowledge a message before calling it unconfirmed. */
 const ACK_TIMEOUT_MS = 10_000
+
+/** A conversation is reported as read at most this often, however fast messages arrive. */
+export const READ_REPORT_INTERVAL_MS = 1000
 
 /** How long to wait before logging in again after the server said it was not ready. */
 export const LOGIN_RETRY_MS = 3000
@@ -89,6 +98,8 @@ export const useChat = () => {
   // The socket id a login was last emitted on, so one connection logs in once even when
   // React StrictMode runs the effect twice.
   const loginSentOn = useRef<string | null>(null)
+  // When "read up to here" is actually sent (see readReporter.ts). Created once.
+  const [readReporter] = useState(() => createReadReporter(READ_REPORT_INTERVAL_MS))
   // Whether an answer to a login is still wanted. Signing out while one is on its way
   // withdraws it: the answer, when it comes, must not sign the user back in.
   const awaitingLogin = useRef(false)
@@ -130,13 +141,16 @@ export const useChat = () => {
         socket.connect()
         return
       }
+      // A first login that was on its way has no answer coming any more, and nothing here
+      // would send it again (a password is not kept to resend): back to the form.
+      if (session.current === null) awaitingLogin.current = false
       // "io server disconnect" means the server closed this connection on purpose: the
       // session was taken over from another tab. socket.io does not reconnect by itself
       // in that case, and neither do we — two tabs would evict each other in a loop.
       dispatch({ type: 'disconnected', replaced: reason === 'io server disconnect' })
     }
 
-    const onLoggedIn = (payload: LoggedInPayload) => {
+    const onLoggedIn = (payload: LoggedInPayload, confirm?: () => void) => {
       clearTimeout(retryTimer)
       if (!awaitingLogin.current) {
         // The user signed out while this login was under way. The server now has this
@@ -152,6 +166,9 @@ export const useChat = () => {
       // Sent once, when the name is first reserved: without it this browser could not
       // have the name back after a reload.
       if (payload.reservation !== undefined) saveReservation(payload.username, payload.reservation)
+      // Tell the server it arrived. For a name just reserved the server is waiting for
+      // this: until it hears, it assumes the secret was lost on the way and frees the name.
+      confirm?.()
       dispatch({ type: 'loggedIn', payload })
     }
     const onLoginError = ({ message, retryable, sessionEnded }: LoginErrorPayload) => {
@@ -187,11 +204,19 @@ export const useChat = () => {
     }
     const onNewLogin = (payload: PublicUser) => dispatch({ type: 'userJoined', payload })
     const onUserLeft = (payload: UserLeftPayload) => dispatch({ type: 'userLeft', payload })
-    const onMemberJoined = (payload: PublicUser) => dispatch({ type: 'memberJoined', payload })
+    const onMemberJoined = (payload: Member) => dispatch({ type: 'memberJoined', payload })
+    const onMemberDirectory = ({ members }: { members: Member[] }) => dispatch({ type: 'directoryReceived', members })
+    const onPresence = (payload: PresencePayload) => dispatch({ type: 'presenceChanged', payload })
+    const onOwnStatus = (ownStatus: OwnStatus) => dispatch({ type: 'ownStatusChanged', ownStatus })
     const onMemberLeft = (payload: UserLeftPayload) => dispatch({ type: 'memberLeft', payload })
     const onConversationUpdated = ({ conversation }: ConversationUpdatedPayload) =>
       dispatch({ type: 'conversationUpdated', conversation })
-    const onMessage = (payload: Message) => dispatch({ type: 'messageReceived', payload, receivedAt: Date.now() })
+    const onMessage = (payload: Message, ack?: () => void) => {
+      dispatch({ type: 'messageReceived', payload, receivedAt: Date.now() })
+      // This device has it: that is what moves the sender's tick from "sent" to "delivered".
+      ack?.()
+    }
+    const onReceipt = (payload: ReceiptPayload) => dispatch({ type: 'receipt', payload })
     // Server and client are deployed separately, so for a few minutes after a release
     // this page can be older than the server. socket.io does not retry a refused
     // connection, which is right: the same page would be refused again.
@@ -209,10 +234,14 @@ export const useChat = () => {
     socket.on('connect_error', onConnectError)
     socket.on('newLogin', onNewLogin)
     socket.on('userLeft', onUserLeft)
+    socket.on('presence', onPresence)
+    socket.on('ownStatus', onOwnStatus)
     socket.on('memberJoined', onMemberJoined)
+    socket.on('memberDirectory', onMemberDirectory)
     socket.on('memberLeft', onMemberLeft)
     socket.on('conversationUpdated', onConversationUpdated)
     socket.on('message', onMessage)
+    socket.on('receipt', onReceipt)
     socket.on('history', onHistory)
     socket.on('historyError', onHistoryError)
 
@@ -221,6 +250,8 @@ export const useChat = () => {
     let leftOnPageHide = false
     const onPageHide = () => {
       if (!socket.connected) return
+      // Whatever was read in the last second and not yet reported goes out first.
+      readReporter.flush()
       leftOnPageHide = true
       socket.disconnect()
     }
@@ -231,10 +262,14 @@ export const useChat = () => {
       leftOnPageHide = false
       socket.connect()
     }
-    // Whether anyone is looking: a conversation open in a hidden tab is not being read.
-    const onVisibilityChange = () => dispatch({ type: 'attentionChanged', attentive: document.visibilityState === 'visible' })
-    document.addEventListener('visibilitychange', onVisibilityChange)
-    onVisibilityChange()
+    // Whether anyone is looking: a conversation open in a hidden tab, or in a window that
+    // is behind another, is not being read.
+    const onAttentionChange = () =>
+      dispatch({ type: 'attentionChanged', attentive: document.visibilityState === 'visible' && document.hasFocus() })
+    document.addEventListener('visibilitychange', onAttentionChange)
+    window.addEventListener('focus', onAttentionChange)
+    window.addEventListener('blur', onAttentionChange)
+    onAttentionChange()
     window.addEventListener('pagehide', onPageHide)
     window.addEventListener('pageshow', onPageShow)
 
@@ -253,17 +288,23 @@ export const useChat = () => {
       socket.off('connect_error', onConnectError)
       socket.off('newLogin', onNewLogin)
       socket.off('userLeft', onUserLeft)
+      socket.off('presence', onPresence)
+      socket.off('ownStatus', onOwnStatus)
       socket.off('memberJoined', onMemberJoined)
+      socket.off('memberDirectory', onMemberDirectory)
       socket.off('memberLeft', onMemberLeft)
       socket.off('conversationUpdated', onConversationUpdated)
       socket.off('message', onMessage)
+      socket.off('receipt', onReceipt)
       socket.off('history', onHistory)
       socket.off('historyError', onHistoryError)
-      document.removeEventListener('visibilitychange', onVisibilityChange)
+      document.removeEventListener('visibilitychange', onAttentionChange)
+      window.removeEventListener('focus', onAttentionChange)
+      window.removeEventListener('blur', onAttentionChange)
       window.removeEventListener('pagehide', onPageHide)
       window.removeEventListener('pageshow', onPageShow)
     }
-  }, [emitLogin])
+  }, [emitLogin, readReporter])
 
   // (Re)load the open conversation: when one is selected, and after every (re)login.
   // A conversation selected while offline is loaded as soon as the login completes.
@@ -274,7 +315,9 @@ export const useChat = () => {
   }, [state.phase, state.selected, state.loginCount])
 
   // Tell the server how far the open conversation has been read: up to its newest
-  // confirmed message, once per position.
+  // confirmed message. Only when it really is being read — the page is visible and has
+  // focus, and the end of the conversation is on screen — and at most once a second per
+  // conversation, however fast messages arrive.
   //
   // A layout effect on purpose: it runs in the same task that puts the messages on
   // screen, so there is no moment at which a message is visible but not yet reported.
@@ -283,20 +326,25 @@ export const useChat = () => {
   const newestConfirmed = thread.messages.findLast(message => message.id !== null)
   const newestId = newestConfirmed?.id ?? null
   const newestTimestamp = newestConfirmed?.timestamp ?? 0
-  const reported = useRef(new Map<string, Position>())
+  // Whether the newest message is in view. True until the message list says otherwise:
+  // a conversation opens at its end.
+  const [atEnd, setAtEnd] = useState({ conversationId: state.selected, value: true })
+  const inView = atEnd.conversationId !== state.selected || atEnd.value
+  const reportAtEnd = useCallback(
+    (value: boolean) => setAtEnd({ conversationId: state.selected, value }),
+    [state.selected],
+  )
   useLayoutEffect(() => {
-    // Only while the page is being looked at: otherwise a message that arrives in a
-    // background tab would be reported as read, and lose its badge on every device.
-    if (state.phase !== 'loggedIn' || !state.attentive || state.selected === null || newestId === null) return
+    if (state.phase !== 'loggedIn' || !state.attentive || !inView || state.selected === null || newestId === null) return
+    const conversationId = state.selected
     const position = positionOf({ id: newestId, timestamp: newestTimestamp })
-    // Remembered per identity: what one user reported says nothing about the next.
-    const key = `${state.userId}|${state.selected}`
-    if (comparePositions(position, reported.current.get(key)) <= 0) return
-    reported.current.set(key, position)
-    dispatch({ type: 'readUpTo', conversationId: state.selected, position })
-    void ask('markRead', { conversationId: state.selected, upTo: position })
-  }, [state.phase, state.attentive, state.userId, state.selected, newestId, newestTimestamp])
-
+    readReporter.offer(`${state.userId}|${conversationId}`, position, async () => {
+      dispatch({ type: 'readUpTo', conversationId, position })
+      return (await ask('markRead', { conversationId, upTo: position })).ok
+    })
+    // No longer being read (or something newer to report): what was waiting is dropped.
+    return readReporter.cancel
+  }, [readReporter, state.phase, state.attentive, inView, state.userId, state.selected, newestId, newestTimestamp])
 
   // Unread messages show in the tab's title, where they can be seen from another tab.
   const unread = totalUnread(state)
@@ -359,6 +407,19 @@ export const useChat = () => {
     if (socket.connected) void ask('logout', {})
     forget()
   }, [forget])
+
+  /** Changes what the user shows. Resolves with the server's answer, for whoever asked to show a refusal. */
+  const setStatus = useCallback(async (payload: SetStatusPayload) => {
+    const answer = await ask('setStatus', payload)
+    if (answer.ok) {
+      const { status, statusText, statusClearAt } = answer
+      dispatch({ type: 'ownStatusChanged', ownStatus: { status, statusText, statusClearAt } })
+    }
+    return answer
+  }, [])
+
+  // Tell the server when nobody is using this page, so that others see "away".
+  useIdleReporter(connected && state.phase === 'loggedIn')
 
   const selectConversation = useCallback((conversationId: string) => {
     dispatch({ type: 'conversationSelected', conversationId })
@@ -431,9 +492,11 @@ export const useChat = () => {
     everConnected,
     outdated,
     phase: state.phase,
+    userId: state.userId,
     username: state.username,
     kind: state.kind,
     admin: state.admin,
+    ownStatus: state.ownStatus,
     loginError: state.loginError,
     chats: chatList(state),
     people: peopleList(state),
@@ -450,11 +513,13 @@ export const useChat = () => {
     becomeAccount,
     logout,
     forget,
+    setStatus,
     selectConversation,
     openChatWith,
     closeConversation,
     sendMessage,
     loadEarlier,
+    reportAtEnd,
     reconnect,
   }
 }

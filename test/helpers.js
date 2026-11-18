@@ -98,10 +98,13 @@ export const settle = (ms = 150) => new Promise(resolve => setTimeout(resolve, m
 // Emits `event` and resolves with whichever of the two reply events arrives.
 const request = (socket, event, payload, successEvent, errorEvent) => new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`no reply to "${event}"`)), 3000)
-    const settle = ok => data => {
+    // (A real client acknowledges `loggedin`: it is how the server knows a new guest
+    // name's secret arrived. The acknowledgement, when there is one, is the last argument.)
+    const settle = ok => (data, ack) => {
         clearTimeout(timer)
         socket.off(successEvent, onSuccess)
         socket.off(errorEvent, onError)
+        if (typeof ack === 'function') ack()
         resolve({ ok, ...data })
     }
     const onSuccess = settle(true)
@@ -137,6 +140,13 @@ export const join = async (app, username) => {
     const session = await login(socket, { username })
     if (!session.ok) throw new Error(`could not join as ${username}: ${session.message}`)
     return { socket, ...session }
+}
+
+// Makes a test client behave like the real one: acknowledge every message it is sent,
+// which is what tells the server the message was delivered to that device.
+export const acknowledging = socket => {
+    socket.on('message', (_message, ack) => ack?.())
+    return socket
 }
 
 export const markRead = (socket, conversationId, upTo) => ask(socket, 'markRead', { conversationId, upTo })

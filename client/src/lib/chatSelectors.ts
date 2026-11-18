@@ -1,5 +1,6 @@
 import { EMPTY_THREAD, type ChatState, type Thread } from '@/lib/chatState'
-import type { PublicUser, UserKind } from '@/types/protocol'
+import type { Presence } from '@/lib/status'
+import type { Member, PublicUser, UserKind } from '@/types/protocol'
 
 // What the screen shows, worked out from the chat state. Pure functions: nothing here
 // is stored, so nothing here can go stale.
@@ -18,8 +19,10 @@ export interface ChatEntry {
   title: string
   /** `null` for a group. */
   counterpart: Counterpart | null
-  /** Whether the counterpart is connected; `null` for a group. */
-  online: boolean | null
+  /** How the counterpart appears; `null` for a group. */
+  presence: Presence | null
+  /** The counterpart's own status line, possibly empty. */
+  statusText: string
   /** The last message, on one line; '' if there is none to show. */
   preview: string
   /** The last message is the user's own. */
@@ -30,8 +33,9 @@ export interface ChatEntry {
 }
 
 /** One row of the People list. */
-export interface PersonEntry extends PublicUser {
-  online: boolean
+export interface PersonEntry extends Member {
+  presence: Presence
+  statusText: string
 }
 
 export const counterpartOf = (state: ChatState, thread: Thread): Counterpart | null => {
@@ -51,7 +55,13 @@ export const titleOf = (state: ChatState, thread: Thread): string =>
     ? (thread.summary.name ?? 'Group')
     : (counterpartOf(state, thread)?.username ?? 'Conversation')
 
-const isOnline = (state: ChatState, userId: string) => state.onlineUsers.some(user => user.userId === userId)
+/** How someone appears to this user: as the server shows them, or — if it shows nothing — offline. */
+const appearanceOf = (state: ChatState, userId: string): { presence: Presence; statusText: string } => {
+  const shown = state.onlineUsers.find(user => user.userId === userId)
+  return shown === undefined ? { presence: 'offline', statusText: '' } : { presence: shown.status, statusText: shown.statusText }
+}
+
+const NO_APPEARANCE = { presence: null, statusText: '' } as const
 
 const activeAt = (thread: Thread) =>
   Math.max(thread.summary?.lastMessage?.timestamp ?? 0, thread.messages.at(-1)?.timestamp ?? 0)
@@ -70,7 +80,7 @@ export const chatList = (state: ChatState): ChatEntry[] =>
         id,
         title: titleOf(state, thread),
         counterpart,
-        online: thread.summary?.kind === 'group' || counterpart === null ? null : isOnline(state, counterpart.userId),
+        ...(thread.summary?.kind === 'group' || counterpart === null ? NO_APPEARANCE : appearanceOf(state, counterpart.userId)),
         preview: showLocal ? local.text.trim().replace(/\s+/g, ' ') : (last?.preview ?? ''),
         previewOwn: showLocal ? local.own : last?.from === state.userId,
         unread: thread.unread,
@@ -84,14 +94,14 @@ export const chatList = (state: ChatState): ChatEntry[] =>
  * lists them — every account, connected or not. Never the user themself.
  */
 export const peopleList = (state: ChatState): PersonEntry[] => {
-  const known = new Map<string, PublicUser>()
+  const known = new Map<string, Member | PublicUser>()
   for (const user of state.directory ?? []) known.set(user.userId, user)
   // What is known about someone who is connected is the more recent of the two.
   for (const user of state.onlineUsers) known.set(user.userId, user)
   return [...known.values()]
     // By id once it is known; by name until then (while logging back in).
     .filter(user => (state.userId === null ? user.username !== state.username : user.userId !== state.userId))
-    .map(user => ({ ...user, online: isOnline(state, user.userId) }))
+    .map(({ userId, username, kind }) => ({ userId, username, kind, ...appearanceOf(state, userId) }))
     .sort((a, b) => a.username.localeCompare(b.username))
 }
 
@@ -112,7 +122,9 @@ export interface OpenConversation {
   id: string
   title: string
   counterpart: Counterpart | null
-  online: boolean | null
+  /** How the counterpart appears; `null` for a group. */
+  presence: Presence | null
+  statusText: string
   kind: UserKind | null
 }
 
@@ -125,7 +137,7 @@ export const openConversation = (state: ChatState): OpenConversation | null => {
     id: state.selected,
     title: titleOf(state, thread),
     counterpart,
-    online: group || counterpart === null ? null : isOnline(state, counterpart.userId),
+    ...(group || counterpart === null ? NO_APPEARANCE : appearanceOf(state, counterpart.userId)),
     kind: counterpart === null ? null : kindOf(state, counterpart.userId),
   }
 }

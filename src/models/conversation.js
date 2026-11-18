@@ -21,8 +21,13 @@ const conversationSchema = new mongoose.Schema({
         username: { type: String, required: true },
         /** Groups: the member sees only what comes after this. Absent in direct chats. */
         joinedAfter: position,
+        // How far this member has received and read: the truth, which only they are told
+        // (their own unread counts depend on it)…
         deliveredUpTo: position,
         readUpTo: position,
+        // …and what everyone else is told. The same, except while the member is
+        // invisible: then these stand still, and catch up when they are visible again.
+        published: new mongoose.Schema({ deliveredUpTo: position, readUpTo: position }, { _id: false }),
         /** Direct chats: this person's identity was removed; the chat is kept for the other. */
         gone: Boolean,
     }],

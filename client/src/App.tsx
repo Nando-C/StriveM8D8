@@ -10,6 +10,7 @@ import { UserAvatar } from '@/components/UserAvatar'
 import { useChat } from '@/hooks/useChat'
 import { fade } from '@/lib/motion'
 import { useServerConfig, type ServerConfig } from '@/lib/serverConfig'
+import { presenceLine } from '@/lib/status'
 import { cn } from '@/lib/utils'
 
 function App() {
@@ -99,6 +100,8 @@ function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat
             admin: chat.admin,
             config,
             online: chat.connected && chat.phase === 'loggedIn',
+            ownStatus: chat.ownStatus,
+            onSetStatus: chat.setStatus,
             onBecameAccount: chat.becomeAccount,
             onLogout: chat.logout,
             onDeleted: chat.forget,
@@ -150,22 +153,32 @@ function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat
                   <ArrowLeft aria-hidden="true" />
                   <span className="sr-only">Back to chats</span>
                 </Button>
-                <UserAvatar username={open.title} online={open.online ?? undefined} className="size-9" />
+                <UserAvatar username={open.title} presence={open.presence ?? undefined} className="size-9" />
                 <div className="min-w-0">
                   <h1 className="truncate font-medium">{open.title}</h1>
                   <p className="text-xs text-muted-foreground">
                     {open.counterpart?.gone
                       ? 'No longer here'
-                      : [
-                          open.kind === 'guest' ? 'Guest' : open.kind === 'bot' ? 'Bot' : null,
-                          open.online === null ? null : open.online ? 'Online' : 'Offline — they will see your messages when they are back',
-                        ]
-                          .filter(part => part !== null)
-                          .join(' · ')}
+                      : open.presence === null
+                        ? ''
+                        : open.presence === 'offline'
+                          ? 'Offline — they will see your messages when they are back'
+                          : presenceLine(
+                              open.kind === 'guest' ? 'Guest' : open.kind === 'bot' ? 'Bot' : undefined,
+                              open.presence,
+                              open.statusText,
+                            )}
                   </p>
                 </div>
               </header>
-              <MessageList key={open.id} title={open.title} thread={chat.thread} onLoadEarlier={chat.loadEarlier} />
+              <MessageList
+                key={open.id}
+                title={open.title}
+                thread={chat.thread}
+                ownUserId={chat.userId}
+                onLoadEarlier={chat.loadEarlier}
+                onAtEndChange={chat.reportAtEnd}
+              />
               <MessageComposer
                 key={`composer-${open.id}`}
                 recipient={open.title}

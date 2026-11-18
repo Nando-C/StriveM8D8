@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import {
-    bubbles, chat, chats, composer, joinAsGuest, log, messageRow, openApp, openTab, person, send, signedInAs, unique,
+    bubbles, chat, chats, composer, joinAsGuest, log, SAVED, messageRow, openApp, openTab, person, send, signedInAs, unique,
 } from './helpers.js'
 
 // Two guests, each in their own browser, both signed in.
@@ -20,7 +20,7 @@ test('a conversation between two people: each message arrives once, on both side
 
     await person(ana, benName).click()
     await send(ana, 'hello ben')
-    await expect(messageRow(ana, 'hello ben')).toContainText('Sent')
+    await expect(messageRow(ana, 'hello ben')).toContainText(SAVED)
 
     // Ben did nothing, and has a chat waiting with a badge and a count in the tab title.
     await expect(chat(ben, anaName)).toContainText('hello ben')
@@ -58,7 +58,7 @@ test('a message to someone who is away waits for them, and is marked as new when
     await expect(composer(ana)).toBeEnabled()
     await send(ana, 'while you were out')
     await send(ana, 'and one more')
-    await expect(messageRow(ana, 'and one more')).toContainText('Sent')
+    await expect(messageRow(ana, 'and one more')).toContainText(SAVED)
 
     // Ben comes back later, in the same browser.
     const back = await openTab(benContext)
@@ -131,7 +131,7 @@ test('the demo bot is there to talk to, and answers', async ({ browser }) => {
 
     await expect(bubbles(ana)).toHaveCount(2)
     await expect(bubbles(ana).nth(1)).toContainText('Hello!')
-    await expect(messageRow(ana, 'hello')).toContainText('Sent')
+    await expect(messageRow(ana, 'hello')).toContainText(SAVED)
     await expect(chat(ana, 'demo-bot')).toBeVisible()
     // The conversation is stored like any other.
     await ana.reload()
@@ -151,7 +151,7 @@ test('a long conversation loads a page at a time and keeps the reader’s place'
     for (let index = 1; index <= 106; index++) {
         const from = index % 2 ? ana : ben
         await send(from, `message ${index}`)
-        await expect(messageRow(from, `message ${index}`)).toContainText('Sent')
+        await expect(messageRow(from, `message ${index}`)).toContainText(SAVED)
         // Each of the two sends every other message: one a second each, just inside the limit.
         await from.waitForTimeout(520)
     }

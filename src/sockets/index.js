@@ -2,18 +2,21 @@ import { createRateLimiter } from '../rateLimit.js'
 import { createMessageHandlers } from './messages.js'
 import { createPresence } from './presence.js'
 import { createSessionHandlers } from './session.js'
+import { createStatusHandlers } from './status.js'
 
 // Wires every socket event onto `io`. All state is created here, per call, so each app
 // instance has its own. The events themselves live beside this file, by concern:
 // session.js (who somebody is), messages.js (conversations and what is said in them),
-// presence.js (who is connected). Returns read access to the public view of who is
+// status.js (what a user chooses to show), presence.js (who is connected, and who can see it). Returns read access to the public view of who is
 // online, and the hourly housekeeping routine.
 export const registerSocketHandlers = (io, settings) => {
     const presence = createPresence(io, { demoBot: settings.demoBot })
     const rateLimiter = createRateLimiter()
     const messages = createMessageHandlers({ io, presence, settings, rateLimiter })
+    const status = createStatusHandlers({ io, presence, rateLimiter, onVisibleAgain: messages.visibleAgain })
     const session = createSessionHandlers({
-        io, presence, settings, rateLimiter, onIdentityRemoved: messages.identityRemoved,
+        io, presence, settings, rateLimiter,
+        onIdentityRemoved: messages.identityRemoved, onConversationsListed: messages.listDelivered,
     })
 
     io.on('connection', socket => {
@@ -21,6 +24,7 @@ export const registerSocketHandlers = (io, settings) => {
 
         session.registerOn(socket)
         messages.registerOn(socket)
+        status.registerOn(socket)
 
         socket.on('disconnect', () => {
             console.log("socket disconnected:", socket.id)
