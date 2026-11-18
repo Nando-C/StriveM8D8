@@ -7,7 +7,12 @@ import {
   selectedConversation,
   selectedUserId,
 } from '@/lib/chatState'
-import { clearSession, loadReservation, loadSession, saveReservation, saveSession, type Session } from '@/lib/session'
+import { deviceLabel } from '@/lib/device'
+import { ask } from '@/lib/request'
+import {
+  clearAccount, clearSession, loadAccount, loadReservation, saveAccount, saveReservation, saveSession,
+  startingSession, type Session,
+} from '@/lib/session'
 import { socket } from '@/lib/socket'
 import { useSocketConnected } from '@/lib/useSocketConnected'
 import type {
@@ -34,6 +39,21 @@ const guestLogin = (username: string): LoginPayload => {
   return reservation === undefined ? { username } : { username, reservation }
 }
 
+export const SIGNED_OUT_ELSEWHERE = 'You were signed out on this device.'
+
+/**
+ * What to send to log back in as `session`, or `null` if that is no longer possible: an
+ * account whose device session another tab has signed out.
+ */
+const reLogin = (session: Session): LoginPayload | null => {
+  if (session.kind === 'guest') return guestLogin(session.username)
+  const account = loadAccount()
+  if (account === null || account.username !== session.username) return null
+  // The token from this tab's previous connection lets the server replace that
+  // connection rather than count this one as a further device.
+  return session.sessionToken === '' ? { session: account.session } : { session: account.session, sessionToken: session.sessionToken }
+}
+
 /**
  * Connects the chat state (a pure reducer) to the socket.
  *
@@ -54,11 +74,11 @@ export const useChat = () => {
   const [everConnected, setEverConnected] = useState(connected)
   if (connected && !everConnected) setEverConnected(true)
   const [state, dispatch] = useReducer(chatReducer, undefined, () =>
-    initialChatState(loadSession()?.username ?? null),
+    initialChatState(startingSession()?.username ?? null),
   )
 
   // The identity to log in with whenever the socket (re)connects.
-  const session = useRef<Session | null>(loadSession())
+  const session = useRef<Session | null>(startingSession())
   // The socket id a login was last emitted on, so one connection logs in once even when
   // React StrictMode runs the effect twice.
   const loginSentOn = useRef<string | null>(null)
@@ -74,10 +94,20 @@ export const useChat = () => {
     // The server signed this connection out on purpose and is about to close it.
     let revoked = false
 
-    const onConnect = () => {
-      if (session.current !== null && loginSentOn.current !== socket.id) {
-        emitLogin(guestLogin(session.current.username))
+    // Logs in as the held session, or gives it up if it can no longer be used.
+    const logBackIn = () => {
+      if (session.current === null) return
+      const payload = reLogin(session.current)
+      if (payload !== null) {
+        emitLogin(payload)
+        return
       }
+      session.current = null
+      clearSession()
+      dispatch({ type: 'loginFailed', message: SIGNED_OUT_ELSEWHERE })
+    }
+    const onConnect = () => {
+      if (session.current !== null && loginSentOn.current !== socket.id) logBackIn()
     }
     const onDisconnect = (reason: string) => {
       loginSentOn.current = null
@@ -97,14 +127,18 @@ export const useChat = () => {
 
     const onLoggedIn = (payload: LoggedInPayload) => {
       clearTimeout(retryTimer)
-      session.current = { username: payload.username, sessionToken: payload.sessionToken }
+      session.current = { username: payload.username, sessionToken: payload.sessionToken, kind: payload.kind }
       saveSession(session.current)
+      // After a password sign-in: this device's session, for every later visit and tab.
+      if (payload.session !== undefined) saveAccount({ username: payload.username, session: payload.session })
       // Sent once, when the name is first reserved: without it this browser could not
       // have the name back after a reload.
       if (payload.reservation !== undefined) saveReservation(payload.username, payload.reservation)
       dispatch({ type: 'loggedIn', payload })
     }
-    const onLoginError = ({ message, retryable }: LoginErrorPayload) => {
+    const onLoginError = ({ message, retryable, sessionEnded }: LoginErrorPayload) => {
+      // The device session is gone for good; asking with it again would only fail again.
+      if (sessionEnded === true) clearAccount()
       // Logging back in by itself, and the server only said "not yet" (it is still
       // starting): keep the session and ask again shortly, instead of dropping the user
       // back to the form as if their name had been refused.
@@ -112,9 +146,7 @@ export const useChat = () => {
         const sentOn = socket.id
         clearTimeout(retryTimer)
         retryTimer = setTimeout(() => {
-          if (session.current !== null && socket.connected && socket.id === sentOn) {
-            emitLogin(guestLogin(session.current.username))
-          }
+          if (socket.connected && socket.id === sentOn) logBackIn()
         }, LOGIN_RETRY_MS)
         return
       }
@@ -125,6 +157,8 @@ export const useChat = () => {
     }
     const onSessionRevoked = ({ reason }: SessionRevokedPayload) => {
       revoked = true
+      // Signing an account's device out applies to every tab that shares its session.
+      if (session.current?.kind === 'account') clearAccount()
       session.current = null
       loginSentOn.current = null
       clearSession()
@@ -205,6 +239,51 @@ export const useChat = () => {
     [emitLogin],
   )
 
+  const signIn = useCallback(
+    (username: string, password: string) => {
+      emitLogin({ username, password, deviceLabel: deviceLabel() })
+    },
+    [emitLogin],
+  )
+
+  /** Logs in to the account just created (or recovered) on this device. */
+  const signInWithSession = useCallback(
+    (username: string, deviceSession: string) => {
+      saveAccount({ username, session: deviceSession })
+      emitLogin({ session: deviceSession })
+    },
+    [emitLogin],
+  )
+
+  /** The guest who is logged in has registered their name: carry on as that account. */
+  const becomeAccount = useCallback((deviceSession: string, admin: boolean) => {
+    if (session.current === null) return
+    saveAccount({ username: session.current.username, session: deviceSession })
+    session.current = { ...session.current, kind: 'account' }
+    saveSession(session.current)
+    dispatch({ type: 'becameAccount', admin })
+  }, [])
+
+  /** Back to the entry screen as nobody. `message` says why, when it was not the user's doing. */
+  const forget = useCallback((message?: string) => {
+    if (session.current?.kind === 'account') clearAccount()
+    session.current = null
+    loginSentOn.current = null
+    clearSession()
+    dispatch(message === undefined ? { type: 'loggedOut' } : { type: 'loginFailed', message })
+  }, [])
+
+  /**
+   * Signs this device out. The server keeps the connection open, logged out, so the entry
+   * screen works at once. A guest's name stays reserved to this browser.
+   */
+  const logout = useCallback(() => {
+    // Sent while still logged in; the answer is not waited for. Offline, the device is
+    // signed out here regardless, and its session ends on the server when it expires.
+    if (socket.connected) void ask('logout', {})
+    forget()
+  }, [forget])
+
   const selectConversation = useCallback((username: string) => {
     dispatch({ type: 'conversationSelected', username })
   }, [])
@@ -248,6 +327,8 @@ export const useChat = () => {
     everConnected,
     phase: state.phase,
     username: state.username,
+    kind: state.kind,
+    admin: state.admin,
     loginError: state.loginError,
     users: otherOnlineUsers(state),
     selected: state.selected,
@@ -257,6 +338,11 @@ export const useChat = () => {
     lastIncoming: state.lastIncoming,
     canSend,
     login,
+    signIn,
+    signInWithSession,
+    becomeAccount,
+    logout,
+    forget,
     selectConversation,
     closeConversation,
     sendMessage,

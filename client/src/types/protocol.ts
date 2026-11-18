@@ -102,6 +102,8 @@ export interface DeviceSession {
   current: boolean
 }
 
+export type NoPayload = Record<string, never>
+
 export interface Invitation {
   id: string
   createdAt: number
@@ -224,11 +226,13 @@ export interface ClientToServerEvents {
   resetPassword: (payload: ResetPasswordPayload, ack: (response: ResetPasswordAck) => void) => void
   changePassword: (payload: ChangePasswordPayload, ack: (response: Ack) => void) => void
   deleteAccount: (payload: { password: string }, ack: (response: Ack) => void) => void
-  listSessions: (ack: (response: Ack<{ sessions: DeviceSession[] }>) => void) => void
+  // The requests below that need no data still send an (empty) object, so that every
+  // request has the same shape: a payload, then the acknowledgement.
+  listSessions: (payload: NoPayload, ack: (response: Ack<{ sessions: DeviceSession[] }>) => void) => void
   revokeSession: (payload: { id: string }, ack: (response: Ack) => void) => void
-  logout: (ack: (response: Ack) => void) => void
+  logout: (payload: NoPayload, ack: (response: Ack) => void) => void
   /** Administrators only. The code is returned this once. */
-  createInvitation: (ack: (response: Ack<Invitation & { code: string }>) => void) => void
-  listInvitations: (ack: (response: Ack<{ invitations: Invitation[] }>) => void) => void
+  createInvitation: (payload: NoPayload, ack: (response: Ack<Invitation & { code: string }>) => void) => void
+  listInvitations: (payload: NoPayload, ack: (response: Ack<{ invitations: Invitation[] }>) => void) => void
   revokeInvitation: (payload: { id: string }, ack: (response: Ack) => void) => void
 }

@@ -3,6 +3,7 @@ import type {
   HistoryErrorPayload,
   HistoryMessage,
   HistoryPayload,
+  IdentityKind,
   LoggedInPayload,
   NewLoginPayload,
   OnlineUser,
@@ -59,6 +60,9 @@ export interface ChatState {
   phase: Phase
   /** The logged-in (or logging-back-in) username; `null` while logged out. */
   username: string | null
+  /** Guest or account; `null` until the server has said. */
+  kind: IdentityKind | null
+  admin: boolean
   loginError: string | null
   /** Increases with every `loggedin`, so effects can react to each (re)login. */
   loginCount: number
@@ -74,6 +78,9 @@ export type ChatAction =
   | { type: 'loginRequested' }
   | { type: 'loggedIn'; payload: LoggedInPayload }
   | { type: 'loginFailed'; message: string }
+  | { type: 'loggedOut' }
+  /** The guest who is logged in has just become an account. */
+  | { type: 'becameAccount'; admin: boolean }
   | { type: 'disconnected'; replaced: boolean }
   | { type: 'userJoined'; payload: NewLoginPayload }
   | { type: 'userLeft'; payload: UserLeftPayload }
@@ -93,6 +100,8 @@ const EMPTY_CONVERSATION: Conversation = { messages: [], unread: 0, error: null 
 export const initialChatState = (storedUsername: string | null): ChatState => ({
   phase: storedUsername === null ? 'loggedOut' : 'authenticating',
   username: storedUsername,
+  kind: null,
+  admin: false,
   loginError: null,
   loginCount: 0,
   onlineUsers: [],
@@ -218,6 +227,8 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
         ...state,
         phase: 'loggedIn',
         username: action.payload.username,
+        kind: action.payload.kind,
+        admin: action.payload.admin,
         loginError: null,
         loginCount: state.loginCount + 1,
         // The snapshot replaces whatever was known before.
@@ -227,6 +238,12 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
     case 'loginFailed':
       // Back to the form with nothing carried over: whoever logs in next may be someone else.
       return { ...initialChatState(null), loginError: action.message }
+
+    case 'loggedOut':
+      return initialChatState(null)
+
+    case 'becameAccount':
+      return { ...state, kind: 'account', admin: action.admin }
 
     case 'disconnected': {
       if (state.username === null) return state

@@ -1,3 +1,5 @@
+import type { IdentityKind } from '@/types/protocol'
+
 // The logged-in identity for this tab: the username plus the token the server issued for it.
 //
 // It lives in sessionStorage — per tab, gone when the tab closes — so that two tabs can be
@@ -5,7 +7,9 @@
 
 export interface Session {
   username: string
+  /** From the last `loggedin`; empty when this tab has not logged in yet. */
   sessionToken: string
+  kind: IdentityKind
 }
 
 const STORAGE_KEY = 'strive-chat.session'
@@ -13,18 +17,20 @@ const STORAGE_KEY = 'strive-chat.session'
 // Used when sessionStorage is unavailable (private browsing, blocked site data).
 let memoryFallback: Session | null = null
 
-const isSession = (value: unknown): value is Session =>
-  typeof value === 'object' &&
-  value !== null &&
-  typeof (value as Session).username === 'string' &&
-  typeof (value as Session).sessionToken === 'string'
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
+
+const toSession = (value: unknown): Session | null => {
+  if (!isRecord(value) || typeof value.username !== 'string' || typeof value.sessionToken !== 'string') return null
+  // Sessions stored before accounts existed have no kind: they were all guests.
+  const kind: IdentityKind = value.kind === 'account' ? 'account' : 'guest'
+  return { username: value.username, sessionToken: value.sessionToken, kind }
+}
 
 export const loadSession = (): Session | null => {
   try {
     const stored = window.sessionStorage.getItem(STORAGE_KEY)
     if (stored === null) return memoryFallback
-    const parsed: unknown = JSON.parse(stored)
-    return isSession(parsed) ? parsed : null
+    return toSession(JSON.parse(stored))
   } catch {
     return memoryFallback
   }
@@ -99,4 +105,60 @@ export const clearReservations = (): void => {
   } catch {
     // Nothing stored to remove.
   }
+}
+
+// ---------- the account this browser is signed in to
+//
+// An account's device session is shared by every tab (each tab is one more connection of
+// the same device) and outlives them, so it lives in localStorage. It is the only thing
+// here that opens an account, and it stays valid until the device is signed out.
+
+export interface StoredAccount {
+  username: string
+  session: string
+}
+
+const ACCOUNT_KEY = 'strive-chat.account'
+
+let accountFallback: StoredAccount | null = null
+
+export const loadAccount = (): StoredAccount | null => {
+  try {
+    const stored = window.localStorage.getItem(ACCOUNT_KEY)
+    if (stored === null) return accountFallback
+    const parsed: unknown = JSON.parse(stored)
+    if (!isRecord(parsed) || typeof parsed.username !== 'string' || typeof parsed.session !== 'string') return null
+    return { username: parsed.username, session: parsed.session }
+  } catch {
+    return accountFallback
+  }
+}
+
+export const saveAccount = (account: StoredAccount): void => {
+  accountFallback = account
+  try {
+    window.localStorage.setItem(ACCOUNT_KEY, JSON.stringify(account))
+  } catch {
+    // Kept in memory only.
+  }
+}
+
+export const clearAccount = (): void => {
+  accountFallback = null
+  try {
+    window.localStorage.removeItem(ACCOUNT_KEY)
+  } catch {
+    // Nothing stored to remove.
+  }
+}
+
+/**
+ * Who this tab should log in as when it opens: whoever it was before a reload, or else
+ * the account this browser is signed in to.
+ */
+export const startingSession = (): Session | null => {
+  const session = loadSession()
+  if (session !== null) return session
+  const account = loadAccount()
+  return account === null ? null : { username: account.username, sessionToken: '', kind: 'account' }
 }

@@ -1,7 +1,7 @@
 import { AnimatePresence, motion } from 'motion/react'
 import { ArrowLeft, MessagesSquare } from 'lucide-react'
 import { ConnectionBanner } from '@/components/ConnectionBanner'
-import { LoginForm } from '@/components/LoginForm'
+import { EntryScreen } from '@/components/EntryScreen'
 import { MessageComposer } from '@/components/MessageComposer'
 import { MessageList } from '@/components/MessageList'
 import { Sidebar } from '@/components/Sidebar'
@@ -9,10 +9,12 @@ import { Button } from '@/components/ui/button'
 import { UserAvatar } from '@/components/UserAvatar'
 import { useChat } from '@/hooks/useChat'
 import { fade } from '@/lib/motion'
+import { useServerConfig, type ServerConfig } from '@/lib/serverConfig'
 import { cn } from '@/lib/utils'
 
 function App() {
   const chat = useChat()
+  const config = useServerConfig()
 
   // The login form and the chat cross-fade into each other.
   return (
@@ -20,23 +22,26 @@ function App() {
       {chat.username === null ? (
         // No identity yet (or the last login was refused): the login form is the whole screen.
         <motion.div key="login" variants={fade} initial="hidden" animate="visible" exit="exit">
-          <LoginForm
+          <EntryScreen
+            config={config}
             connected={chat.connected}
             pending={chat.phase === 'authenticating'}
             error={chat.loginError}
-            onLogin={chat.login}
+            onGuest={chat.login}
+            onSignIn={chat.signIn}
+            onAccountCreated={chat.signInWithSession}
           />
         </motion.div>
       ) : (
         <motion.div key="chat" variants={fade} initial="hidden" animate="visible" exit="exit">
-          <ChatShell chat={chat} username={chat.username} />
+          <ChatShell chat={chat} config={config} username={chat.username} />
         </motion.div>
       )}
     </AnimatePresence>
   )
 }
 
-function ChatShell({ chat, username }: { chat: ReturnType<typeof useChat>; username: string }) {
+function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat>; config: ServerConfig; username: string }) {
 
   const blockedReason = !chat.connected
     ? 'Disconnected'
@@ -66,6 +71,15 @@ function ChatShell({ chat, username }: { chat: ReturnType<typeof useChat>; usern
         {/* On a phone the list and the conversation are separate views; from md up they sit side by side. */}
         <Sidebar
           username={username}
+          account={{
+            kind: chat.kind,
+            admin: chat.admin,
+            config,
+            online: chat.connected && chat.phase === 'loggedIn',
+            onBecameAccount: chat.becomeAccount,
+            onLogout: chat.logout,
+            onDeleted: chat.forget,
+          }}
           users={chat.users}
           selected={chat.selected}
           selectedOnline={chat.selectedOnline}

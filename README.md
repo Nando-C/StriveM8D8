@@ -16,7 +16,8 @@ A real-time, one-to-one chat application: a Node.js + Socket.IO server with Mong
 - **Honest about delivery.** Every message the user sends is shown as sending, sent, or not sent with the reason. Nothing fails silently.
 - **Stays up when things break.** If the database is unreachable the server keeps running, and whoever is logged in stays logged in and keeps seeing who is online; sending, history and new logins report an error worth retrying, and the connection is retried until it returns. If the server itself is slow to start, the client says it is waking rather than looking broken.
 - **Accessible and responsive.** Usable from the keyboard alone, announced to screen readers, laid out for desktop and phone, with light and dark themes and motion that is switched off when the system asks for reduced motion.
-- **143 automated tests**, run on every push by GitHub Actions on two Node.js versions.
+- **Guests and accounts.** Type a name and you are in, with that name kept for your browser; or create an account with a password and use it from several devices at once — with a list of those devices, remote sign-out, and a recovery code in place of an email address.
+- **277 automated tests**, run on every push by GitHub Actions on two Node.js versions.
 
 ## Tech stack
 
@@ -76,21 +77,27 @@ src/                        SERVER
 ├── index.js                Bootstrap only: create the app, connect to MongoDB, listen
 ├── app.js                  createApp() — builds Express + HTTP server + Socket.IO, no side effects
 ├── db.js                   connectDB() with retry, isDatabaseReady()
-├── routes.js               REST routes (GET /online-users, GET /health)
+├── settings.js             Everything that differs between deployments, from the environment
+├── routes.js               REST routes (GET /online-users, GET /config, GET /health)
 ├── bot.js                  The demo bot's identity and replies
 ├── rateLimit.js            Sliding-window rate limiter
-├── sockets/index.js        All socket events; owns the online-users state for its app instance
-└── models/message.js       Message model and the conversation key helper
+├── clientAddress.js        A client's real address behind trusted proxies
+├── auth/                   Password hashing (queued scrypt), secrets, guessing limits
+├── sockets/
+│   ├── index.js            Messages and history; wires everything onto each connection
+│   ├── session.js          Guests, accounts, devices, invitations, hourly housekeeping
+│   └── presence.js         Who is online: users and their connections, for one app instance
+└── models/                 Message, Identity, Session (a signed-in device), Invitation
 test/                       Server integration tests (real socket clients, in-memory MongoDB)
 
 client/                     CLIENT
 └── src/
-    ├── App.tsx             Login screen or chat shell
-    ├── components/         LoginForm, Sidebar, MessageList, MessageComposer, ConnectionBanner, …
+    ├── App.tsx             Entry screen or chat shell
+    ├── components/         EntryScreen, account/ (menu and dialogs), Sidebar, MessageList, MessageComposer, ConnectionBanner, …
     │   └── ui/             shadcn/ui components (source files, see below)
-    ├── hooks/useChat.ts    The only code that touches the socket
+    ├── hooks/useChat.ts    Connects the chat to the socket: login, presence, messages
     ├── lib/chatState.ts    Every state change, as a pure reducer
-    ├── lib/                socket, session storage, motion timings, formatting
+    ├── lib/                socket, requests, stored sessions, server config, motion timings, formatting
     ├── types/protocol.ts   The wire protocol as TypeScript types
     └── test/               Client tests (the real app against a fake socket)
 ```
@@ -121,7 +128,7 @@ The parts of this project that took the most thought, and why they are the way t
 
 | | Server | Client |
 |---|---|---|
-| Tests | 84, in 10 files | 59, in 7 files |
+| Tests | 171, in 13 files | 106, in 8 files |
 | Approach | Real Socket.IO clients against a fresh server per test, with an in-memory MongoDB | The real app rendered against a fake socket; each test plays the server |
 | Lint | oxlint | oxlint, including React hooks rules |
 | Types | — | TypeScript, checked on every build |
@@ -129,7 +136,7 @@ The parts of this project that took the most thought, and why they are the way t
 - **CI** runs lint, both test suites and the client build on every push and pull request, on Node 22 and Node 24 (`.github/workflows/ci.yml`).
 - **The tests were themselves tested.** For each suite the code was broken on purpose — a check removed, a message broadcast instead of targeted, the token comparison skipped — to confirm that a test fails each time. That exercise exposed, and led to fixing, a test helper that was passing without proving anything.
 - **Server tests cover** login and username rules, guest names and their expiry, accounts (sign-up, sign-in, several devices, revoking a device, password change, recovery, deletion, turning a guest into an account), invitations and administrator names, guessing limits, that no secret reaches another client or a log, session takeover, presence, targeted delivery, every send-failure path, malformed payloads, the origin allowlist, rate limits and the payload cap, the demo bot, message expiry, history ordering and its 100-message cap, and behaviour when the database is down, has never connected, or comes back.
-- **Client tests cover** logging in and being refused, the people list through arrivals, reconnects and departures, exactly-once merging of live messages and history, unread counts, both kinds of acknowledgement, lost acknowledgements, re-login with the name's reservation, the stored session, waiting for a server that is not ready, being signed out by the server, and being signed in from another tab. Elements are found by role and label, the way assistive technology finds them.
+- **Client tests cover** logging in and being refused, the people list through arrivals, reconnects and departures, exactly-once merging of live messages and history, unread counts, both kinds of acknowledgement, lost acknowledgements, the three ways in and which of them a deployment offers, sign-in and sign-up with the recovery code shown once, a forgotten password, the account menu (devices, password change, invitations, signing out, deletion, a guest becoming an account), re-login with the name's reservation or the device session, the stored session, waiting for a server that is not ready, being signed out by the server, and being signed in from another tab. Elements are found by role and label, the way assistive technology finds them.
 
 ```bash
 pnpm test               # server
@@ -390,11 +397,10 @@ With `DEMO_BOT=true` the server adds a user called `demo-bot` who is always onli
 | `GET` | `/config` | `{ signup: "open" \| "invite" \| "closed", guests: boolean, protocol: 1 }` — which ways in this deployment offers |
 | `GET` | `/health` | `{ status: "ok", db: "up" \| "down" }` — always `200` while the process is alive, including when the database is down |
 
-Clients do not need `/online-users` — presence arrives over the socket, and the client in this repository never calls it — but it is handy for inspection. Unknown routes return `404` with a JSON body.
+Clients do not need `/online-users` — presence arrives over the socket, and the client in this repository never calls it — but it is handy for inspection. `/config` is the one thing that client fetches over HTTP: it has to know which ways in to offer before anyone is logged in. Unknown routes return `404` with a JSON body.
 
 ## Known limitations
 
-- **Accounts exist on the server before they exist on screen.** The server supports accounts, devices and invitations (see [Protocol reference](#protocol-reference)), but the client in this repository still offers the guest path only; the account screens are the next step.
 - **History still follows the name.** A guest's name is reserved to their browser, but conversations are stored under the pair of usernames. Once a guest name lapses, whoever takes it next can load what was said under it. Addressing conversations by permanent identity is the next server change; until then this is a demo, not a place for private conversations.
 - **A forgotten password and a lost recovery code cannot be recovered.** There is no email address on an account, by design.
 - **Online recipients only.** A message can only be sent to a user who is connected; there is no offline delivery queue.
@@ -404,7 +410,7 @@ Clients do not need `/online-users` — presence arrives over the socket, and th
 
 ### What would come next
 
-- **Account screens** in the client, and conversations stored by identity rather than by name.
+- **Conversations stored by identity** rather than by name, and reachable while the other person is offline.
 - **Delivery to offline users**, with unread counts that survive a reload.
 - **Horizontal scaling**, moving presence into Redis and using Socket.IO's Redis adapter.
 - **End-to-end browser tests in CI.** During development the app was checked with scripted Chrome sessions, including cutting a connection without the server noticing; those belong in the repository.

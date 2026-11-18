@@ -1,4 +1,5 @@
 import { AnimatePresence, motion, useIsPresent } from 'motion/react'
+import { AccountMenu, type AccountMenuProps } from '@/components/account/AccountMenu'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { UserAvatar } from '@/components/UserAvatar'
@@ -9,6 +10,8 @@ import type { OnlineUser } from '@/types/protocol'
 
 interface SidebarProps {
   username: string
+  /** Everything the account menu needs besides the name. */
+  account: Omit<AccountMenuProps, 'username'>
   users: OnlineUser[]
   selected: string | null
   /** Whether the selected user is currently online (they stay listed while selected). */
@@ -40,6 +43,7 @@ function SelectionHighlight({ current }: { current: boolean }) {
 
 export function Sidebar({
   username,
+  account,
   users,
   selected,
   selectedOnline,
@@ -54,12 +58,8 @@ export function Sidebar({
 
   return (
     <aside className={cn('flex min-h-0 flex-col border-r bg-sidebar text-sidebar-foreground', className)}>
-      <div className="flex items-center gap-3 border-b p-4">
-        <UserAvatar username={username} className="size-9" />
-        <div className="min-w-0">
-          <p className="text-xs text-muted-foreground">Signed in as</p>
-          <p className="truncate font-medium">{username}</p>
-        </div>
+      <div className="border-b p-2">
+        <AccountMenu username={username} {...account} />
       </div>
       <nav aria-label="People online" className="flex min-h-0 flex-1 flex-col">
         <h2 className="flex items-center justify-between px-4 pt-4 pb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">

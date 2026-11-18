@@ -16,7 +16,7 @@ const TIPS = [
     "Messages here go to exactly one person. Open this page in a second tab, join with another name, and the two of you can talk.",
     "If the connection drops, the app reconnects and signs you back in by itself, then catches up on anything it missed.",
     "If a message cannot be delivered you will see the reason under it. Nothing is dropped silently.",
-    "There are no passwords in this demo, so please don't share anything private.",
+    "Anyone can join this demo, so please don't share anything private. To keep your name, create an account from the menu on your name.",
 ]
 
 /**

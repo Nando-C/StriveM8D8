@@ -47,7 +47,7 @@ describe('reconnecting', () => {
 
     // A re-login's answer carries no reservation: the one already held must not be lost.
     expect(fakeSocket.sent('login').at(-1)).toEqual({ username: 'alice', reservation: 'secret-alice' })
-    expect(stored()).toEqual({ username: 'alice', sessionToken: 'token-2' })
+    expect(stored()).toEqual({ username: 'alice', sessionToken: 'token-2', kind: 'guest' })
     expect(reservations()).toEqual({ alice: 'secret-alice' })
   })
 
@@ -123,7 +123,7 @@ describe('leaving the page', () => {
     pageHide()
 
     expect(fakeSocket.disconnect).toHaveBeenCalledTimes(1)
-    expect(stored()).toEqual({ username: 'alice', sessionToken: 'token-1' })
+    expect(stored()).toEqual({ username: 'alice', sessionToken: 'token-1', kind: 'guest' })
   })
 
   it('does nothing when there is no connection to close', async () => {
@@ -176,8 +176,9 @@ describe('the stored session', () => {
 
     await loginAs('alice', [user('bob')])
 
-    expect(stored()).toEqual({ username: 'alice', sessionToken: 'token-1' })
-    expect(window.localStorage.length).toBe(1)
+    expect(stored()).toEqual({ username: 'alice', sessionToken: 'token-1', kind: 'guest' })
+    // Beside it, only what the server said it offers — nothing that identifies anyone.
+    expect(Object.keys(window.localStorage).sort()).toEqual(['strive-chat.config', RESERVATIONS_KEY])
     expect(reservations()).toEqual({ alice: 'secret-alice' })
     // The session is per tab, so another tab can be someone else.
     expect(window.localStorage.getItem(SESSION_KEY)).toBeNull()
@@ -194,7 +195,7 @@ describe('the stored session', () => {
 
     serverSays('loggedin', loggedInPayload('alice', [user('bob')], 'token-new'))
     expect(listedPeople()).toEqual(['bob'])
-    expect(stored()).toEqual({ username: 'alice', sessionToken: 'token-new' })
+    expect(stored()).toEqual({ username: 'alice', sessionToken: 'token-new', kind: 'guest' })
   })
 
   it('waits for the connection before logging in with a stored session', async () => {
@@ -315,7 +316,7 @@ describe('a server that is not ready yet', () => {
 
     expect(screen.queryByLabelText('Username')).not.toBeInTheDocument()
     expect(screen.getByText('Signing back in as alice…')).toBeInTheDocument()
-    expect(stored()).toEqual({ username: 'alice', sessionToken: 'token-1' })
+    expect(stored()).toEqual({ username: 'alice', sessionToken: 'token-1', kind: 'guest' })
     expect(fakeSocket.sent('login')).toHaveLength(2)
 
     act(() => void vi.advanceTimersByTime(LOGIN_RETRY_MS))
