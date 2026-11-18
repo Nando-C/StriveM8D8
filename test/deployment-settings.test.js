@@ -50,6 +50,29 @@ describe('GET /config', () => {
     })
 })
 
+describe('GET /proxy-check', () => {
+    it('does not exist unless it was asked for', async () => {
+        app = await startApp()
+
+        expect((await getJson(`${app.url}/proxy-check`)).status).toBe(404)
+    })
+
+    it('shows the asker how their request arrived and what each setting would make of it', async () => {
+        app = await startApp({ proxyCheck: true, trustedProxyHops: 1 })
+
+        const response = await fetch(`${app.url}/proxy-check`, { headers: { 'X-Forwarded-For': '203.0.113.7, 198.51.100.4' } })
+        const body = await response.json()
+
+        expect(body).toEqual({
+            connectionFrom: '127.0.0.1',
+            forwardedFor: ['203.0.113.7', '198.51.100.4'],
+            addressWithHops: { 0: '127.0.0.1', 1: '198.51.100.4', 2: '203.0.113.7', 3: '203.0.113.7', 4: '203.0.113.7' },
+            configuredHops: 1,
+            addressAsConfigured: '198.51.100.4',
+        })
+    })
+})
+
 describe('with guests switched off', () => {
     it('refuses a name without an account, and tells nobody outside who is online', async () => {
         app = await startApp(PRIVATE)

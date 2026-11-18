@@ -18,7 +18,7 @@ A real-time, one-to-one chat application: a Node.js + Socket.IO server with Mong
 - **Accessible and responsive.** Usable from the keyboard alone, announced to screen readers, laid out for desktop and phone, with light and dark themes and motion that is switched off when the system asks for reduced motion.
 - **Guests and accounts.** Type a name and you are in, with that name kept for your browser; or create an account with a password and use it from several devices at once — with a list of those devices, remote sign-out, and a recovery code in place of an email address.
 - **Status that means something.** Online, away (also set by itself after five minutes without activity, and only when *every* one of your devices is idle), do not disturb, and invisible — plus a line of your own that can clear itself after a while. Invisible is real: to everyone else you are indistinguishable from someone who is not connected, yet you can read and write as usual.
-- **545 automated tests**, 28 of them driving real browsers against the built app, run on every push by GitHub Actions on two Node.js versions.
+- **547 automated tests**, 28 of them driving real browsers against the built app, run on every push by GitHub Actions on two Node.js versions.
 
 ## Tech stack
 
@@ -154,7 +154,7 @@ Three suites, each testing what the others cannot.
 
 | | Server | Client |
 |---|---|---|
-| Tests | 310, in 17 files | 207, in 12 files |
+| Tests | 312, in 17 files | 207, in 12 files |
 | Approach | Real Socket.IO clients against a fresh server per test, with an in-memory MongoDB | The real app rendered against a fake socket; each test plays the server |
 | Lint | oxlint | oxlint, including React hooks rules |
 | Types | — | TypeScript, checked on every build |
@@ -229,7 +229,8 @@ Server — `.env` in the repository root:
 | `ADMIN_USERNAMES` | No | Comma-separated names reserved for administrators. Nobody can take them as a guest or register them without `SIGNUP_BOOTSTRAP_CODE`. |
 | `SIGNUP_BOOTSTRAP_CODE` | No | A secret, chosen by whoever runs the deployment, that registers the names in `ADMIN_USERNAMES` as administrators. While it is unset those names cannot be registered at all. To use it, open the client at `/?bootstrap=<the code>` and create the account there; the code is taken from the link and removed from the address bar afterwards. |
 | `MEMBER_DIRECTORY` | No | `online` (default): people can start a chat with whoever is connected. `all`: accounts are also shown every other account, connected or not (up to 200) — for a private deployment, where otherwise you could never write to someone who is not online at that moment. Guests are never sent the list. |
-| `TRUSTED_PROXY_HOPS` | When behind a proxy | How many proxies stand between the internet and the server (default `0`). Limits on sign-ups and wrong passwords are counted per client address; behind a hosting platform's proxy every visitor appears to come from the proxy unless this is set, and they would all share one limit. Take the value from the host's documentation — too high a number lets a client forge its address. |
+| `TRUSTED_PROXY_HOPS` | When behind a proxy | How many proxies stand between the internet and the server (default `0`). Limits on sign-ups and wrong passwords are counted per client address; behind a hosting platform's proxy every visitor appears to come from the proxy unless this is set, and they would all share one limit. Too high a number lets a client forge its address. Not every host documents this: use `PROXY_CHECK` to find the value. |
+| `PROXY_CHECK` | No | Set to `true` while setting up a host. It adds `GET /proxy-check`, which shows whoever asks how their own request arrived and which address each value of `TRUSTED_PROXY_HOPS` would take them for. Open it from a browser, compare with your real public address, set the hops that give it, and remove this setting again. |
 
 Client — `client/.env`:
 
@@ -487,6 +488,7 @@ With `DEMO_BOT=true` the server adds a user called `demo-bot` who is always onli
 | Method | Path | Response |
 |--------|------|----------|
 | `GET` | `/online-users` | `{ onlineUsers: [{ userId, username, kind }] }` — `404` where `GUESTS=false`, so a private deployment does not publish its members |
+| `GET` | `/proxy-check` | Only with `PROXY_CHECK=true`: `{ connectionFrom, forwardedFor, addressWithHops, configuredHops, addressAsConfigured }` — how the asker's own request arrived |
 | `GET` | `/config` | `{ signup: "open" \| "invite" \| "closed", guests: boolean, protocol: 2 }` — which ways in this deployment offers |
 | `GET` | `/health` | `{ status: "ok", db: "up" \| "down" }` — always `200` while the process is alive, including when the database is down |
 

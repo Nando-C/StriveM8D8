@@ -226,7 +226,7 @@ describe('settings', () => {
         })
         expect(settings.messageTtlHours).toBeUndefined()
         expect(settingsFromEnv({})).toEqual({
-            demoBot: false, guests: true, adminUsernames: [], bootstrapCode: null, signupMode: 'open',
+            demoBot: false, guests: true, adminUsernames: [], bootstrapCode: null, signupMode: 'open', proxyCheck: false,
         })
     })
 
@@ -240,8 +240,9 @@ describe('settings', () => {
 
         expect(settings).toEqual({
             demoBot: false, guests: false, adminUsernames: ['nando', 'ana'], bootstrapCode: 'a-code',
-            signupMode: 'invite', trustedProxyHops: 1, messageTtlHours: 0, memberDirectory: 'all',
+            signupMode: 'invite', trustedProxyHops: 1, messageTtlHours: 0, memberDirectory: 'all', proxyCheck: false,
         })
+        expect(settingsFromEnv({ PROXY_CHECK: 'true' }).proxyCheck).toBe(true)
         expect(warn).not.toHaveBeenCalled()
     })
 
