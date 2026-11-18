@@ -3,6 +3,7 @@ import listEndpoints from "express-list-endpoints"
 import { createApp } from './app.js'
 import { connectDB, isDatabaseReady } from './db.js'
 import { ensureConversationIndexes } from './models/conversation.js'
+import { Identity, backfillUsernameKeys } from './models/identity.js'
 import { ensureMessageIndexes } from './models/message.js'
 import { settingsFromEnv } from './settings.js'
 
@@ -19,8 +20,14 @@ connectDB(process.env.MONGO_CONNECTION)
         // of hours turns it on, 0 turns it off. Left unset, whatever the database already
         // has stays — so a development machine pointed at a shared database cannot switch
         // another deployment's expiry off just by starting up.
+        if (!isDatabaseReady()) return
+        // Names are compared without regard to case; identities stored before that get their key.
+        await Identity.init()
+        const conflicts = await backfillUsernameKeys()
+        if (conflicts > 0) console.warn(` ⚠️  ${conflicts} stored name(s) differ from another only by case and can no longer be used`)
+
         const ttlHours = settings.messageTtlHours
-        if (!isDatabaseReady() || ttlHours === undefined) return
+        if (ttlHours === undefined) return
         await ensureMessageIndexes({ ttlHours })
         // A conversation lasts as long as its newest message does.
         await ensureConversationIndexes({ ttlHours })

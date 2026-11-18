@@ -98,10 +98,13 @@ export const settle = (ms = 150) => new Promise(resolve => setTimeout(resolve, m
 // Emits `event` and resolves with whichever of the two reply events arrives.
 const request = (socket, event, payload, successEvent, errorEvent) => new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`no reply to "${event}"`)), 3000)
-    const settle = ok => data => {
+    // (A real client acknowledges `loggedin`: it is how the server knows a new guest
+    // name's secret arrived. The acknowledgement, when there is one, is the last argument.)
+    const settle = ok => (data, ack) => {
         clearTimeout(timer)
         socket.off(successEvent, onSuccess)
         socket.off(errorEvent, onError)
+        if (typeof ack === 'function') ack()
         resolve({ ok, ...data })
     }
     const onSuccess = settle(true)

@@ -264,7 +264,7 @@ describe('spacing out read reports', () => {
     vi.useFakeTimers()
     const reporter = createReadReporter(1000)
     const sent: number[] = []
-    const offer = (n: number) => reporter.offer('k', at(n), () => sent.push(n))
+    const offer = (n: number) => reporter.offer('k', at(n), async () => (sent.push(n), true))
 
     offer(1)
     expect(sent).toEqual([1])
@@ -293,22 +293,87 @@ describe('spacing out read reports', () => {
     const reporter = createReadReporter(1000)
     const sent: string[] = []
 
-    reporter.offer('a', at(1), () => sent.push('a1'))
-    reporter.offer('b', at(1), () => sent.push('b1'))
+    reporter.offer('a', at(1), async () => (sent.push('a1'), true))
+    reporter.offer('b', at(1), async () => (sent.push('b1'), true))
     expect(sent).toEqual(['a1', 'b1'])
 
-    reporter.offer('a', at(2), () => sent.push('a2'))
+    reporter.offer('a', at(2), async () => (sent.push('a2'), true))
     reporter.cancel()
     vi.advanceTimersByTime(5000)
     expect(sent).toEqual(['a1', 'b1'])
 
     // It was never sent, so it can be offered again.
     vi.setSystemTime(Date.now() - 4500)
-    reporter.offer('b', at(2), () => sent.push('b2'))
+    reporter.offer('b', at(2), async () => (sent.push('b2'), true))
     expect(sent).toEqual(['a1', 'b1'])
     reporter.flush()
     expect(sent).toEqual(['a1', 'b1', 'b2'])
     reporter.flush()
     expect(sent).toEqual(['a1', 'b1', 'b2'])
   })
+})
+
+describe('a read report the server did not take', () => {
+  it('does not count as reported: it is sent again, with a growing pause, until it is taken', async () => {
+    vi.useFakeTimers()
+    const reporter = createReadReporter(1000, { maxRetryMs: 5000 })
+    const answers = [false, false, false, true]
+    let attempts = 0
+    reporter.offer('k', at(1), async () => answers[attempts++])
+
+    expect(attempts).toBe(1)
+    // 2 s after the first refusal, 4 s after the second, then no more than the ceiling.
+    await vi.advanceTimersByTimeAsync(1999)
+    expect(attempts).toBe(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(attempts).toBe(2)
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(attempts).toBe(3)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(attempts).toBe(4)
+    // Taken: nothing more.
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(attempts).toBe(4)
+  })
+
+  it('is not retried once it is no longer wanted, and gives way to a newer position', async () => {
+    vi.useFakeTimers()
+    const reporter = createReadReporter(1000)
+    const sent: number[] = []
+    reporter.offer('k', at(1), async () => (sent.push(1), false))
+    await vi.advanceTimersByTimeAsync(0)
+
+    // The reader moved on to a newer message before the retry was due.
+    await vi.advanceTimersByTimeAsync(1000)
+    reporter.offer('k', at(2), async () => (sent.push(2), true))
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(sent).toEqual([1, 2])
+
+    // And a refused report whose conversation was closed is simply dropped.
+    reporter.offer('other', at(1), async () => (sent.push(9), false))
+    await vi.advanceTimersByTimeAsync(0)
+    reporter.cancel()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(sent).toEqual([1, 2, 9])
+    // It was never taken, so offering it again sends it again.
+    reporter.offer('other', at(1), async () => (sent.push(9), true))
+    expect(sent).toEqual([1, 2, 9, 9])
+  })
+
+  it('is tried again by the app when the server refuses it', async () => {
+    renderApp()
+    const events = await loginAs('alice', [], [conversation('alice', 'carol', { last: said(2, 'carol', 'carol', 'two') })])
+    await events.click(chatButton('carol'))
+    serverSays('history', { conversationId: dm('alice', 'carol'), hasMore: false, messages: [said(2, 'carol', 'carol', 'two')] })
+    expect(fakeSocket.sent('markRead')).toHaveLength(1)
+
+    act(() => fakeSocket.last('markRead').ack!({ ok: false, message: 'Could not be saved' }))
+
+    await waitFor(() => expect(fakeSocket.sent('markRead')).toHaveLength(2), { timeout: READ_REPORT_INTERVAL_MS * 2 + 1500 })
+    expect(fakeSocket.sent('markRead')[1]).toEqual(fakeSocket.sent('markRead')[0])
+    // Once taken, it is left alone.
+    act(() => fakeSocket.last('markRead').ack!({ ok: true }))
+    await new Promise(resolve => setTimeout(resolve, 300))
+    expect(fakeSocket.sent('markRead')).toHaveLength(2)
+  }, 10_000)
 })

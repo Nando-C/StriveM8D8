@@ -141,13 +141,16 @@ export const useChat = () => {
         socket.connect()
         return
       }
+      // A first login that was on its way has no answer coming any more, and nothing here
+      // would send it again (a password is not kept to resend): back to the form.
+      if (session.current === null) awaitingLogin.current = false
       // "io server disconnect" means the server closed this connection on purpose: the
       // session was taken over from another tab. socket.io does not reconnect by itself
       // in that case, and neither do we — two tabs would evict each other in a loop.
       dispatch({ type: 'disconnected', replaced: reason === 'io server disconnect' })
     }
 
-    const onLoggedIn = (payload: LoggedInPayload) => {
+    const onLoggedIn = (payload: LoggedInPayload, confirm?: () => void) => {
       clearTimeout(retryTimer)
       if (!awaitingLogin.current) {
         // The user signed out while this login was under way. The server now has this
@@ -163,6 +166,9 @@ export const useChat = () => {
       // Sent once, when the name is first reserved: without it this browser could not
       // have the name back after a reload.
       if (payload.reservation !== undefined) saveReservation(payload.username, payload.reservation)
+      // Tell the server it arrived. For a name just reserved the server is waiting for
+      // this: until it hears, it assumes the secret was lost on the way and frees the name.
+      confirm?.()
       dispatch({ type: 'loggedIn', payload })
     }
     const onLoginError = ({ message, retryable, sessionEnded }: LoginErrorPayload) => {
@@ -199,6 +205,7 @@ export const useChat = () => {
     const onNewLogin = (payload: PublicUser) => dispatch({ type: 'userJoined', payload })
     const onUserLeft = (payload: UserLeftPayload) => dispatch({ type: 'userLeft', payload })
     const onMemberJoined = (payload: Member) => dispatch({ type: 'memberJoined', payload })
+    const onMemberDirectory = ({ members }: { members: Member[] }) => dispatch({ type: 'directoryReceived', members })
     const onPresence = (payload: PresencePayload) => dispatch({ type: 'presenceChanged', payload })
     const onOwnStatus = (ownStatus: OwnStatus) => dispatch({ type: 'ownStatusChanged', ownStatus })
     const onMemberLeft = (payload: UserLeftPayload) => dispatch({ type: 'memberLeft', payload })
@@ -230,6 +237,7 @@ export const useChat = () => {
     socket.on('presence', onPresence)
     socket.on('ownStatus', onOwnStatus)
     socket.on('memberJoined', onMemberJoined)
+    socket.on('memberDirectory', onMemberDirectory)
     socket.on('memberLeft', onMemberLeft)
     socket.on('conversationUpdated', onConversationUpdated)
     socket.on('message', onMessage)
@@ -283,6 +291,7 @@ export const useChat = () => {
       socket.off('presence', onPresence)
       socket.off('ownStatus', onOwnStatus)
       socket.off('memberJoined', onMemberJoined)
+      socket.off('memberDirectory', onMemberDirectory)
       socket.off('memberLeft', onMemberLeft)
       socket.off('conversationUpdated', onConversationUpdated)
       socket.off('message', onMessage)
@@ -329,9 +338,9 @@ export const useChat = () => {
     if (state.phase !== 'loggedIn' || !state.attentive || !inView || state.selected === null || newestId === null) return
     const conversationId = state.selected
     const position = positionOf({ id: newestId, timestamp: newestTimestamp })
-    readReporter.offer(`${state.userId}|${conversationId}`, position, () => {
+    readReporter.offer(`${state.userId}|${conversationId}`, position, async () => {
       dispatch({ type: 'readUpTo', conversationId, position })
-      void ask('markRead', { conversationId, upTo: position })
+      return (await ask('markRead', { conversationId, upTo: position })).ok
     })
     // No longer being read (or something newer to report): what was waiting is dropped.
     return readReporter.cancel

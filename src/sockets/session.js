@@ -8,7 +8,7 @@ import { BOT } from '../bot.js'
 import { conversationsFor } from '../conversations.js'
 import { addressOfSocket } from '../clientAddress.js'
 import { isDatabaseReady } from '../db.js'
-import { Identity } from '../models/identity.js'
+import { Identity, usernameKeyOf } from '../models/identity.js'
 import { INVITATION_LIFETIME_DAYS, Invitation } from '../models/invitation.js'
 import { Session } from '../models/session.js'
 import { ownStatus } from './status.js'
@@ -86,7 +86,10 @@ export const createSessionHandlers = ({
     // Failed sign-ins and recoveries, counted per address and per (address, username).
     const failuresByAddress = createAttemptLimiter({ freeFailures: 20 })
     const failuresByPair = createAttemptLimiter({ freeFailures: 5 })
-    const adminNames = new Set(settings.adminUsernames)
+    // Compared as every name is: without regard to case.
+    const adminNames = new Set(settings.adminUsernames.map(usernameKeyOf))
+    const isAdminName = username => adminNames.has(usernameKeyOf(username))
+    const isBotName = username => usernameKeyOf(username) === usernameKeyOf(BOT.username)
     const guestIdleMs = (settings.messageTtlHours > 0 ? settings.messageTtlHours : DEFAULT_GUEST_IDLE_HOURS) * HOUR
 
     /** Sockets with a `login` in flight: a second one must not race the first. */
@@ -150,10 +153,15 @@ export const createSessionHandlers = ({
     const createDeviceSession = async (userId, label) => {
         const token = newSecret()
         const session = await Session.create({ tokenHash: fingerprint(token), userId, label: cleanLabel(label) })
-        // Keep the newest few; a forgotten device's session would otherwise live as long as it is unused.
-        const extra = await Session.find({ userId }, { _id: 1 })
-            .sort({ lastUsedAt: -1, _id: -1 }).skip(MAX_SESSIONS_PER_ACCOUNT).lean()
-        if (extra.length > 0) await endDeviceSessions(userId, { _id: { $in: extra.map(doc => doc._id) } })
+        // Keep the newest few; a forgotten device's session would otherwise live as long as
+        // it is unused. Tidying up, not part of signing in: a failure here fails nothing.
+        try {
+            const extra = await Session.find({ userId }, { _id: 1 })
+                .sort({ lastUsedAt: -1, _id: -1 }).skip(MAX_SESSIONS_PER_ACCOUNT).lean()
+            if (extra.length > 0) await endDeviceSessions(userId, { _id: { $in: extra.map(doc => doc._id) } })
+        } catch (error) {
+            console.error("failed to trim old device sessions:", error.name)
+        }
         return { token, deviceSessionId: session._id.toString() }
     }
 
@@ -216,7 +224,10 @@ export const createSessionHandlers = ({
     // Completes a login on a socket that has just been attached: everything the client
     // needs to draw itself, in one event. If that cannot be gathered the login is undone,
     // so the client is never left logged in with half a picture.
-    const sendLoggedIn = async (socket, user, sessionToken, extra = {}, { undoOnFailure = true } = {}) => {
+    //
+    // `onConfirmed`, if given, is called once the client has acknowledged the event — or
+    // with an error if it has not within the time allowed.
+    const sendLoggedIn = async (socket, user, sessionToken, extra = {}, { undoOnFailure = true, onConfirmed = null } = {}) => {
         let conversations, members
         try {
             conversations = await conversationsFor(user.userId)
@@ -226,7 +237,8 @@ export const createSessionHandlers = ({
             throw error
         }
         if (!socket.connected) return false
-        socket.emit('loggedin', {
+        const emitter = onConfirmed === null ? socket : socket.timeout(settings.reservationAckTimeoutMs)
+        emitter.emit('loggedin', {
             userId: user.userId,
             username: user.username,
             kind: user.kind,
@@ -239,7 +251,7 @@ export const createSessionHandlers = ({
             conversations,
             ...(members === undefined ? {} : { members }),
             ...extra,
-        })
+        }, ...(onConfirmed === null ? [] : [onConfirmed]))
         // Not part of logging in, and not allowed to fail it.
         onConversationsListed(user.userId, conversations)
             .catch(error => console.error("failed to record what a login delivered:", error.name))
@@ -251,13 +263,13 @@ export const createSessionHandlers = ({
     const loginAsGuest = async (socket, username, payload) => {
         // The bot's name is reserved even where the bot is switched off: otherwise
         // someone could pose as it, or read the conversations people had with it.
-        if (username === BOT.username) refuse(IN_USE)
+        if (isBotName(username)) refuse(IN_USE)
         if (!settings.guests) refuse('Guest access is off — sign in with an account')
-        if (adminNames.has(username)) refuse(RESERVED)
+        if (isAdminName(username)) refuse(RESERVED)
         requireDatabase()
         await indexesReady()
 
-        let identity = await Identity.findOne({ username }).lean()
+        let identity = await Identity.findOne({ usernameKey: usernameKeyOf(username) }).lean()
         let reservation = null
         if (!identity) {
             if (!allowedForAddress(socket, 'newGuestsPerAddress')) {
@@ -286,7 +298,10 @@ export const createSessionHandlers = ({
         // does not get as far as delivering the secret, the reservation is undone.
         const undoReservation = async () => {
             if (reservation === null) return
-            presence.detach(socket.id)
+            // If the connection is somehow still there, it is told and closed: it must not
+            // carry on as a user who is about to stop existing.
+            const attached = presence.bySocket.get(socket.id)
+            if (attached?.userId === identity.userId) presence.revoke(attached, { reason: 'The login could not be completed — try again' })
             await Identity.deleteOne({ userId: identity.userId, kind: 'guest', secretHash: identity.secretHash }).catch(() => {})
         }
         if (!socket.connected) {
@@ -298,11 +313,36 @@ export const createSessionHandlers = ({
         const online = presence.users.get(identity.userId)
         const replaceSocketId = online ? online.sockets.keys().next().value ?? null : null
         const { user, sessionToken } = presence.attach(socket, identity, { replaceSocketId })
+        if (reservation === null) {
+            await sendLoggedIn(socket, user, sessionToken)
+            return
+        }
+
+        // A new name: the browser has to say it received the secret. Sending it is not
+        // enough — a connection can die with the packet on its way, and the server would
+        // be none the wiser. Until the browser confirms, the reservation is provisional:
+        // if the connection closes first, or no confirmation comes in time, it is undone.
+        let settled = false
+        const giveUp = () => {
+            if (settled) return
+            settled = true
+            void undoReservation()
+        }
+        socket.once('disconnect', giveUp)
         let delivered = false
         try {
-            delivered = await sendLoggedIn(socket, user, sessionToken, reservation === null ? {} : { reservation })
+            delivered = await sendLoggedIn(socket, user, sessionToken, { reservation }, {
+                onConfirmed: error => {
+                    if (error) {
+                        giveUp()
+                        return
+                    }
+                    settled = true
+                    socket.off('disconnect', giveUp)
+                },
+            })
         } finally {
-            if (!delivered) await undoReservation()
+            if (!delivered) giveUp()
         }
     }
 
@@ -349,14 +389,20 @@ export const createSessionHandlers = ({
             refuse(TOO_MANY_DEVICES)
         }
         const { user, sessionToken } = presence.attach(socket, identity, { deviceSessionId, replaceSocketId })
-        await sendLoggedIn(socket, user, sessionToken, created ? { session: created.token } : {})
+        let delivered = false
+        try {
+            delivered = await sendLoggedIn(socket, user, sessionToken, created ? { session: created.token } : {})
+        } finally {
+            // The new session's token never reached the device: it is not a device.
+            if (!delivered) await abandon().catch(() => {})
+        }
     }
 
     const loginWithPassword = async (socket, username, payload, startedAt) => {
         if (typeof payload.password !== 'string' || payload.password.length > MAX_PASSWORD_LENGTH) refuse(WRONG_PASSWORD)
         requireDatabase()
         const identity = await checkGuess(socket, username, async () => {
-            const found = await Identity.findOne({ username, kind: 'account' }).lean()
+            const found = await Identity.findOne({ usernameKey: usernameKeyOf(username), kind: 'account' }).lean()
             // Verified even when there is no such account, so both cases take the same time
             // and get the same answer.
             const matches = await hasher.verify(payload.password, found?.passwordHash ?? null)
@@ -404,17 +450,22 @@ export const createSessionHandlers = ({
         const username = typeof payload.username === 'string' ? payload.username.trim() : ''
         if (!USERNAME_PATTERN.test(username)) refuse('Invalid username')
         if (!isPassword(payload.password)) refuse(PASSWORD_RULE)
-        if (username === BOT.username) refuse(IN_USE)
+        if (isBotName(username)) refuse(IN_USE)
         // A signed-in guest may turn their own name into an account; nothing else may
         // register from a socket that is already somebody.
-        const isOwnGuestName = user?.kind === 'guest' && user.username === username
+        const isOwnGuestName = user?.kind === 'guest' && usernameKeyOf(user.username) === usernameKeyOf(username)
         if (user && !isOwnGuestName) refuse('Already logged in')
         if (settings.signupMode === 'closed') refuse('Sign-up is closed')
 
         // Administrator names can be registered in one way only: with the bootstrap code.
-        const asAdmin = adminNames.has(username)
-        if (asAdmin && (settings.bootstrapCode === null || !sameString(payload.bootstrapCode, settings.bootstrapCode))) {
-            refuse(RESERVED)
+        const asAdmin = isAdminName(username)
+        if (asAdmin) {
+            // No code configured, or none offered: reserved, and nothing was guessed.
+            if (settings.bootstrapCode === null || !isSecret(payload.bootstrapCode)) refuse(RESERVED)
+            // A code offered is a guess at a secret, and is limited like a guess at a
+            // password: a few tries for this name from this address, then a growing wait.
+            const right = await checkGuess(socket, username, async () => sameString(payload.bootstrapCode, settings.bootstrapCode))
+            if (!right) refuse(RESERVED)
         }
         const needsInvitation = settings.signupMode === 'invite' && !asAdmin
         if (needsInvitation && !isSecret(payload.invitation)) refuse('An invitation is needed to sign up')
@@ -424,7 +475,7 @@ export const createSessionHandlers = ({
         }
         await indexesReady()
 
-        const existing = await Identity.findOne({ username }).lean()
+        const existing = await Identity.findOne({ usernameKey: usernameKeyOf(username) }).lean()
         const upgrading = existing?.kind === 'guest' && !asAdmin && (
             (isOwnGuestName && user.userId === existing.userId) ||
             (isSecret(payload.reservation) && sameString(fingerprint(payload.reservation), existing.secretHash))
@@ -445,28 +496,36 @@ export const createSessionHandlers = ({
         const invitation = needsInvitation ? await Invitation.findOneAndDelete(invitationFilter()).lean() : null
         if (needsInvitation && !invitation) refuse(INVALID_INVITATION)
 
+        // The device session is stored first, the account second. If the second fails the
+        // first is taken back; if the first fails nothing exists yet. There is no order of
+        // failures that leaves an account whose recovery code nobody was ever shown.
+        const userId = upgrading ? existing.userId : randomUUID()
+        const { token, deviceSessionId } = await createDeviceSession(userId, payload.deviceLabel)
+
         let identity
         try {
             identity = upgrading
                 ? await Identity.findOneAndUpdate(
-                    { userId: existing.userId, kind: 'guest' },
+                    { userId, kind: 'guest' },
                     { $set: { kind: 'account', passwordHash, recoveryHash, lastSeenAt: new Date() }, $unset: { secretHash: 1 } },
                     { returnDocument: 'after' },
                 ).lean()
                 : (await Identity.create({
-                    userId: randomUUID(), username, kind: 'account', admin: asAdmin, passwordHash, recoveryHash,
+                    userId, username, kind: 'account', admin: asAdmin, passwordHash, recoveryHash,
                 })).toObject()
         } catch (error) {
+            await Session.deleteOne({ _id: deviceSessionId }).catch(() => {})
+            if (invitation) await Invitation.create(invitation).catch(() => {})
             if (!isDuplicateKey(error)) throw error
-            identity = null
+            // The name went to someone else in the meantime.
+            refuse(IN_USE)
         }
         if (!identity) {
-            // The name went to someone else in the meantime: the invitation was not used.
+            // (An upgrade whose guest was gone by now.) The invitation was not used.
+            await Session.deleteOne({ _id: deviceSessionId }).catch(() => {})
             if (invitation) await Invitation.create(invitation).catch(() => {})
             refuse(IN_USE)
         }
-
-        const { token, deviceSessionId } = await createDeviceSession(identity.userId, payload.deviceLabel)
 
         // An upgraded guest who is connected is now an account. This socket, if it is
         // theirs, carries on under the new device session; any other is signed out.
@@ -479,6 +538,11 @@ export const createSessionHandlers = ({
             const own = online.sockets.get(socket.id)
             if (own) own.deviceSessionId = deviceSessionId
             presence.revoke(online, { reason: 'This name is now an account — sign in', except: socket.id })
+            // As an account they are now shown every other account, where that is on — and
+            // must be told now, not at their next login.
+            if (directoryOn && online.sockets.size > 0) {
+                io.to([...online.sockets.keys()]).emit('memberDirectory', { members: await directory() })
+            }
         }
         tellDirectory('memberJoined', { userId: identity.userId, username: identity.username, kind: 'account' })
         return { session: token, recoveryCode, kind: 'account', admin: identity.admin === true }
@@ -491,7 +555,7 @@ export const createSessionHandlers = ({
         }
         if (!isPassword(payload.newPassword)) refuse(PASSWORD_RULE)
         const identity = await checkGuess(socket, username, async () => {
-            const found = await Identity.findOne({ username, kind: 'account' }).lean()
+            const found = await Identity.findOne({ usernameKey: usernameKeyOf(username), kind: 'account' }).lean()
             const matches = await hasher.verify(normaliseRecoveryCode(payload.recoveryCode), found?.recoveryHash ?? null)
             return found && matches ? found : null
         })
@@ -678,6 +742,8 @@ export const createSessionHandlers = ({
     const runMaintenance = async ({ now = Date.now() } = {}) => {
         failuresByAddress.prune()
         failuresByPair.prune()
+        // The per-address allowances are counted over an hour; older records say nothing.
+        rateLimiter.prune(HOUR)
         for (const [key, time] of revokedAt) if (now - time > HOUR) revokedAt.delete(key)
         if (!isDatabaseReady()) return { removedGuests: 0 }
 

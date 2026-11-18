@@ -283,7 +283,12 @@ describe('creating an account', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     await events.click(screen.getByRole('button', { name: 'Create account' }))
 
-    act(() => void vi.advanceTimersByTime(10_000))
+    // Not after the ten seconds an ordinary request is given: setting a password is slow
+    // on the server by design, and an account made after the page stopped listening would
+    // have a recovery code nobody saw.
+    await act(async () => void (await vi.advanceTimersByTimeAsync(29_000)))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    await act(async () => void (await vi.advanceTimersByTimeAsync(1000)))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('No answer from the server')
   })
@@ -365,6 +370,44 @@ describe('creating an account', () => {
   })
 })
 
+describe('a login whose connection drops before the answer', () => {
+  it('gives the form back, with the reason, instead of waiting for ever', async () => {
+    renderApp()
+    const events = userEvent.setup()
+    await events.click(tab('Sign in'))
+    await events.type(screen.getByLabelText('Username'), 'alice')
+    await events.type(screen.getByLabelText('Password'), PASSWORD)
+    await events.click(screen.getByRole('button', { name: 'Sign in' }))
+    expect(screen.getByRole('button', { name: 'Signing in…' })).toBeDisabled()
+
+    disconnect()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The connection dropped before you were signed in')
+    expect(screen.getByLabelText('Username')).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled()
+    // Nothing is sent again by itself (the password was not kept), and a late answer is ignored.
+    connectAs('socket-2')
+    expect(fakeSocket.sent('login')).toHaveLength(1)
+    serverSays('loginError', { message: 'Wrong username or password' })
+    expect(screen.getByRole('alert')).toHaveTextContent('The connection dropped')
+    // Trying again works as usual.
+    await events.click(screen.getByRole('button', { name: 'Sign in' }))
+    expect(fakeSocket.sent('login')).toHaveLength(2)
+  })
+
+  it('applies to a guest’s first login too', async () => {
+    renderApp()
+    const events = userEvent.setup()
+    await events.type(screen.getByLabelText('Username'), 'alice')
+    await events.click(screen.getByRole('button', { name: 'Join' }))
+
+    disconnect()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The connection dropped before you were signed in')
+    expect(screen.getByRole('button', { name: 'Join' })).toBeEnabled()
+  })
+})
+
 describe('a forgotten password', () => {
   it('is replaced with the recovery code; the new code is shown, then the new password signs in', async () => {
     renderApp()
@@ -383,6 +426,11 @@ describe('a forgotten password', () => {
     answer('resetPassword', { ok: true, recoveryCode: 'ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ' })
 
     expect(await screen.findByRole('status', { name: 'Recovery code' })).toHaveTextContent('ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ')
+    // The old code is used up and this one exists nowhere else: there is nothing on
+    // screen to click that would take it away.
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button').map(button => button.textContent)).toEqual(['Copy', 'I’ve saved it'])
+    expect(fakeSocket.sent('login')).toEqual([])
     await events.click(screen.getByRole('button', { name: 'I’ve saved it' }))
     expect(fakeSocket.sent('login')).toEqual([{ username: 'alice', password: 'a brand new password', deviceLabel: expect.any(String) }])
   })
@@ -557,6 +605,28 @@ describe('a guest creating an account from the menu', () => {
     disconnect()
     connectAs('socket-2')
     expect(fakeSocket.sent('login').at(-1)).toEqual({ session: 'device-session', sessionToken: 'token-1' })
+  })
+})
+
+describe('a guest who becomes an account where every account is listed', () => {
+  it('is shown the list as soon as the server sends it', async () => {
+    renderApp()
+    await loginAs('alice', [user('bob')])
+    expect(screen.getByRole('navigation', { name: 'People online' })).toBeInTheDocument()
+
+    serverSays('memberDirectory', {
+      members: [
+        { userId: 'alice-id', username: 'alice', kind: 'account' },
+        { userId: 'zed-id', username: 'zed', kind: 'account' },
+      ],
+    })
+
+    const list = await screen.findByRole('navigation', { name: 'People' })
+    // Everyone listed, online or not; and later arrivals are added as usual.
+    expect(list).toHaveTextContent('zed')
+    expect(list).toHaveTextContent('bob')
+    serverSays('memberJoined', { userId: 'cal-id', username: 'cal', kind: 'account' })
+    expect(list).toHaveTextContent('cal')
   })
 })
 

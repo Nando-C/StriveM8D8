@@ -80,13 +80,16 @@ const loadReservations = (): Record<string, string> => {
   }
 }
 
+// Names are one name whatever their case (the server keeps the spelling its owner first
+// chose), so a reservation is found however the name is typed this time.
 export const loadReservation = (username: string): string | undefined => {
-  const reservations = loadReservations()
-  return Object.hasOwn(reservations, username) ? reservations[username] : undefined
+  const wanted = username.toLowerCase()
+  return Object.entries(loadReservations()).find(([name]) => name.toLowerCase() === wanted)?.[1]
 }
 
 export const saveReservation = (username: string, reservation: string): void => {
-  const { [username]: _replaced, ...others } = loadReservations()
+  const wanted = username.toLowerCase()
+  const others = Object.fromEntries(Object.entries(loadReservations()).filter(([name]) => name.toLowerCase() !== wanted))
   // Insertion order is age: the newest goes last, the oldest fall off the front.
   const entries = [...Object.entries(others), [username, reservation] as const].slice(-MAX_RESERVATIONS)
   reservationsFallback = Object.fromEntries(entries)

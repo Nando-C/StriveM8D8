@@ -102,6 +102,8 @@ export type ChatAction =
   | { type: 'presenceChanged'; payload: PresencePayload }
   | { type: 'ownStatusChanged'; ownStatus: OwnStatus }
   | { type: 'memberJoined'; payload: Member }
+  /** The whole directory, sent to someone who has just become entitled to it. */
+  | { type: 'directoryReceived'; members: Member[] }
   | { type: 'memberLeft'; payload: UserLeftPayload }
   | { type: 'conversationUpdated'; conversation: ConversationSummary }
   /** `peer` is given when the conversation is opened from the people list. */
@@ -120,6 +122,8 @@ export type ChatAction =
   | { type: 'sendStarted'; conversationId: string; clientId: string; text: string; timestamp: number }
   | { type: 'sendConfirmed'; conversationId: string; clientId: string; id: string; timestamp: number }
   | { type: 'sendFailed'; conversationId: string; clientId: string; reason: string }
+
+export const CONNECTION_LOST = 'The connection dropped before you were signed in. Please try again.'
 
 export const EMPTY_THREAD: Thread = {
   summary: null,
@@ -279,7 +283,11 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
       return { ...state, kind: 'account', admin: action.admin }
 
     case 'disconnected': {
-      if (state.username === null) return state
+      if (state.username === null) {
+        // A first login was waiting for its answer when the connection went. No answer
+        // will come now, so the form is given back rather than left disabled for ever.
+        return state.phase === 'authenticating' ? { ...state, phase: 'loggedOut', loginError: CONNECTION_LOST } : state
+      }
       return {
         ...state,
         phase: action.replaced ? 'replaced' : 'authenticating',
@@ -304,6 +312,9 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
 
     case 'ownStatusChanged':
       return { ...state, ownStatus: action.ownStatus }
+
+    case 'directoryReceived':
+      return { ...state, directory: action.members }
 
     case 'memberJoined':
       return state.directory === null ? state : { ...state, directory: upsertUser(state.directory, action.payload) }

@@ -59,8 +59,10 @@ export function EntryScreen({ config, connected, pending, error, onGuest, onSign
   const way = ways.includes(chosen) ? chosen : ways[0]
   // An error belongs to the way in that caused it: it is hidden once another is chosen.
   const [errorHidden, setErrorHidden] = useState<string | null>(null)
-  // A new account's recovery code, shown before going any further.
-  const [created, setCreated] = useState<{ username: string; session: string; recoveryCode: string } | null>(null)
+  // A recovery code just issued (a new account's, or the replacement after a reset),
+  // shown *instead of* everything else until the reader says they have it. It exists
+  // nowhere else: the tabs must not be there to click it away. `proceed` is what happens next.
+  const [issued, setIssued] = useState<{ recoveryCode: string; proceed: () => void } | null>(null)
   // Only while the very first connection is slow: the server is probably waking up.
   const waking = useDelayed(!connected, WAKING_NOTICE_DELAY_MS)
 
@@ -88,12 +90,12 @@ export function EntryScreen({ config, connected, pending, error, onGuest, onSign
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          {created !== null ? (
+          {issued !== null ? (
             <RecoveryCode
-              code={created.recoveryCode}
+              code={issued.recoveryCode}
               onSaved={() => {
-                onAccountCreated(created.username, created.session)
-                setCreated(null)
+                issued.proceed()
+                setIssued(null)
               }}
             />
           ) : (
@@ -119,7 +121,22 @@ export function EntryScreen({ config, connected, pending, error, onGuest, onSign
                   <GuestForm connected={connected} pending={pending} error={shownError} onGuest={onGuest} onSubmitted={submitted} />
                 </TabsContent>
                 <TabsContent value="signin">
-                  <SignInForm connected={connected} pending={pending} error={shownError} onSignIn={onSignIn} onSubmitted={submitted} />
+                  <SignInForm
+                    connected={connected}
+                    pending={pending}
+                    error={shownError}
+                    onSignIn={onSignIn}
+                    onSubmitted={submitted}
+                    onRecovered={(username, newPassword, recoveryCode) =>
+                      setIssued({
+                        recoveryCode,
+                        proceed: () => {
+                          submitted()
+                          onSignIn(username, newPassword)
+                        },
+                      })
+                    }
+                  />
                 </TabsContent>
                 <TabsContent value="create">
                   <CreateAccountForm
@@ -130,7 +147,10 @@ export function EntryScreen({ config, connected, pending, error, onGuest, onSign
                     bootstrapCode={bootstrapCode}
                     onCreated={account => {
                       dropCodesFromLink()
-                      setCreated(account)
+                      setIssued({
+                        recoveryCode: account.recoveryCode,
+                        proceed: () => onAccountCreated(account.username, account.session),
+                      })
                     }}
                   />
                 </TabsContent>
@@ -184,7 +204,13 @@ function GuestForm({ connected, pending, error, onGuest, onSubmitted }: LoginFor
   )
 }
 
-function SignInForm({ connected, pending, error, onSignIn, onSubmitted }: LoginFormProps & { onSignIn: (username: string, password: string) => void }) {
+interface SignInFormProps extends LoginFormProps {
+  onSignIn: (username: string, password: string) => void
+  /** The password was replaced with the recovery code; a new code was issued in its place. */
+  onRecovered: (username: string, newPassword: string, recoveryCode: string) => void
+}
+
+function SignInForm({ connected, pending, error, onSignIn, onSubmitted, onRecovered }: SignInFormProps) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [recovering, setRecovering] = useState(false)
@@ -197,11 +223,7 @@ function SignInForm({ connected, pending, error, onSignIn, onSubmitted }: LoginF
         username={username}
         onUsernameChange={setUsername}
         onBack={() => setRecovering(false)}
-        onRecovered={newPassword => {
-          setRecovering(false)
-          onSubmitted()
-          onSignIn(trimmed, newPassword)
-        }}
+        onRecovered={(newPassword, recoveryCode) => onRecovered(trimmed, newPassword, recoveryCode)}
       />
     )
   }
@@ -250,8 +272,8 @@ interface RecoverFormProps {
   username: string
   onUsernameChange: (username: string) => void
   onBack: () => void
-  /** The password was replaced, and the reader has kept the new recovery code. */
-  onRecovered: (newPassword: string) => void
+  /** The password was replaced; this is the recovery code issued in place of the one just used. */
+  onRecovered: (newPassword: string, recoveryCode: string) => void
 }
 
 function RecoverForm({ connected, username, onUsernameChange, onBack, onRecovered }: RecoverFormProps) {
@@ -259,12 +281,7 @@ function RecoverForm({ connected, username, onUsernameChange, onBack, onRecovere
   const [newPassword, setNewPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [replacement, setReplacement] = useState<string | null>(null)
   const trimmed = username.trim()
-
-  if (replacement !== null) {
-    return <RecoveryCode code={replacement} onSaved={() => onRecovered(newPassword)} />
-  }
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -273,7 +290,7 @@ function RecoverForm({ connected, username, onUsernameChange, onBack, onRecovere
     setError(null)
     const answer = await ask('resetPassword', { username: trimmed, recoveryCode, newPassword })
     setBusy(false)
-    if (answer.ok) setReplacement(answer.recoveryCode)
+    if (answer.ok) onRecovered(newPassword, answer.recoveryCode)
     else setError(answer.message)
   }
 

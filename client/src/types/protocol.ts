@@ -309,7 +309,8 @@ export interface ConversationUpdatedPayload {
 // ---------- event maps for socket.io's typed sockets
 
 export interface ServerToClientEvents {
-  loggedin: (payload: LoggedInPayload) => void
+  /** Acknowledge it (call `confirm`): for a newly reserved guest name, the server waits to hear that the secret arrived. */
+  loggedin: (payload: LoggedInPayload, confirm?: () => void) => void
   loginError: (payload: LoginErrorPayload) => void
   sessionRevoked: (payload: SessionRevokedPayload) => void
   /** A user came online, or what is known about an online user changed: upsert by `userId`. */
@@ -327,6 +328,8 @@ export interface ServerToClientEvents {
   conversationUpdated: (payload: ConversationUpdatedPayload) => void
   /** Member directory only: an account was created / removed. */
   memberJoined: (payload: Member) => void
+  /** The whole directory: sent to a guest at the moment they become an account. */
+  memberDirectory: (payload: { members: Member[] }) => void
   memberLeft: (payload: UserLeftPayload) => void
   history: (payload: HistoryPayload) => void
   historyError: (payload: HistoryErrorPayload) => void

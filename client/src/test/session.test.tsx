@@ -267,6 +267,36 @@ describe('a guest name', () => {
     expect(fakeSocket.sent('login')).toEqual([{ username: 'alice', reservation: 'secret-alice' }])
   })
 
+  it('is found however the name is typed, and stored under the spelling the server gives back', async () => {
+    window.localStorage.setItem(RESERVATIONS_KEY, JSON.stringify({ Alice: 'secret-alice' }))
+    renderApp()
+    const events = userEvent.setup()
+
+    await events.type(screen.getByLabelText('Username'), 'ALICE')
+    await events.click(screen.getByRole('button', { name: 'Join' }))
+    expect(fakeSocket.sent('login')).toEqual([{ username: 'ALICE', reservation: 'secret-alice' }])
+
+    // The server answers with the name as its owner first spelled it; a new secret (as
+    // after the name lapsed and was taken again) replaces the old entry, not sits beside it.
+    serverSays('loggedin', { ...loggedInPayload('Alice', [], 'token-1', 'a-newer-secret') })
+    expect(reservations()).toEqual({ Alice: 'a-newer-secret' })
+  })
+
+  it('tells the server the login arrived, after the reservation has been stored', async () => {
+    renderApp()
+    const events = userEvent.setup()
+    await events.type(screen.getByLabelText('Username'), 'alice')
+    await events.click(screen.getByRole('button', { name: 'Join' }))
+    const stored: unknown[] = []
+    const confirm = vi.fn(() => void stored.push(reservations()))
+
+    act(() => fakeSocket.trigger('loggedin', loggedInPayload('alice', [], 'token-1', 'secret-alice'), confirm))
+
+    expect(confirm).toHaveBeenCalledOnce()
+    // By the time the server hears, the secret is safe: confirming first could lose it.
+    expect(stored).toEqual([{ alice: 'secret-alice' }])
+  })
+
   it('is sent bare when this browser holds no reservation for it', async () => {
     window.localStorage.setItem(RESERVATIONS_KEY, JSON.stringify({ bob: 'secret-bob' }))
     renderApp()
