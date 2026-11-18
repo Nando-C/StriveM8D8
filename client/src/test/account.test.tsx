@@ -326,6 +326,35 @@ describe('creating an account', () => {
     expect(window.location.search).toBe('')
   })
 
+  it('lets a deployment’s owner register with the bootstrap code from their link, with no invitation', async () => {
+    serverConfig.current = { signup: 'invite', guests: false, protocol: 2 }
+    window.history.replaceState(null, '', '/?bootstrap=the-owners-code')
+    renderApp()
+    const events = userEvent.setup()
+
+    await events.type(await screen.findByLabelText('Username'), 'owner')
+    await events.type(screen.getByLabelText('Password'), PASSWORD)
+    expect(screen.queryByLabelText('Invitation code')).not.toBeInTheDocument()
+    await events.click(screen.getByRole('button', { name: 'Create account' }))
+
+    const sent = fakeSocket.sent<Record<string, unknown>>('register')[0]
+    expect(sent).toMatchObject({ username: 'owner', bootstrapCode: 'the-owners-code' })
+    expect(sent).not.toHaveProperty('invitation')
+    answer('register', { ok: true, session: 's', recoveryCode: CODE, kind: 'account', admin: true })
+    await screen.findByRole('status', { name: 'Recovery code' })
+    expect(window.location.search).toBe('')
+  })
+
+  it('sends no bootstrap code for anyone who did not come by the owner’s link', async () => {
+    renderApp()
+    const events = userEvent.setup()
+    await fillIn(events, 'alice')
+
+    await events.click(screen.getByRole('button', { name: 'Create account' }))
+
+    expect(fakeSocket.sent('register')[0]).not.toHaveProperty('bootstrapCode')
+  })
+
   it('asks for no invitation where sign-up is open', async () => {
     renderApp()
     const events = userEvent.setup()

@@ -17,7 +17,7 @@ A real-time, one-to-one chat application: a Node.js + Socket.IO server with Mong
 - **Stays up when things break.** If the database is unreachable the server keeps running, and whoever is logged in stays logged in and keeps seeing who is online; sending, history and new logins report an error worth retrying, and the connection is retried until it returns. If the server itself is slow to start, the client says it is waking rather than looking broken.
 - **Accessible and responsive.** Usable from the keyboard alone, announced to screen readers, laid out for desktop and phone, with light and dark themes and motion that is switched off when the system asks for reduced motion.
 - **Guests and accounts.** Type a name and you are in, with that name kept for your browser; or create an account with a password and use it from several devices at once — with a list of those devices, remote sign-out, and a recovery code in place of an email address.
-- **369 automated tests**, run on every push by GitHub Actions on two Node.js versions.
+- **394 automated tests**, 23 of them driving real browsers against the built app, run on every push by GitHub Actions on two Node.js versions.
 
 ## Tech stack
 
@@ -70,7 +70,7 @@ flowchart LR
 <details>
 <summary><strong>Repository layout</strong></summary>
 
-Two independent packages in one repository: the server at the root, the client in `client/`. Each has its own `package.json` and lockfile; they share nothing but the protocol.
+Three independent packages in one repository: the server at the root, the client in `client/`, and the end-to-end tests in `e2e/`. Each has its own `package.json` and lockfile; server and client share nothing but the protocol, and the server's production install carries no browser.
 
 ```
 src/                        SERVER
@@ -103,6 +103,12 @@ client/                     CLIENT
     ├── lib/                socket, requests, stored sessions, server config, motion timings, formatting
     ├── types/protocol.ts   The wire protocol as TypeScript types
     └── test/               Client tests (the real app against a fake socket)
+
+e2e/                        END-TO-END TESTS
+├── stack.js                Starts one whole deployment: MongoDB, the server, the built client
+├── profiles.js             The two deployments tested: public demo and private
+├── playwright.config.js    One project per profile
+└── tests/                  Specs, and helpers.js: what a person does, in the tests' words
 ```
 
 </details>
@@ -133,17 +139,34 @@ The parts of this project that took the most thought, and why they are the way t
 
 ## Quality
 
+Three suites, each testing what the others cannot.
+
 | | Server | Client |
 |---|---|---|
-| Tests | 223, in 14 files | 146, in 10 files |
+| Tests | 223, in 14 files | 148, in 10 files |
 | Approach | Real Socket.IO clients against a fresh server per test, with an in-memory MongoDB | The real app rendered against a fake socket; each test plays the server |
 | Lint | oxlint | oxlint, including React hooks rules |
 | Types | — | TypeScript, checked on every build |
 
-- **CI** runs lint, both test suites and the client build on every push and pull request, on Node 22 and Node 24 (`.github/workflows/ci.yml`).
+- **CI** runs lint, both unit suites and the client build on every push and pull request, on Node 22 and Node 24, and the browser suite on Node 24 (`.github/workflows/ci.yml`). When a browser test fails, its trace — every step, with the page as it was — is kept as an artifact.
 - **The tests were themselves tested.** For each suite the code was broken on purpose — a check removed, a message broadcast instead of targeted, the token comparison skipped — to confirm that a test fails each time. That exercise exposed, and led to fixing, a test helper that was passing without proving anything.
 - **Server tests cover** login and username rules, guest names and their expiry, accounts (sign-up, sign-in, several devices, revoking a device, password change, recovery, deletion, turning a guest into an account), invitations and administrator names, guessing limits, that no secret reaches another client or a log, session takeover, presence, targeted delivery, every send-failure path, malformed payloads, the origin allowlist, rate limits and the payload cap, the demo bot, message expiry, history ordering and its 100-message cap, and behaviour when the database is down, has never connected, or comes back.
 - **Client tests cover** logging in and being refused, the people list through arrivals, reconnects and departures, exactly-once merging of live messages and history, unread counts, both kinds of acknowledgement, lost acknowledgements, the three ways in and which of them a deployment offers, sign-in and sign-up with the recovery code shown once, a forgotten password, the account menu (devices, password change, invitations, signing out, deletion, a guest becoming an account), re-login with the name's reservation or the device session, the stored session, waiting for a server that is not ready, being signed out by the server, and being signed in from another tab. Elements are found by role and label, the way assistive technology finds them.
+- **End-to-end tests** (`e2e/`, Playwright with Chromium) start the whole thing the way it is deployed — an in-memory MongoDB, the real server, and the client built for production and served from its own origin — and drive two or three browsers at once. They cover:
+  - a guest name being refused from another browser and kept for its own;
+  - two tabs as two people;
+  - someone leaving and vanishing from the list promptly;
+  - a conversation arriving exactly once on both sides;
+  - a message waiting for someone who is away, and the "New messages" line when they return;
+  - reload restoring everything;
+  - a third person seeing nothing;
+  - the bot;
+  - paging back through more than a hundred messages without losing your place;
+  - accounts on two browsers with remote sign-out, recovery and deletion;
+  - a guest becoming an account;
+  - phone-sized screens.
+
+  A second, smaller run uses the private-deployment settings: no guest path, sign-up refused without an invitation, the owner's bootstrap link, an invitation link that works exactly once, and writing to a member who is offline. The suite is run twice in a row before it is trusted, and has no retries: a test that passes on the second attempt is a flaky test.
 
 ```bash
 pnpm test               # server
@@ -193,7 +216,7 @@ Server — `.env` in the repository root:
 | `SIGNUP_MODE` | No | Who may create an account: `open` (default), `invite` (only with an invitation from an administrator) or `closed`. An unrecognised value closes sign-up. |
 | `GUESTS` | No | Set to `false` to require an account. By default a name alone is enough to get in. With guests off, `GET /online-users` answers `404`. |
 | `ADMIN_USERNAMES` | No | Comma-separated names reserved for administrators. Nobody can take them as a guest or register them without `SIGNUP_BOOTSTRAP_CODE`. |
-| `SIGNUP_BOOTSTRAP_CODE` | No | A secret, chosen by whoever runs the deployment, that registers the names in `ADMIN_USERNAMES` as administrators. While it is unset those names cannot be registered at all. |
+| `SIGNUP_BOOTSTRAP_CODE` | No | A secret, chosen by whoever runs the deployment, that registers the names in `ADMIN_USERNAMES` as administrators. While it is unset those names cannot be registered at all. To use it, open the client at `/?bootstrap=<the code>` and create the account there; the code is taken from the link and removed from the address bar afterwards. |
 | `MEMBER_DIRECTORY` | No | `online` (default): people can start a chat with whoever is connected. `all`: accounts are also shown every other account, connected or not (up to 200) — for a private deployment, where otherwise you could never write to someone who is not online at that moment. Guests are never sent the list. |
 | `TRUSTED_PROXY_HOPS` | When behind a proxy | How many proxies stand between the internet and the server (default `0`). Limits on sign-ups and wrong passwords are counted per client address; behind a hosting platform's proxy every visitor appears to come from the proxy unless this is set, and they would all share one limit. Take the value from the host's documentation — too high a number lets a client forge its address. |
 
@@ -216,6 +239,7 @@ Server (repository root):
 | `pnpm dev:all` | Start the server and the client dev server together |
 | `pnpm test` | Run the server test suite |
 | `pnpm lint` | Lint `src/` and `test/` with oxlint |
+| `pnpm e2e` | Run the end-to-end browser suite (see below) |
 
 Client (`client/`):
 
@@ -226,6 +250,16 @@ Client (`client/`):
 | `pnpm preview` | Serve the production build locally |
 | `pnpm test` | Run the client test suite |
 | `pnpm lint` | Lint with oxlint |
+
+End-to-end (`e2e/`, a third independent package):
+
+```bash
+pnpm --dir e2e install
+pnpm --dir e2e exec playwright install chromium   # once: downloads the browser
+pnpm e2e                                          # from the repository root
+```
+
+It needs the server's and the client's dependencies installed too, and ports 4100, 4101, 4110 and 4111 free. Nothing has to be running beforehand: the suite starts its own database, servers and client builds, and stops them afterwards. It takes about two minutes, most of it one test that has to send over a hundred messages at the rate the server allows. After a failure, `pnpm --dir e2e exec playwright show-report` opens the report with a trace of each failed test.
 
 ## Deployment
 
@@ -447,7 +481,7 @@ Clients do not need `/online-users` — presence arrives over the socket, and th
 - **Delivered and seen ticks**, and a status (away, do not disturb, invisible).
 - **Group chats, file attachments and one-to-one video calls**, in that order.
 - **Horizontal scaling**, moving presence into Redis and using Socket.IO's Redis adapter.
-- **End-to-end browser tests in CI.** During development the app was checked with scripted Chrome sessions, including cutting a connection without the server noticing; those belong in the repository.
+- **More browsers.** The end-to-end suite runs in Chromium only; Firefox and WebKit would be a configuration change and a longer run.
 
 ## Background
 

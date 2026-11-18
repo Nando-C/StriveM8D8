@@ -1,0 +1,5 @@
+# pnpm settings only — this is not a workspace (no `packages` list); e2e/ is an
+# independent package like client/. Dependency install scripts that may run:
+allowBuilds:
+  # Downloads a MongoDB binary at install time. Not needed: it is fetched on first use.
+  mongodb-memory-server: false

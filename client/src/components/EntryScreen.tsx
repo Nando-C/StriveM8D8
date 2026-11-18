@@ -8,7 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { PASSWORD_HINT, USERNAME_HINT, isPassword, passwordInput, usernameInput } from '@/lib/credentials'
 import { deviceLabel } from '@/lib/device'
-import { dropInvitationFromLink, invitationFromLink } from '@/lib/invitation'
+import { bootstrapFromLink, dropCodesFromLink, invitationFromLink } from '@/lib/invitation'
 import { ask } from '@/lib/request'
 import type { ServerConfig } from '@/lib/serverConfig'
 import { loadReservation } from '@/lib/session'
@@ -47,13 +47,14 @@ function Submit({ connected, busy, disabled, children }: SubmitProps) {
 
 export function EntryScreen({ config, connected, pending, error, onGuest, onSignIn, onAccountCreated }: EntryScreenProps) {
   const invitation = invitationFromLink()
+  const bootstrapCode = bootstrapFromLink()
   const ways: Way[] = [
     ...(config.guests ? (['guest'] as const) : []),
     'signin',
     ...(config.signup !== 'closed' ? (['create'] as const) : []),
   ]
   // Someone who followed an invitation link came to create an account.
-  const [chosen, setChosen] = useState<Way>(invitation !== '' ? 'create' : 'guest')
+  const [chosen, setChosen] = useState<Way>(invitation !== '' || bootstrapCode !== '' ? 'create' : 'guest')
   // What the server offers can arrive (or change) after the first render.
   const way = ways.includes(chosen) ? chosen : ways[0]
   // An error belongs to the way in that caused it: it is hidden once another is chosen.
@@ -123,10 +124,12 @@ export function EntryScreen({ config, connected, pending, error, onGuest, onSign
                 <TabsContent value="create">
                   <CreateAccountForm
                     connected={connected}
-                    needsInvitation={config.signup === 'invite'}
+                    // The owner's code stands in for an invitation.
+                    needsInvitation={config.signup === 'invite' && bootstrapCode === ''}
                     invitation={invitation}
+                    bootstrapCode={bootstrapCode}
                     onCreated={account => {
-                      dropInvitationFromLink()
+                      dropCodesFromLink()
                       setCreated(account)
                     }}
                   />
@@ -330,10 +333,12 @@ interface CreateAccountFormProps {
   needsInvitation: boolean
   /** From an invitation link, if that is how the reader got here. */
   invitation: string
+  /** From the deployment owner's link; '' for everyone else. */
+  bootstrapCode: string
   onCreated: (account: { username: string; session: string; recoveryCode: string }) => void
 }
 
-function CreateAccountForm({ connected, needsInvitation, invitation: linked, onCreated }: CreateAccountFormProps) {
+function CreateAccountForm({ connected, needsInvitation, invitation: linked, bootstrapCode, onCreated }: CreateAccountFormProps) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [invitation, setInvitation] = useState(linked)
@@ -354,6 +359,7 @@ function CreateAccountForm({ connected, needsInvitation, invitation: linked, onC
       deviceLabel: deviceLabel(),
       ...(reservation === undefined ? {} : { reservation }),
       ...(needsInvitation ? { invitation: invitation.trim() } : {}),
+      ...(bootstrapCode === '' ? {} : { bootstrapCode }),
     })
     setBusy(false)
     if (answer.ok) onCreated({ username: trimmed, session: answer.session, recoveryCode: answer.recoveryCode })
@@ -382,6 +388,11 @@ function CreateAccountForm({ connected, needsInvitation, invitation: linked, onC
         onChange={event => setPassword(event.target.value)}
         disabled={busy}
       />
+      {bootstrapCode !== '' && (
+        <p className="text-xs text-muted-foreground">
+          You are using this deployment’s owner link: it registers an administrator name.
+        </p>
+      )}
       {needsInvitation && (
         <Field
           id="create-invitation"

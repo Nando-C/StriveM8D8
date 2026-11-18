@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react'
 import {
   chatList, openConversation, peopleList, selectedThread, totalUnread,
 } from '@/lib/chatSelectors'
@@ -256,12 +256,16 @@ export const useChat = () => {
 
   // Tell the server how far the open conversation has been read: up to its newest
   // confirmed message, once per position.
+  //
+  // A layout effect on purpose: it runs in the same task that puts the messages on
+  // screen, so there is no moment at which a message is visible but not yet reported.
+  // Someone who glances at a message and closes the tab has still read it.
   const thread = selectedThread(state)
   const newestConfirmed = thread.messages.findLast(message => message.id !== null)
   const newestId = newestConfirmed?.id ?? null
   const newestTimestamp = newestConfirmed?.timestamp ?? 0
   const reported = useRef(new Map<string, Position>())
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (state.phase !== 'loggedIn' || state.selected === null || newestId === null) return
     const position = positionOf({ id: newestId, timestamp: newestTimestamp })
     if (comparePositions(position, reported.current.get(state.selected)) <= 0) return

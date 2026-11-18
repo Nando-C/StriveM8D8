@@ -1,0 +1,6 @@
+node_modules
+# The client builds the suite makes for itself, one per deployment profile.
+.build
+# Playwright's output: traces, screenshots and the HTML report.
+test-results
+playwright-report
