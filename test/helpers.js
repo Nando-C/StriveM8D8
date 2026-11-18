@@ -139,6 +139,13 @@ export const join = async (app, username) => {
     return { socket, ...session }
 }
 
+// Makes a test client behave like the real one: acknowledge every message it is sent,
+// which is what tells the server the message was delivered to that device.
+export const acknowledging = socket => {
+    socket.on('message', (_message, ack) => ack?.())
+    return socket
+}
+
 export const markRead = (socket, conversationId, upTo) => ask(socket, 'markRead', { conversationId, upTo })
 
 /** The position of a message, from its acknowledgement or from the message itself. */

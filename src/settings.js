@@ -24,6 +24,8 @@ const DEFAULTS = Object.freeze({
     trustedProxyHops: 0,
     /** undefined: not configured. 0: nothing expires. Positive: hours until data expires. */
     messageTtlHours: undefined,
+    /** How long a device has to acknowledge a message before it does not count as delivered there. */
+    deliveryAckTimeoutMs: 10_000,
     /** scrypt parameters for new password hashes; undefined uses the production default. */
     passwordParams: undefined,
 })

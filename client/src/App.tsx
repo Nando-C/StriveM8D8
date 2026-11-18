@@ -171,7 +171,14 @@ function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat
                   </p>
                 </div>
               </header>
-              <MessageList key={open.id} title={open.title} thread={chat.thread} onLoadEarlier={chat.loadEarlier} />
+              <MessageList
+                key={open.id}
+                title={open.title}
+                thread={chat.thread}
+                ownUserId={chat.userId}
+                onLoadEarlier={chat.loadEarlier}
+                onAtEndChange={chat.reportAtEnd}
+              />
               <MessageComposer
                 key={`composer-${open.id}`}
                 recipient={open.title}

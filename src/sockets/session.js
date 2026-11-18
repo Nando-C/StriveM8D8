@@ -79,7 +79,9 @@ const waitText = ms => {
     return seconds < 90 ? `${seconds} s` : `${Math.ceil(seconds / 60)} min`
 }
 
-export const createSessionHandlers = ({ io, presence, settings, rateLimiter, onIdentityRemoved = async () => {} }) => {
+export const createSessionHandlers = ({
+    io, presence, settings, rateLimiter, onIdentityRemoved = async () => {}, onConversationsListed = async () => {},
+}) => {
     const hasher = createPasswordHasher({ params: settings.passwordParams })
     // Failed sign-ins and recoveries, counted per address and per (address, username).
     const failuresByAddress = createAttemptLimiter({ freeFailures: 20 })
@@ -238,6 +240,9 @@ export const createSessionHandlers = ({ io, presence, settings, rateLimiter, onI
             ...(members === undefined ? {} : { members }),
             ...extra,
         })
+        // Not part of logging in, and not allowed to fail it.
+        onConversationsListed(user.userId, conversations)
+            .catch(error => console.error("failed to record what a login delivered:", error.name))
         return true
     }
 

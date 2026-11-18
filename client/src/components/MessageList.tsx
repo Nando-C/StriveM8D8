@@ -1,12 +1,13 @@
-import { Fragment, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { Check, CircleAlert, LoaderCircle } from 'lucide-react'
+import { Check, CheckCheck, CircleAlert, LoaderCircle } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import type { Thread } from '@/lib/chatState'
 import type { LocalMessage } from '@/lib/messages'
 import { comparePositions } from '@/lib/positions'
+import { TICK_LABELS, tickOf, type Tick } from '@/lib/ticks'
 import { formatDay, formatTime, isSameDay } from '@/lib/format'
 import { fade, messageIn } from '@/lib/motion'
 import { cn } from '@/lib/utils'
@@ -15,11 +16,27 @@ interface MessageListProps {
   /** What the conversation is called: the other person, or the group. */
   title: string
   thread: Thread
+  /** The logged-in user, to work out how far their own messages have got. */
+  ownUserId: string | null
   /** Ask for the messages before the oldest one shown. */
   onLoadEarlier: () => void
+  /** Whether the end of the conversation is on screen — the newest message can be read. */
+  onAtEndChange: (atEnd: boolean) => void
 }
 
-function MessageStatus({ message }: { message: LocalMessage }) {
+// One tick: saved. Two: on the other person's device. Two, coloured: seen. The number of
+// ticks carries the difference as well as the colour, and each has its name for screen readers.
+function Ticks({ tick }: { tick: Tick }) {
+  const Icon = tick === 'sent' ? Check : CheckCheck
+  return (
+    <>
+      <Icon aria-hidden="true" data-tick={tick} className={cn('size-3.5', tick === 'seen' && 'text-sky-500')} />
+      <span className="sr-only">{TICK_LABELS[tick]}</span>
+    </>
+  )
+}
+
+function MessageStatus({ message, tick }: { message: LocalMessage; tick: Tick }) {
   if (message.status === 'pending') {
     return (
       <>
@@ -39,23 +56,20 @@ function MessageStatus({ message }: { message: LocalMessage }) {
   return (
     <>
       <time dateTime={new Date(message.timestamp).toISOString()}>{formatTime(message.timestamp)}</time>
-      {message.own && (
-        <>
-          <Check aria-hidden="true" className="size-3" />
-          <span className="sr-only">Sent</span>
-        </>
-      )}
+      {message.own && <Ticks tick={tick} />}
     </>
   )
 }
 
 interface MessageProps {
   message: LocalMessage
+  /** How far it has got, if it is the user's own. */
+  tick: Tick
   /** Arrived while this list was on screen: ease it in. Otherwise it is simply there. */
   animateIn: boolean
 }
 
-function Message({ message, animateIn }: MessageProps) {
+function Message({ message, tick, animateIn }: MessageProps) {
   return (
     <motion.li
       variants={messageIn(message.own)}
@@ -85,14 +99,15 @@ function Message({ message, animateIn }: MessageProps) {
         {/* The status line cross-fades as a message goes from sending to sent or failed. */}
         <AnimatePresence mode="wait" initial={false}>
           <motion.span
-            key={message.status}
+            // Keyed by what it says, so each step — sending, sent, delivered, seen — fades in.
+            key={message.status === 'sent' ? tick : message.status}
             variants={fade}
             initial="hidden"
             animate="visible"
             exit="exit"
             className="flex items-center gap-1"
           >
-            <MessageStatus message={message} />
+            <MessageStatus message={message} tick={tick} />
           </motion.span>
         </AnimatePresence>
       </p>
@@ -100,7 +115,7 @@ function Message({ message, animateIn }: MessageProps) {
   )
 }
 
-export function MessageList({ title, thread, onLoadEarlier }: MessageListProps) {
+export function MessageList({ title, thread, ownUserId, onLoadEarlier, onAtEndChange }: MessageListProps) {
   const root = useRef<HTMLDivElement>(null)
   const end = useRef<HTMLDivElement>(null)
   const divider = useRef<HTMLLIElement>(null)
@@ -123,6 +138,20 @@ export function MessageList({ title, thread, onLoadEarlier }: MessageListProps) 
         )?.key
 
   const viewport = () => root.current?.querySelector<HTMLElement>('[data-slot=scroll-area-viewport]') ?? null
+
+  // Watch whether the end of the conversation is on screen. Scrolled up to read older
+  // messages, the newest ones are not being read, however visible the page is.
+  useEffect(() => {
+    const scroller = root.current?.querySelector<HTMLElement>('[data-slot=scroll-area-viewport]') ?? null
+    if (end.current === null || scroller === null || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(
+      entries => onAtEndChange(entries.some(entry => entry.isIntersecting)),
+      // A little slack: a pixel or two short of the very end is still "at the end".
+      { root: scroller, rootMargin: '0px 0px 48px 0px' },
+    )
+    observer.observe(end.current)
+    return () => observer.disconnect()
+  }, [onAtEndChange])
   const seen = useRef<{ newest?: string; oldest?: string; count: number; height: number }>({ count: 0, height: 0 })
 
   // Where to be after the list changes:
@@ -198,13 +227,14 @@ export function MessageList({ title, thread, onLoadEarlier }: MessageListProps) 
                 )}
                 <Message
                   message={message}
+                  tick={message.own ? tickOf(message, thread.summary, ownUserId) : 'sent'}
                   animateIn={message.arrivedAt !== null && message.arrivedAt >= openedAt}
                 />
               </Fragment>
             )
           })}
         </ul>
-        <div ref={end} />
+        <div ref={end} className="h-px" />
       </div>
     </ScrollArea>
   )

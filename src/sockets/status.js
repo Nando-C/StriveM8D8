@@ -22,7 +22,7 @@ export const ownStatus = user => ({
     statusClearAt: user.statusClearAt ? new Date(user.statusClearAt).getTime() : null,
 })
 
-export const createStatusHandlers = ({ io, presence, rateLimiter }) => {
+export const createStatusHandlers = ({ io, presence, rateLimiter, onVisibleAgain = async () => {} }) => {
     const allowed = (socket, event) => rateLimiter.allow(socket.id, event, RATE_LIMITS[event])
 
     /** userId → the timer that clears their status text. Only for users who are connected. */
@@ -120,7 +120,12 @@ export const createStatusHandlers = ({ io, presence, rateLimiter }) => {
             }
             // The user may have gone while that was being stored; there is then nobody to tell.
             if (presence.users.get(user.userId) === user) {
+                const wasInvisible = user.status === 'invisible'
                 presence.update(user, changing => Object.assign(changing, next))
+                // What was held back while nobody could see them is let go now.
+                if (wasInvisible && next.status !== 'invisible') {
+                    onVisibleAgain(user.userId).catch(error => console.error("failed to publish read positions:", error.name))
+                }
                 schedule(user)
                 tellOwnDevices(user, { except: socket.id })
             }

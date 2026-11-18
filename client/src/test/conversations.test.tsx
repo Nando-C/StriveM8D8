@@ -1,5 +1,6 @@
 import { act, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
+import { READ_REPORT_INTERVAL_MS } from '@/hooks/useChat'
 import {
   chatButton, connectAs, conversation, disconnect, dm, fakeSocket, idOf, listedChats, loggedInPayload, loginAs,
   message, messageBox, messages, personButton, renderApp, serverSays, user,
@@ -15,6 +16,8 @@ const CAROL = dm('alice', 'carol')
 const history = (conversationId: string, list: Message[], hasMore = false) =>
   serverSays('history', { conversationId, messages: list, hasMore })
 const position = (n: number, timestamp = n * 1000) => ({ ts: timestamp, id: mid(n) })
+/** For what happens within the second that read reports are spaced by. */
+const soon = (check: () => void) => waitFor(check, { timeout: READ_REPORT_INTERVAL_MS + 1000 })
 
 // Alice logs in with two conversations: an unread one with bob (newer) and a read one with carol.
 const withTwoChats = async () => {
@@ -189,12 +192,14 @@ describe('reading', () => {
     serverSays('message', said(6, 'carol', 'carol', 'on my way'))
     history(CAROL, [said(2, 'alice', 'carol', 'see you then'), said(6, 'carol', 'carol', 'on my way')])
 
-    expect(fakeSocket.sent('markRead')).toEqual([
+    // (The second report follows within a second of the first, not at once: see below.)
+    await soon(() => expect(fakeSocket.sent('markRead')).toEqual([
       { conversationId: CAROL, upTo: position(2) },
       { conversationId: CAROL, upTo: position(6) },
-    ])
+    ]))
     // A message for a conversation that is not on screen is not read.
     serverSays('message', said(7, 'bob', 'bob', 'hello??'))
+    await new Promise(resolve => setTimeout(resolve, READ_REPORT_INTERVAL_MS + 100))
     expect(fakeSocket.sent('markRead')).toHaveLength(2)
   })
 
@@ -210,7 +215,7 @@ describe('reading', () => {
     expect(fakeSocket.sent('markRead')).toHaveLength(before)
     history(CAROL, [said(2, 'alice', 'carol', 'see you then'), said(8, 'carol', 'carol', 'hello?')])
 
-    expect(fakeSocket.sent('markRead').at(-1)).toEqual({ conversationId: CAROL, upTo: position(8) })
+    await soon(() => expect(fakeSocket.sent('markRead').at(-1)).toEqual({ conversationId: CAROL, upTo: position(8) }))
   })
 
   it('counts its own sent message as read up to there, once the server has confirmed it', async () => {
@@ -348,7 +353,7 @@ describe('a conversation open in a tab nobody is looking at', () => {
 
     setVisible(true)
 
-    expect(fakeSocket.sent('markRead').at(-1)).toEqual({ conversationId: CAROL, upTo: position(7) })
+    await soon(() => expect(fakeSocket.sent('markRead').at(-1)).toEqual({ conversationId: CAROL, upTo: position(7) }))
     await waitFor(() => expect(chatButton('carol')).not.toHaveTextContent('unread'))
     expect(document.title).toBe('(2) Strive Chat')
     expect(screen.getByRole('separator', { name: 'New messages' }).nextElementSibling).toHaveTextContent('on my way')

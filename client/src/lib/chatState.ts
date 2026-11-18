@@ -12,6 +12,7 @@ import type {
   Position,
   PresencePayload,
   PublicUser,
+  ReceiptPayload,
   UserLeftPayload,
 } from '@/types/protocol'
 
@@ -112,6 +113,8 @@ export type ChatAction =
   | { type: 'historyLoaded'; payload: HistoryPayload }
   | { type: 'historyFailed'; payload: HistoryErrorPayload }
   | { type: 'messageReceived'; payload: Message; receivedAt: number }
+  /** Another member received or read further. */
+  | { type: 'receipt'; payload: ReceiptPayload }
   /** This client told the server how far it has read. */
   | { type: 'readUpTo'; conversationId: string; position: Position }
   | { type: 'sendStarted'; conversationId: string; clientId: string; text: string; timestamp: number }
@@ -400,6 +403,25 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
         ),
       )
       return counts ? { ...next, lastIncoming: { id, fromName, conversationId } } : next
+    }
+
+    case 'receipt': {
+      const { conversationId, userId, deliveredUpTo, readUpTo } = action.payload
+      const known = state.threads[conversationId]
+      if (known === undefined || known.summary === null) return state
+      // Positions only move forward; an event that arrives late or twice changes nothing.
+      const later = (current: Position | null, next: Position | null) => (comparePositions(next, current) > 0 ? next : current)
+      return withThread(state, conversationId, thread => ({
+        ...thread,
+        summary: thread.summary && {
+          ...thread.summary,
+          members: thread.summary.members.map(member =>
+            member.userId === userId
+              ? { ...member, deliveredUpTo: later(member.deliveredUpTo, deliveredUpTo), readUpTo: later(member.readUpTo, readUpTo) }
+              : member,
+          ),
+        },
+      }))
     }
 
     case 'readUpTo': {

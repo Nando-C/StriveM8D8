@@ -188,6 +188,10 @@ export interface ConversationMember {
   username: string
   /** Groups: this member sees only what came after it. */
   joinedAfter?: Position
+  /**
+   * How far they have received and read. For other members this is what they let be
+   * known: while someone is invisible, theirs stands still.
+   */
   deliveredUpTo: Position | null
   readUpTo: Position | null
   /** Direct chats: this person's identity was removed. Nothing more can be sent. */
@@ -290,6 +294,14 @@ export interface HistoryErrorPayload {
   message: string
 }
 
+/** Where another member of a conversation now stands — as far as others may know. */
+export interface ReceiptPayload {
+  conversationId: string
+  userId: string
+  deliveredUpTo: Position | null
+  readUpTo: Position | null
+}
+
 export interface ConversationUpdatedPayload {
   conversation: ConversationSummary
 }
@@ -307,7 +319,10 @@ export interface ServerToClientEvents {
   presence: (payload: PresencePayload) => void
   /** This user's own status changed on another of their devices, or its text ran out. */
   ownStatus: (payload: OwnStatus) => void
-  message: (payload: Message) => void
+  /** Acknowledge it (call `ack`): that is what tells the sender it was delivered to this device. */
+  message: (payload: Message, ack?: () => void) => void
+  /** Another member received or read up to here. */
+  receipt: (payload: ReceiptPayload) => void
   /** A conversation is new to this user, or something about it changed: replace it. */
   conversationUpdated: (payload: ConversationUpdatedPayload) => void
   /** Member directory only: an account was created / removed. */

@@ -13,12 +13,12 @@ A real-time, one-to-one chat application: a Node.js + Socket.IO server with Mong
 - **Private by construction.** A message goes to the members of its conversation and nobody else, and who the members are is read from the stored conversation — never from anything a client sends. Tests assert that a third connected user receives nothing, and that knowing a conversation's id opens nothing.
 - **Conversations that wait for you.** A message can be sent to someone who is offline; they find it, counted as unread, when they come back — on any device. History loads a page at a time, and a conversation opens at the first message you have not read.
 - **Built for unreliable networks.** The client reconnects and signs back in by itself, catches up on messages it missed, and never shows a message twice or loses one that was not sent.
-- **Honest about delivery.** Every message the user sends is shown as sending, sent, or not sent with the reason. Nothing fails silently.
+- **Honest about delivery.** Every message you send shows how far it has got: sending, one tick when it is saved, two when it has reached the other person's device, two coloured ticks when they have read it — or not sent, with the reason. Nothing fails silently, and "read" means read: the page visible, in front, and scrolled to the message.
 - **Stays up when things break.** If the database is unreachable the server keeps running, and whoever is logged in stays logged in and keeps seeing who is online; sending, history and new logins report an error worth retrying, and the connection is retried until it returns. If the server itself is slow to start, the client says it is waking rather than looking broken.
 - **Accessible and responsive.** Usable from the keyboard alone, announced to screen readers, laid out for desktop and phone, with light and dark themes and motion that is switched off when the system asks for reduced motion.
 - **Guests and accounts.** Type a name and you are in, with that name kept for your browser; or create an account with a password and use it from several devices at once — with a list of those devices, remote sign-out, and a recovery code in place of an email address.
 - **Status that means something.** Online, away (also set by itself after five minutes without activity, and only when *every* one of your devices is idle), do not disturb, and invisible — plus a line of your own that can clear itself after a while. Invisible is real: to everyone else you are indistinguishable from someone who is not connected, yet you can read and write as usual.
-- **482 automated tests**, 25 of them driving real browsers against the built app, run on every push by GitHub Actions on two Node.js versions.
+- **519 automated tests**, 28 of them driving real browsers against the built app, run on every push by GitHub Actions on two Node.js versions.
 
 ## Tech stack
 
@@ -86,7 +86,7 @@ src/                        SERVER
 ├── auth/                   Password hashing (queued scrypt), secrets, guessing limits
 ├── sockets/
 │   ├── index.js            Wires everything onto each connection
-│   ├── messages.js         Sending, history, read positions; delivery to every device of every member
+│   ├── messages.js         Sending, history, delivery to every device with its own acknowledgement, receipts
 │   ├── session.js          Guests, accounts, devices, invitations, hourly housekeeping
 │   ├── status.js           Choosing a status, idle reports, the timer that clears a status text
 │   └── presence.js         Who is connected, who can see it, and announcing exactly what changed
@@ -126,6 +126,10 @@ The parts of this project that took the most thought, and why they are the way t
 
 **One function decides what others see of you.** What a user has chosen (online, away, do not disturb, invisible), whether they are idle, and what everybody else is consequently shown are three different things, and the mapping between them lives in one pure function with a test for every combination. Everything that announces presence goes through one routine that compares how a user was shown before a change with how they are shown after it, and sends exactly the difference — a `presence` update, an arrival, a departure, or nothing. That is what makes invisible trustworthy: an invisible user's "before" and "after" are both "not shown", so nothing they do — changing their text, going idle, connecting a second device, logging in tomorrow — produces any event at all. A test lets an invisible user do all of it while another client records everything it receives.
 
+**Ticks are computed, not stored.** There is no "delivered" or "seen" flag on any message. Each member of a conversation has two positions — how far they have received, how far they have read — and a tick is the answer to "is this message at or before the other person's position?", asked with the same timestamp-and-id comparison as everything else. One update when someone reads a hundred messages, instead of a hundred. Delivery is recorded per device: the server sends each connection its own copy with its own acknowledgement, because a single broadcast comes back as a bundle of acknowledgements that cannot be attributed to anybody.
+
+**Invisible stays invisible in the data, too.** Holding back the live "seen" event would not be enough: the sender's next reload would fetch the stored position and colour the ticks anyway. So every member has *two* sets of positions — the true one, sent only to themself (their own unread counts depend on it), and a published one, which is all anyone else is ever sent. While someone is invisible the published set stands still; when they are visible again it catches up, with one event.
+
 **One view of a conversation.** Everything a client is told about a conversation — at login, when it is created, when something changes — is built by one function, for one recipient at a time. So a rule about what a member may see (for a group: nothing from before they joined, not even in the list preview or the unread count) is written once and cannot be forgotten in one event and kept in another.
 
 **Presence travels only over the socket.** A client receives a snapshot of who is online when it logs in, then an event each time someone arrives or leaves. Because all of these arrive in order on one connection, the list can never be overwritten by a slower HTTP response that is already out of date.
@@ -148,7 +152,7 @@ Three suites, each testing what the others cannot.
 
 | | Server | Client |
 |---|---|---|
-| Tests | 276, in 15 files | 181, in 11 files |
+| Tests | 292, in 16 files | 199, in 12 files |
 | Approach | Real Socket.IO clients against a fresh server per test, with an in-memory MongoDB | The real app rendered against a fake socket; each test plays the server |
 | Lint | oxlint | oxlint, including React hooks rules |
 | Types | — | TypeScript, checked on every build |
@@ -385,7 +389,7 @@ People are identified by a permanent `userId`; usernames are labels. No event ca
 - `conversationId`: for a one-to-one conversation, `dm:<userIdA>::<userIdB>` with the two ids in sorted order — both sides can build it, so no request is needed to open a chat. The conversation is created by its first message; the other person must exist but does not have to be online. An id is only a name: access is decided by the conversation's stored members.
 - `text`: 1–2000 characters, not only whitespace.
 - `clientId`: an id the client generates for each message (for example a UUID); 1–64 characters from `A–Z a–z 0–9 -`.
-- `before`, `upTo`: a *position*, `{ ts, id }` — a message's `timestamp` and `id`. `before` asks for the page of history that ends just before it. `upTo` says how far the conversation has been read; it only ever moves forward, and never past the last message. The client in this repository sends it only while the page is actually visible: a conversation left open in a background tab is not being read.
+- `before`, `upTo`: a *position*, `{ ts, id }` — a message's `timestamp` and `id`. `before` asks for the page of history that ends just before it. `upTo` says how far the conversation has been read; it only ever moves forward, and never past the last message. The client in this repository sends it only while the conversation is really being read — the page visible, the window in front, the newest message on screen — and at most once a second. Reading also counts as having received. A message is recorded as *delivered* when a device acknowledges it, and when a login hands a device its conversation list.
 
 - `status`: `online`, `away`, `dnd` or `invisible`. `text`: up to 80 characters, `""` to remove it. `clearAfterMinutes`: how long the text stays, from 1 minute to a week; `null` or absent keeps it until it is changed. Only what is given changes. The choice is stored with the identity, so it is the same after a reload and on every device.
 - `idle`: whether nobody is using this connection's page. The client in this repository sends `true` after five minutes without input and `false` at the next input. A user is shown as away only while *all* of their connections are idle, and only if what they chose is `online`.
@@ -429,7 +433,8 @@ The recovery code is shown once and is the only way back into an account whose p
 | `userLeft` | Everyone who is logged in | `{ userId }` | That user's last connection closed — or they chose to be invisible. The two cannot be told apart, on purpose. |
 | `presence` | Everyone else who is logged in | `{ userId, status, statusText }` | How a listed user is shown has changed: they chose another status or text, went idle on every device, or came back. |
 | `ownStatus` | Your other connections | `{ status, statusText, statusClearAt }` | Your own status was changed on another of your devices, or its text ran out. |
-| `message` | Every connection of every member, except the one it was sent from | a message | A message in one of your conversations — including your own, sent from another of your devices. |
+| `message` | Every connection of every member, except the one it was sent from | a message, with an acknowledgement callback | A message in one of your conversations — including your own, sent from another of your devices. **Call the acknowledgement**: it is what records the message as delivered to you, and moves the sender's tick. Each connection is sent the message separately, so each acknowledgement belongs to one person. |
+| `receipt` | The other members, on every connection | `{ conversationId, userId, deliveredUpTo, readUpTo }` | Another member has received or read further. Positions only move forward. This is what the ticks on your own messages are worked out from. |
 | `conversationUpdated` | Each member, separately | `{ conversation }` | A conversation is new to you or something about it changed (it was just created; the other person is gone; another of your devices read it). Replaces what you had. After a first message it arrives *after* the `message`. |
 | `history` | The requester only | `{ conversationId, messages, hasMore }` | Up to 100 messages, oldest first. `hasMore`: there are earlier ones; ask again with `before` set to the first message's position. |
 | `historyError` | The requester only | `{ conversationId, message }` | `Invalid conversation`, `Invalid position`, `Not logged in`, `Unknown conversation`, `History could not be loaded`, or `Too many requests, slow down`. |
@@ -454,6 +459,8 @@ The shapes used above:
 { id, kind, name?, members, lastMessage, unreadCount }
 //  kind: "direct" | "group"
 //  members: [{ userId, username, deliveredUpTo, readUpTo, joinedAfter?, gone? }]   (positions, or null)
+//           your own entry holds your true positions; everyone else's hold what they let be known —
+//           the same thing, except that an invisible member's stand still until they are visible again
 //  lastMessage: { id, from, fromName, preview, timestamp } | null
 //  unreadCount: messages from others after your read position, at most 99
 ```
@@ -464,7 +471,7 @@ The shapes used above:
 
 ### Limits
 
-The server is meant to be reachable by anyone, so each socket is rate-limited: 10 messages per 10 seconds, 10 history requests per 10 seconds, 30 read reports per 10 seconds, 10 status changes and 30 idle reports per 10 seconds, 5 logins per 10 seconds, and 5 requests per 10 seconds for anything that checks a password. A request over the limit is refused with `Too many requests, slow down` and has no other effect. A single socket payload may not exceed 10 kB; a connection that sends more is closed.
+The server is meant to be reachable by anyone, so each socket is rate-limited (the server's own acknowledgement wait for a delivery is 10 seconds): 10 messages per 10 seconds, 10 history requests per 10 seconds, 30 read reports per 10 seconds, 10 status changes and 30 idle reports per 10 seconds, 5 logins per 10 seconds, and 5 requests per 10 seconds for anything that checks a password. A request over the limit is refused with `Too many requests, slow down` and has no other effect. A single socket payload may not exceed 10 kB; a connection that sends more is closed.
 
 A new socket costs nothing, so what matters most is also limited per client address: 10 sign-ups and 30 new guest names an hour, and wrong passwords or recovery codes — after 5 for one name (20 in all) from an address, each further one has to wait twice as long as the last, up to 15 minutes. These counts are kept in memory and depend on `TRUSTED_PROXY_HOPS` being right for the host.
 
@@ -484,8 +491,6 @@ Clients do not need `/online-users` — presence arrives over the socket, and th
 
 ## Known limitations
 
-- **Read receipts are stored but not shown yet.** The server records how far each member has read and uses it for unread counts; showing the other person's ticks is the next step. Until then every sent message shows a single tick.
-- **Invisible is not yet invisible to someone reading the protocol.** Nothing on screen gives an invisible user away, but each member's stored read position is included when a conversation is described to its other members, and it moves when an invisible user reads. Keeping a separate, frozen position for others to see is part of the same next step.
 - **A forgotten password and a lost recovery code cannot be recovered.** There is no email address on an account, by design.
 - **One-to-one only.** The conversation model has groups in it, but nothing creates one yet.
 - **At login a user is sent their 50 most recently active conversations.** Older ones still exist and receive messages, but are not listed until something happens in them.
@@ -494,7 +499,6 @@ Clients do not need `/online-users` — presence arrives over the socket, and th
 
 ### What would come next
 
-- **Delivered and seen ticks.**
 - **Group chats, file attachments and one-to-one video calls**, in that order.
 - **Horizontal scaling**, moving presence into Redis and using Socket.IO's Redis adapter.
 - **More browsers.** The end-to-end suite runs in Chromium only; Firefox and WebKit would be a configuration change and a longer run.

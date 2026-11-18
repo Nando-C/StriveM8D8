@@ -1,6 +1,7 @@
 import { BOT, BOT_REPLY_DELAY_MS, botReply } from '../bot.js'
 import {
-    advancePosition, conversationViewFor, directConversationId, memberOf, parseDirectId, previewOf, visibleTo,
+    advancePosition, conversationViewFor, directConversationId, memberOf, parseDirectId, previewOf, publishPositions,
+    receiptOf, visibleTo,
 } from '../conversations.js'
 import { isDatabaseReady } from '../db.js'
 import { Conversation } from '../models/conversation.js'
@@ -52,6 +53,53 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
     const allowed = (socket, event) => rateLimiter.allow(socket.id, event, RATE_LIMITS[event])
 
     const socketsOf = userId => [...(presence.users.get(userId)?.sockets.keys() ?? [])]
+
+    // While a user is invisible, what others are told about their reading stands still.
+    const mayPublish = userId => presence.users.get(userId)?.status !== 'invisible'
+
+    /** Tells the other members, on every device they have connected, where `userId` now stands. */
+    const tellReceipt = (conversation, userId) => {
+        const sockets = conversation.members
+            .filter(member => member.userId !== userId)
+            .flatMap(member => socketsOf(member.userId))
+        if (sockets.length > 0) io.to(sockets).emit('receipt', receiptOf(conversation, userId))
+    }
+
+    /**
+     * Moves one member's delivered or read position forward and, if that changes what
+     * others may know, tells them. Reading something implies having received it.
+     * Resolves to whether the member's own (true) position moved.
+     */
+    const advance = async (conversationId, userId, field, position) => {
+        const publish = mayPublish(userId)
+        const fields = field === 'readUpTo' ? ['deliveredUpTo', 'readUpTo'] : ['deliveredUpTo']
+        let moved = false
+        let published = false
+        for (const each of fields) {
+            const result = await advancePosition(conversationId, userId, each, position, { publish })
+            if (each === field) moved = result.moved
+            published ||= result.published
+        }
+        if (published) {
+            const fresh = await Conversation.findById(conversationId).lean()
+            if (fresh) tellReceipt(fresh, userId)
+        }
+        return moved
+    }
+
+    // A message goes to each device separately, with an acknowledgement of its own: that
+    // is what says the message has reached *that person*. One emit to several sockets
+    // would come back as a bundle of acknowledgements with nobody's name on them.
+    const deliver = (saved, member, socketId) => {
+        const socket = io.sockets.sockets.get(socketId)
+        if (!socket) return
+        socket.timeout(settings.deliveryAckTimeoutMs).emit('message', messageView(saved, member.userId), error => {
+            // No acknowledgement in time: not delivered there, as far as anyone can say.
+            if (error || !isDatabaseReady()) return
+            advance(saved.conversationKey, member.userId, 'deliveredUpTo', positionOf(saved))
+                .catch(failure => console.error("failed to record a delivery:", failure.name))
+        })
+    }
 
     /** Sends each connected member their own view of the conversation. */
     const tellMembers = async conversation => {
@@ -138,14 +186,21 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
                 { returnDocument: 'after' },
             ).lean()
             // Whoever wrote a message has read everything up to it.
-            await advancePosition(conversation._id, author.userId, 'readUpTo', position)
+            await advance(conversation._id, author.userId, 'readUpTo', position)
+            // The bot has no device to acknowledge anything: what is said to it has reached it.
+            if (settings.demoBot && author.userId !== BOT.id && memberOf(conversation, BOT.id) && conversation.kind === 'direct') {
+                await advance(conversation._id, BOT.id, 'deliveredUpTo', position)
+            }
         } catch (error) {
             console.error("failed to update a conversation after saving a message:", error.name)
         }
 
         for (const member of conversation.members) {
             const sockets = socketsOf(member.userId).filter(id => id !== exceptSocketId)
-            if (sockets.length > 0) io.to(sockets).emit('message', messageView(saved, member.userId))
+            if (sockets.length === 0) continue
+            // The author's other devices are shown it; there is nothing to be delivered to its author.
+            if (member.userId === author.userId) io.to(sockets).emit('message', messageView(saved, member.userId))
+            else for (const socketId of sockets) deliver(saved, member, socketId)
         }
         // A conversation nobody has seen before is then described to each member in full
         // (who is in it, and their own unread count). It follows the message on purpose:
@@ -294,7 +349,7 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
                 if (last === null) return reply({ ok: true })
                 const upTo = comparePositions(payload.upTo, last) > 0 ? last : { ts: payload.upTo.ts, id: payload.upTo.id }
 
-                const moved = await advancePosition(conversation._id, reader.userId, 'readUpTo', upTo)
+                const moved = await advance(conversation._id, reader.userId, 'readUpTo', upTo)
                 if (moved) {
                     // The reader's other devices drop their unread badge too.
                     const others = socketsOf(reader.userId).filter(id => id !== socket.id)
@@ -328,5 +383,25 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
         }
     }
 
-    return { registerOn, identityRemoved }
+    /**
+     * A device has just been handed the user's conversation list: whatever is newest in
+     * each has, in that sense, reached them — the badge is on their screen.
+     */
+    const listDelivered = async (userId, conversations) => {
+        for (const conversation of conversations) {
+            const last = conversation.lastMessage
+            if (last === null || last.from === userId) continue
+            const own = conversation.members.find(member => member.userId === userId)
+            const position = { ts: last.timestamp, id: last.id }
+            if (comparePositions(position, own?.deliveredUpTo ?? null) <= 0) continue
+            await advance(conversation.id, userId, 'deliveredUpTo', position)
+        }
+    }
+
+    /** A user is visible again: what others are told about their reading catches up, once. */
+    const visibleAgain = async userId => {
+        for (const conversation of await publishPositions(userId)) tellReceipt(conversation, userId)
+    }
+
+    return { registerOn, identityRemoved, listDelivered, visibleAgain }
 }

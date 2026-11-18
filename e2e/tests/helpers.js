@@ -94,6 +94,11 @@ export const send = async (page, text) => {
     await composer(page).press('Enter')
 }
 
+/** A message of one's own that the server has saved, however far it has got since. */
+export const SAVED = /Sent|Delivered|Seen/
+/** The tick on one's own message: 'sent', 'delivered' or 'seen'. */
+export const tick = (page, text) => messageRow(page, text).locator('[data-tick]')
+
 /** The open conversation. */
 export const log = page => page.getByRole('log')
 /** Every message bubble in the open conversation, in order. */

@@ -64,6 +64,27 @@ export const unreadCountFor = async (conversation, member) => {
 }
 
 /**
+ * A member's positions as `viewerId` is told them: their own true ones for themself, and
+ * for anyone else only what has been published. An invisible member's reading must not
+ * show — not live, and not in what a reload fetches either.
+ */
+const positionsShownTo = (member, viewerId) => {
+    const source = member.userId === viewerId ? member : member.published
+    return { deliveredUpTo: plainPosition(source?.deliveredUpTo), readUpTo: plainPosition(source?.readUpTo) }
+}
+
+/** What other members are told when one member's positions move: only ever the published ones. */
+export const receiptOf = (conversation, userId) => {
+    const member = memberOf(conversation, userId)
+    return {
+        conversationId: conversation._id,
+        userId,
+        deliveredUpTo: plainPosition(member?.published?.deliveredUpTo),
+        readUpTo: plainPosition(member?.published?.readUpTo),
+    }
+}
+
+/**
  * A conversation as one of its members is shown it. The only place a conversation is
  * turned into something sent to a client, so that a rule about what a member may see
  * cannot be forgotten in one event and kept in another.
@@ -78,8 +99,7 @@ export const conversationView = (conversation, userId, unreadCount = 0) => {
             userId: member.userId,
             username: member.username,
             ...(member.joinedAfter?.id ? { joinedAfter: plainPosition(member.joinedAfter) } : {}),
-            deliveredUpTo: plainPosition(member.deliveredUpTo),
-            readUpTo: plainPosition(member.readUpTo),
+            ...positionsShownTo(member, userId),
             ...(member.gone ? { gone: true } : {}),
         })),
         lastMessage: viewer && seesLastMessage(conversation, viewer)
@@ -111,11 +131,9 @@ export const conversationsFor = async userId => {
     return Promise.all(conversations.map(conversation => conversationViewFor(conversation, userId)))
 }
 
-/**
- * Moves one member's `field` (readUpTo or deliveredUpTo) forward to `position`. Never
- * backwards: the condition is part of the same atomic update. Resolves to whether it moved.
- */
-export const advancePosition = async (conversationId, userId, field, position) => {
+// Moves one position of one member forward to `position`. Never backwards: the condition
+// is part of the same atomic update. `path` is relative to the member entry.
+const moveForward = async (conversationId, userId, path, position) => {
     const result = await Conversation.updateOne(
         {
             _id: conversationId,
@@ -123,16 +141,49 @@ export const advancePosition = async (conversationId, userId, field, position) =
                 $elemMatch: {
                     userId,
                     $or: [
-                        { [field]: null },
-                        { [`${field}.ts`]: { $lt: position.ts } },
-                        { [`${field}.ts`]: position.ts, [`${field}.id`]: { $lt: position.id } },
+                        { [path]: null },
+                        { [`${path}.ts`]: { $lt: position.ts } },
+                        { [`${path}.ts`]: position.ts, [`${path}.id`]: { $lt: position.id } },
                     ],
                 },
             },
         },
-        { $set: { [`members.$.${field}`]: position } },
+        { $set: { [`members.$.${path}`]: position } },
     )
     return result.modifiedCount === 1
+}
+
+/**
+ * Moves one member's `field` (readUpTo or deliveredUpTo) forward to `position`.
+ *
+ * `publish`: whether everyone else may be told — false while the member is invisible, in
+ * which case only their own, true position moves. Resolves to { moved, published }:
+ * whether the true position moved, and whether what others are told did.
+ */
+export const advancePosition = async (conversationId, userId, field, position, { publish = true } = {}) => ({
+    moved: await moveForward(conversationId, userId, field, position),
+    published: publish ? await moveForward(conversationId, userId, `published.${field}`, position) : false,
+})
+
+/**
+ * Brings what others are told about a member up to the truth, in every conversation
+ * they are in: what happens when someone stops being invisible. Resolves to the
+ * conversations (as stored afterwards) in which something others can see changed.
+ */
+export const publishPositions = async userId => {
+    const conversations = await Conversation.find({ 'members.userId': userId }).lean()
+    const changed = []
+    for (const conversation of conversations) {
+        const member = memberOf(conversation, userId)
+        let moved = false
+        for (const field of ['deliveredUpTo', 'readUpTo']) {
+            const truth = plainPosition(member[field])
+            if (truth === null || comparePositions(truth, plainPosition(member.published?.[field])) <= 0) continue
+            if (await moveForward(conversation._id, userId, `published.${field}`, truth)) moved = true
+        }
+        if (moved) changed.push(await Conversation.findById(conversation._id).lean())
+    }
+    return changed.filter(Boolean)
 }
 
 /** The text shown under a conversation's name in the list. */
