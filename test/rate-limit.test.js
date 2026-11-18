@@ -77,7 +77,7 @@ describe('rate limits', () => {
         ])
         await settle()
         // Announced once, for the first login; the repeats and the refusals are silent.
-        expect(announced).toEqual([{ userId: replies[0].userId, username: 'hammer', kind: 'guest' }])
+        expect(announced).toEqual([{ userId: replies[0].userId, username: 'hammer', kind: 'guest', status: 'online', statusText: '' }])
         expect(await onlineUsers(app)).toHaveLength(3)
     })
 

@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { BOT, botReply } from '../src/bot.js'
+import { BOT_STATUS_TEXT } from '../src/status.js'
 import { Message } from '../src/models/message.js'
 import {
     connectTestDatabase, disconnectTestDatabase, dm, getHistory, join, login, messageTo, nextEvent, onlineUsers,
@@ -24,7 +25,7 @@ describe('with the demo bot switched off', () => {
     it('lists no bot', async () => {
         const app = await start()
         const alice = await join(app, 'alice')
-        const self = { userId: alice.userId, username: 'alice', kind: 'guest' }
+        const self = { userId: alice.userId, username: 'alice', kind: 'guest', status: 'online', statusText: '' }
 
         expect(alice.onlineUsers).toEqual([self])
         expect(await onlineUsers(app)).toEqual([self])
@@ -46,13 +47,13 @@ describe('with the demo bot switched off', () => {
 describe('with the demo bot switched on', () => {
     it('is online from the start, for REST and for everyone who logs in', async () => {
         const app = await start({ demoBot: true })
-        const bot = { userId: 'demo-bot', username: 'demo-bot', kind: 'bot' }
+        const bot = { userId: 'demo-bot', username: 'demo-bot', kind: 'bot', status: 'online', statusText: BOT_STATUS_TEXT }
         expect(await onlineUsers(app)).toEqual([bot])
 
         const alice = await app.client()
         const session = await login(alice, { username: 'alice' })
 
-        expect(session.onlineUsers).toEqual([bot, { userId: session.userId, username: 'alice', kind: 'guest' }])
+        expect(session.onlineUsers).toEqual([bot, { userId: session.userId, username: 'alice', kind: 'guest', status: 'online', statusText: '' }])
         expect(JSON.stringify(session.onlineUsers)).not.toContain('sessionToken')
     })
 
@@ -75,7 +76,7 @@ describe('with the demo bot switched on', () => {
         ]) {
             expect(await login(impostor, payload)).toEqual({ ok: false, message: 'Username already in use' })
         }
-        expect(await onlineUsers(app)).toEqual([{ userId: 'demo-bot', username: 'demo-bot', kind: 'bot' }])
+        expect(await onlineUsers(app)).toEqual([{ userId: 'demo-bot', username: 'demo-bot', kind: 'bot', status: 'online', statusText: BOT_STATUS_TEXT }])
     })
 
     it('acknowledges a message and answers it, to the sender only', async () => {
@@ -177,7 +178,7 @@ describe('with the demo bot switched on', () => {
         await settle()
 
         expect(left).toEqual([{ userId: bob.userId }])
-        expect(await onlineUsers(app)).toContainEqual({ userId: 'demo-bot', username: 'demo-bot', kind: 'bot' })
+        expect(await onlineUsers(app)).toContainEqual({ userId: 'demo-bot', username: 'demo-bot', kind: 'bot', status: 'online', statusText: BOT_STATUS_TEXT })
     })
 })
 

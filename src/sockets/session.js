@@ -11,6 +11,7 @@ import { isDatabaseReady } from '../db.js'
 import { Identity } from '../models/identity.js'
 import { INVITATION_LIFETIME_DAYS, Invitation } from '../models/invitation.js'
 import { Session } from '../models/session.js'
+import { ownStatus } from './status.js'
 import { NOT_LOGGED_IN, SLOW_DOWN, USERNAME_PATTERN, isObject, withAck } from './validation.js'
 
 // Who somebody is, and proving it: guests, accounts, the devices an account is signed in
@@ -229,6 +230,9 @@ export const createSessionHandlers = ({ io, presence, settings, rateLimiter, onI
             kind: user.kind,
             admin: user.admin,
             sessionToken,
+            // What this user has chosen to show; nobody else is sent this.
+            ownStatus: ownStatus(user),
+            // Everyone who can be seen. (Not this user, if they are invisible.)
             onlineUsers: presence.getOnlineUsers(),
             conversations,
             ...(members === undefined ? {} : { members }),
@@ -463,12 +467,13 @@ export const createSessionHandlers = ({ io, presence, settings, rateLimiter, onI
         // theirs, carries on under the new device session; any other is signed out.
         const online = presence.users.get(identity.userId)
         if (online) {
-            online.kind = 'account'
+            // Whoever can see them now sees an account.
+            presence.update(online, changing => {
+                changing.kind = 'account'
+            })
             const own = online.sockets.get(socket.id)
             if (own) own.deviceSessionId = deviceSessionId
             presence.revoke(online, { reason: 'This name is now an account — sign in', except: socket.id })
-            // Whoever is still connected as them is now listed as an account.
-            if (presence.users.has(online.userId)) presence.announceChange(online)
         }
         tellDirectory('memberJoined', { userId: identity.userId, username: identity.username, kind: 'account' })
         return { session: token, recoveryCode, kind: 'account', admin: identity.admin === true }

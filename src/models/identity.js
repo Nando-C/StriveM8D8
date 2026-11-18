@@ -16,6 +16,12 @@ const identitySchema = new mongoose.Schema({
     secretHash: String,
     passwordHash: String,
     recoveryHash: String,
+    // What the user has chosen to show (see status.js). Stored, so that it is the same
+    // after a reload and on every device.
+    status: { type: String, enum: ['online', 'away', 'dnd', 'invisible'], default: 'online' },
+    statusText: { type: String, default: '' },
+    /** When `statusText` clears itself, if it does. */
+    statusClearAt: Date,
     createdAt: { type: Date, default: Date.now },
     // Refreshed at login and while connected. Idle guests are removed by the application's
     // own sweep, not by a TTL index: removal has to tidy up after the identity as well.

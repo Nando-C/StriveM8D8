@@ -21,7 +21,7 @@ describe('login', () => {
 
         expect(reply.ok).toBe(true)
         expect(sortedKeys(reply)).toEqual([
-            'admin', 'conversations', 'kind', 'ok', 'onlineUsers', 'reservation', 'sessionToken', 'userId', 'username',
+            'admin', 'conversations', 'kind', 'ok', 'onlineUsers', 'ownStatus', 'reservation', 'sessionToken', 'userId', 'username',
         ])
         expect(reply.kind).toBe('guest')
         expect(reply.admin).toBe(false)
@@ -30,7 +30,7 @@ describe('login', () => {
         expect(reply.userId).toMatch(/^[0-9a-f-]{36}$/)
         expect(reply.sessionToken).toEqual(expect.any(String))
         expect(reply.conversations).toEqual([])
-        expect(reply.onlineUsers).toEqual([{ userId: reply.userId, username: 'alice', kind: 'guest' }])
+        expect(reply.onlineUsers).toEqual([{ userId: reply.userId, username: 'alice', kind: 'guest', status: 'online', statusText: '' }])
         expect(await onlineUsers(app)).toEqual(reply.onlineUsers)
         // Nothing about a user says which connection they are on.
         expect(JSON.stringify([reply, await onlineUsers(app)])).not.toContain(alice.id)
@@ -46,12 +46,12 @@ describe('login', () => {
         const seenByBob = record(bob, 'newLogin')
         const reply = await login(bob, { username: 'bob' })
 
-        expect(await announced).toEqual({ userId: reply.userId, username: 'bob', kind: 'guest' })
+        expect(await announced).toEqual({ userId: reply.userId, username: 'bob', kind: 'guest', status: 'online', statusText: '' })
         await settle()
         expect(seenByBob).toEqual([])
         expect(reply.onlineUsers).toEqual([
-            { userId: aliceSession.userId, username: 'alice', kind: 'guest' },
-            { userId: reply.userId, username: 'bob', kind: 'guest' },
+            { userId: aliceSession.userId, username: 'alice', kind: 'guest', status: 'online', statusText: '' },
+            { userId: reply.userId, username: 'bob', kind: 'guest', status: 'online', statusText: '' },
         ])
         expect(JSON.stringify([await announced, reply.onlineUsers])).not.toContain(bob.id)
     })
@@ -145,7 +145,7 @@ describe('a connection that has not logged in', () => {
         // Everything that is announced: a guest becoming an account, and someone leaving.
         const relisted = nextEvent(alice, 'newLogin')
         await bob.timeout(3000).emitWithAck('register', { username: 'bob', password: 'a long password' })
-        expect(await relisted).toEqual({ userId: bobId, username: 'bob', kind: 'account' })
+        expect(await relisted).toEqual({ userId: bobId, username: 'bob', kind: 'account', status: 'online', statusText: '' })
         const left = nextEvent(alice, 'userLeft')
         bob.close()
         await left
@@ -279,7 +279,7 @@ describe('REST', () => {
         const response = await getJson(`${app.url}/online-users`)
 
         expect(response.status).toBe(200)
-        expect(response.body).toEqual({ onlineUsers: [{ userId, username: 'alice', kind: 'guest' }] })
+        expect(response.body).toEqual({ onlineUsers: [{ userId, username: 'alice', kind: 'guest', status: 'online', statusText: '' }] })
     })
 
     it('reports itself healthy, with the database up', async () => {

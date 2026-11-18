@@ -6,8 +6,11 @@ import type {
   HistoryPayload,
   IdentityKind,
   LoggedInPayload,
+  Member,
   Message,
+  OwnStatus,
   Position,
+  PresencePayload,
   PublicUser,
   UserLeftPayload,
 } from '@/types/protocol'
@@ -63,13 +66,15 @@ export interface ChatState {
   /** Guest or account; `null` until the server has said. */
   kind: IdentityKind | null
   admin: boolean
+  /** What the user has chosen to show; `null` until the server has said. */
+  ownStatus: OwnStatus | null
   loginError: string | null
   /** Increases with every `loggedin`, so effects can react to each (re)login. */
   loginCount: number
-  /** Everyone connected, including this user. */
+  /** Everyone connected who can be seen (this user too, unless they are invisible). */
   onlineUsers: PublicUser[]
   /** Where the deployment lists them: every account, connected or not. Otherwise `null`. */
-  directory: PublicUser[] | null
+  directory: Member[] | null
   /** The open conversation, by id. */
   selected: string | null
   /**
@@ -93,7 +98,9 @@ export type ChatAction =
   | { type: 'disconnected'; replaced: boolean }
   | { type: 'userJoined'; payload: PublicUser }
   | { type: 'userLeft'; payload: UserLeftPayload }
-  | { type: 'memberJoined'; payload: PublicUser }
+  | { type: 'presenceChanged'; payload: PresencePayload }
+  | { type: 'ownStatusChanged'; ownStatus: OwnStatus }
+  | { type: 'memberJoined'; payload: Member }
   | { type: 'memberLeft'; payload: UserLeftPayload }
   | { type: 'conversationUpdated'; conversation: ConversationSummary }
   /** `peer` is given when the conversation is opened from the people list. */
@@ -128,6 +135,7 @@ export const initialChatState = (storedUsername: string | null): ChatState => ({
   username: storedUsername,
   kind: null,
   admin: false,
+  ownStatus: null,
   loginError: null,
   loginCount: 0,
   onlineUsers: [],
@@ -218,7 +226,7 @@ const withLastMessage = (thread: Thread, message: LocalMessage): Thread => {
   }
 }
 
-const upsertUser = (users: PublicUser[], user: PublicUser) => [
+const upsertUser = <User extends { userId: string }>(users: User[], user: User) => [
   ...users.filter(candidate => candidate.userId !== user.userId),
   user,
 ]
@@ -246,6 +254,7 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
         username: payload.username,
         kind: payload.kind,
         admin: payload.admin,
+        ownStatus: payload.ownStatus,
         loginError: null,
         loginCount: state.loginCount + 1,
         // The snapshots replace whatever was known before.
@@ -280,6 +289,18 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
 
     case 'userLeft':
       return { ...state, onlineUsers: state.onlineUsers.filter(user => user.userId !== action.payload.userId) }
+
+    case 'presenceChanged': {
+      const { userId, status, statusText } = action.payload
+      return {
+        ...state,
+        // Only for someone already listed: a change says nothing about who is here.
+        onlineUsers: state.onlineUsers.map(user => (user.userId === userId ? { ...user, status, statusText } : user)),
+      }
+    }
+
+    case 'ownStatusChanged':
+      return { ...state, ownStatus: action.ownStatus }
 
     case 'memberJoined':
       return state.directory === null ? state : { ...state, directory: upsertUser(state.directory, action.payload) }

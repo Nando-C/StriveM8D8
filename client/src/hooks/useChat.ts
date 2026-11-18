@@ -6,6 +6,7 @@ import { chatReducer, initialChatState } from '@/lib/chatState'
 import { directConversationId } from '@/lib/conversationId'
 import { deviceLabel } from '@/lib/device'
 import { UNCONFIRMED } from '@/lib/messages'
+import { useIdleReporter } from '@/lib/useIdleReporter'
 import { comparePositions, positionOf } from '@/lib/positions'
 import { ask } from '@/lib/request'
 import {
@@ -21,9 +22,13 @@ import type {
   LoggedInPayload,
   LoginErrorPayload,
   LoginPayload,
+  Member,
   Message,
+  OwnStatus,
   Position,
+  PresencePayload,
   PublicUser,
+  SetStatusPayload,
   SessionRevokedPayload,
   UserLeftPayload,
 } from '@/types/protocol'
@@ -187,7 +192,9 @@ export const useChat = () => {
     }
     const onNewLogin = (payload: PublicUser) => dispatch({ type: 'userJoined', payload })
     const onUserLeft = (payload: UserLeftPayload) => dispatch({ type: 'userLeft', payload })
-    const onMemberJoined = (payload: PublicUser) => dispatch({ type: 'memberJoined', payload })
+    const onMemberJoined = (payload: Member) => dispatch({ type: 'memberJoined', payload })
+    const onPresence = (payload: PresencePayload) => dispatch({ type: 'presenceChanged', payload })
+    const onOwnStatus = (ownStatus: OwnStatus) => dispatch({ type: 'ownStatusChanged', ownStatus })
     const onMemberLeft = (payload: UserLeftPayload) => dispatch({ type: 'memberLeft', payload })
     const onConversationUpdated = ({ conversation }: ConversationUpdatedPayload) =>
       dispatch({ type: 'conversationUpdated', conversation })
@@ -209,6 +216,8 @@ export const useChat = () => {
     socket.on('connect_error', onConnectError)
     socket.on('newLogin', onNewLogin)
     socket.on('userLeft', onUserLeft)
+    socket.on('presence', onPresence)
+    socket.on('ownStatus', onOwnStatus)
     socket.on('memberJoined', onMemberJoined)
     socket.on('memberLeft', onMemberLeft)
     socket.on('conversationUpdated', onConversationUpdated)
@@ -253,6 +262,8 @@ export const useChat = () => {
       socket.off('connect_error', onConnectError)
       socket.off('newLogin', onNewLogin)
       socket.off('userLeft', onUserLeft)
+      socket.off('presence', onPresence)
+      socket.off('ownStatus', onOwnStatus)
       socket.off('memberJoined', onMemberJoined)
       socket.off('memberLeft', onMemberLeft)
       socket.off('conversationUpdated', onConversationUpdated)
@@ -360,6 +371,19 @@ export const useChat = () => {
     forget()
   }, [forget])
 
+  /** Changes what the user shows. Resolves with the server's answer, for whoever asked to show a refusal. */
+  const setStatus = useCallback(async (payload: SetStatusPayload) => {
+    const answer = await ask('setStatus', payload)
+    if (answer.ok) {
+      const { status, statusText, statusClearAt } = answer
+      dispatch({ type: 'ownStatusChanged', ownStatus: { status, statusText, statusClearAt } })
+    }
+    return answer
+  }, [])
+
+  // Tell the server when nobody is using this page, so that others see "away".
+  useIdleReporter(connected && state.phase === 'loggedIn')
+
   const selectConversation = useCallback((conversationId: string) => {
     dispatch({ type: 'conversationSelected', conversationId })
   }, [])
@@ -434,6 +458,7 @@ export const useChat = () => {
     username: state.username,
     kind: state.kind,
     admin: state.admin,
+    ownStatus: state.ownStatus,
     loginError: state.loginError,
     chats: chatList(state),
     people: peopleList(state),
@@ -450,6 +475,7 @@ export const useChat = () => {
     becomeAccount,
     logout,
     forget,
+    setStatus,
     selectConversation,
     openChatWith,
     closeConversation,

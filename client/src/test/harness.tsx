@@ -42,7 +42,9 @@ export const disconnect = (reason?: string) => act(() => fakeSocket.simulateDisc
 /** The permanent id the fake server gives `username`. */
 export const idOf = (username: string) => `${username}-id`
 
-export const user = (username: string, kind: UserKind = 'guest'): PublicUser => ({ userId: idOf(username), username, kind })
+export const user = (username: string, kind: UserKind = 'guest', shown: Partial<PublicUser> = {}): PublicUser => ({
+  userId: idOf(username), username, kind, status: 'online', statusText: '', ...shown,
+})
 
 /** The id of the direct conversation between two users, by name. */
 export const dm = (a: string, b: string) => directConversationId(idOf(a), idOf(b))
@@ -60,6 +62,7 @@ export const loggedInPayload = (
   kind: 'guest',
   admin: false,
   sessionToken,
+  ownStatus: { status: 'online', statusText: '', statusClearAt: null },
   ...(reservation === undefined ? {} : { reservation }),
   onlineUsers: [user(username), ...others],
   conversations,

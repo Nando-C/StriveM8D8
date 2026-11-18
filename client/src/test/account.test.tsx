@@ -413,14 +413,14 @@ describe('the account menu', () => {
 
     const menu = await openMenu(events, 'alice')
 
-    expect(menuItems(menu)).toEqual(['Create an account to keep this name', 'Leave'])
+    expect(menuItems(menu)).toEqual(['Set a status message', 'Create an account to keep this name', 'Leave'])
     expect(within(menu).getByText('alice · Guest')).toBeInTheDocument()
   })
 
   it('offers an account its devices, password, sign out and deletion — and invitations only to administrators', async () => {
     const events = await signedIn('alice')
     expect(menuItems(await openMenu(events, 'alice')))
-      .toEqual(['Devices', 'Change password', 'Sign out', 'Delete account'])
+      .toEqual(['Set a status message', 'Devices', 'Change password', 'Sign out', 'Delete account'])
   })
 
   it('adds invitations for an administrator', async () => {
@@ -428,7 +428,7 @@ describe('the account menu', () => {
 
     const menu = await openMenu(events, 'owner')
 
-    expect(menuItems(menu)).toEqual(['Devices', 'Change password', 'Invite someone', 'Sign out', 'Delete account'])
+    expect(menuItems(menu)).toEqual(['Set a status message', 'Devices', 'Change password', 'Invite someone', 'Sign out', 'Delete account'])
     expect(within(menu).getByText('owner · Account · Administrator')).toBeInTheDocument()
   })
 
@@ -438,7 +438,7 @@ describe('the account menu', () => {
     const events = await loginAs('alice')
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem('strive-chat.config') ?? '{}').signup).toBe('closed'))
 
-    expect(menuItems(await openMenu(events, 'alice'))).toEqual(['Leave'])
+    expect(menuItems(await openMenu(events, 'alice'))).toEqual(['Set a status message', 'Leave'])
   })
 
   it('offers only signing out while there is no connection to ask anything over', async () => {

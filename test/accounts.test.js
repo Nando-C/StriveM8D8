@@ -131,9 +131,9 @@ describe('signing in', () => {
     it('logs in with the session from sign-up, as an account', async () => {
         const { socket, session } = await signUp('alice')
 
-        expect(sortedKeys(session)).toEqual(['admin', 'conversations', 'kind', 'ok', 'onlineUsers', 'sessionToken', 'userId', 'username'])
+        expect(sortedKeys(session)).toEqual(['admin', 'conversations', 'kind', 'ok', 'onlineUsers', 'ownStatus', 'sessionToken', 'userId', 'username'])
         expect(session).toMatchObject({ ok: true, username: 'alice', kind: 'account', admin: false })
-        expect(await onlineUsers(app)).toEqual([{ userId: session.userId, username: 'alice', kind: 'account' }])
+        expect(await onlineUsers(app)).toEqual([{ userId: session.userId, username: 'alice', kind: 'account', status: 'online', statusText: '' }])
         expect(JSON.stringify(session)).not.toContain(socket.id)
     })
 
@@ -293,10 +293,10 @@ describe('several devices on one account', () => {
 
         const first = await signUp('alice')
         const second = await anotherDevice('alice')
-        const alice = { userId: first.session.userId, username: 'alice', kind: 'account' }
+        const alice = { userId: first.session.userId, username: 'alice', kind: 'account', status: 'online', statusText: '' }
 
         expect(second.session.userId).toBe(first.session.userId)
-        expect(second.session.onlineUsers).toEqual([{ userId: watcher.userId, username: 'watcher', kind: 'guest' }, alice])
+        expect(second.session.onlineUsers).toEqual([{ userId: watcher.userId, username: 'watcher', kind: 'guest', status: 'online', statusText: '' }, alice])
 
         // The device that connected first goes first: nothing changes for anyone else.
         first.socket.close()
@@ -572,7 +572,7 @@ describe('turning a guest into an account', () => {
         const account = await register(guest, 'alice')
 
         // Everyone's entry for her now says she is an account; she never left.
-        expect(await relisted).toEqual({ userId, username: 'alice', kind: 'account' })
+        expect(await relisted).toEqual({ userId, username: 'alice', kind: 'account', status: 'online', statusText: '' })
 
         expect(account).toMatchObject({ ok: true, kind: 'account' })
         const stored = await Identity.findOne({ username: 'alice' }).lean()

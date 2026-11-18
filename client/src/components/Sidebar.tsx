@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { EyeOff } from 'lucide-react'
 import { AnimatePresence, motion, useIsPresent } from 'motion/react'
 import { AccountMenu, type AccountMenuProps } from '@/components/account/AccountMenu'
 import { Badge } from '@/components/ui/badge'
@@ -6,6 +7,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { UserAvatar } from '@/components/UserAvatar'
 import type { ChatEntry, PersonEntry } from '@/lib/chatSelectors'
 import { listItem, pop, transition } from '@/lib/motion'
+import { presenceLine } from '@/lib/status'
 import { cn } from '@/lib/utils'
 import type { UserKind } from '@/types/protocol'
 
@@ -114,6 +116,13 @@ export function Sidebar({
     <aside className={cn('flex min-h-0 flex-col border-r bg-sidebar text-sidebar-foreground', className)}>
       <div className="border-b p-2">
         <AccountMenu username={username} {...account} />
+        {account.ownStatus?.status === 'invisible' && (
+          // Quiet, but always there: it is easy to forget, and others think you are away.
+          <p role="status" className="flex items-center gap-2 px-2 pt-1 pb-1 text-xs text-muted-foreground">
+            <EyeOff aria-hidden="true" className="size-3.5" />
+            You are invisible: others see you as offline.
+          </p>
+        )}
       </div>
       <ScrollArea className="min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:!block">
         {chats.length > 0 && (
@@ -134,14 +143,15 @@ export function Sidebar({
                         className={rowClass(current)}
                       >
                         <SelectionHighlight current={current} />
-                        <UserAvatar username={chat.title} online={chat.online ?? undefined} className="size-8" />
+                        {/* The line below is the last message, so here the mark is also put into words. */}
+                        <UserAvatar username={chat.title} presence={chat.presence ?? undefined} labelled className="size-8" />
                         <span className="flex min-w-0 flex-1 flex-col">
                           <span className={cn('truncate', chat.unread > 0 && 'font-semibold')}>{chat.title}</span>
                           <span className="truncate text-xs font-normal text-muted-foreground">
                             {chat.counterpart?.gone ? (
                               'No longer here'
                             ) : chat.preview === '' ? (
-                              chat.online === null ? '' : chat.online ? 'Online' : 'Offline'
+                              chat.presence === null ? '' : presenceLine(undefined, chat.presence, chat.statusText)
                             ) : (
                               <>
                                 {chat.previewOwn && 'You: '}
@@ -184,12 +194,11 @@ export function Sidebar({
                         aria-current={current ? 'true' : undefined}
                         className={cn(rowClass(current), current && 'bg-sidebar-accent')}
                       >
-                        <UserAvatar username={person.username} online={person.online} className="size-8" />
+                        <UserAvatar username={person.username} presence={person.presence} className="size-8" />
                         <span className="flex min-w-0 flex-1 flex-col">
                           <span className="truncate">{person.username}</span>
-                          <span className="text-xs font-normal text-muted-foreground">
-                            {label !== undefined && `${label} · `}
-                            {person.online ? 'Online' : 'Offline'}
+                          <span className="overflow-hidden text-xs font-normal text-ellipsis whitespace-nowrap text-muted-foreground">
+                            {presenceLine(label, person.presence, person.statusText)}
                           </span>
                         </span>
                       </button>
