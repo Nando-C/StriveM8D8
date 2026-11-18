@@ -29,6 +29,17 @@ export interface LocalMessage {
   arrivedAt: number | null
 }
 
+/** A text on one line: what a preview of it starts from. */
+export const oneLine = (text: string) => text.trim().replace(/\s+/g, ' ')
+
+const PREVIEW_LENGTH = 80
+
+/** The text shown under a conversation's name in the list, cut as the server cuts it. */
+export const previewOf = (text: string) => {
+  const flat = oneLine(text)
+  return flat.length > PREVIEW_LENGTH ? `${flat.slice(0, PREVIEW_LENGTH)}…` : flat
+}
+
 export const UNCONFIRMED = 'Delivery unconfirmed: the connection was lost'
 
 /** A message from the server — live (`arrivedAt` set) or from history (`null`). */

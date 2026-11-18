@@ -1,10 +1,7 @@
 import { expect, test } from '@playwright/test'
-import { bubbles, chat, joinAsGuest, openApp, person, send, signedInAs, unique } from './helpers.js'
-
-const chooseStatus = async (page, username, status) => {
-    await page.getByRole('button', { name: `Account menu for ${username}` }).click()
-    await page.getByRole('menuitemradio', { name: new RegExp(`^${status}`) }).click()
-}
+import {
+    accountMenu, bubbles, chat, chooseStatus, joinAsGuest, menuButton, openApp, person, send, signedInAs, unique,
+} from './helpers.js'
 
 test('a status and a status message are seen by the other person, and kept across a reload', async ({ browser }) => {
     const [anaName, benName] = [unique('ana'), unique('ben')]
@@ -17,8 +14,7 @@ test('a status and a status message are seen by the other person, and kept acros
     await chooseStatus(ana, anaName, 'Do not disturb')
     await expect(person(ben, anaName)).toContainText('Guest · Do not disturb')
 
-    await ana.getByRole('button', { name: `Account menu for ${anaName}` }).click()
-    await ana.getByRole('menuitem', { name: 'Set a status message' }).click()
+    await accountMenu(ana, anaName, 'Set a status message')
     const dialog = ana.getByRole('dialog', { name: 'Status message' })
     await dialog.getByLabel('Message').fill('writing, back at four')
     await dialog.getByLabel('Clear after').selectOption('4 hours')
@@ -26,7 +22,7 @@ test('a status and a status message are seen by the other person, and kept acros
     await expect(dialog).toBeHidden()
 
     await expect(person(ben, anaName)).toContainText('Do not disturb — writing, back at four')
-    const own = ana.getByRole('button', { name: `Account menu for ${anaName}` })
+    const own = menuButton(ana, anaName)
     await expect(own).toContainText('Do not disturb — writing, back at four')
 
     // It is the user's, not the tab's: still there after a reload, for both of them.

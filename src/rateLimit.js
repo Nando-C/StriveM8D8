@@ -38,5 +38,8 @@ export const createRateLimiter = (now = Date.now) => {
         }
     }
 
-    return { allow, forget, prune, owners: () => calls.size }
+    /** For a module's own table of per-socket limits: `(socket, key)` → whether it may. */
+    const perSocket = limits => (socket, key) => allow(socket.id, key, limits[key])
+
+    return { allow, perSocket, forget, prune, owners: () => calls.size }
 }

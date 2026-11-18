@@ -1,4 +1,5 @@
 import type { ComponentProps, ReactNode } from 'react'
+import { LoaderCircle } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -22,6 +23,21 @@ export function Field({ id, label, hint, ...input }: FieldProps) {
       )}
     </div>
   )
+}
+
+/** A button's label, with a spinner before it while its request is under way. */
+export function Busy({ busy, children }: { busy: boolean; children: ReactNode }) {
+  return (
+    <>
+      {busy && <LoaderCircle aria-hidden="true" className="animate-spin" />}
+      {children}
+    </>
+  )
+}
+
+/** Not shown and not editable, but present so that a password manager saves the right pair. */
+export function HiddenUsername({ username }: { username: string }) {
+  return <input type="text" name="username" autoComplete="username" value={username} readOnly hidden />
 }
 
 export function FormError({ message }: { message: string | null }) {

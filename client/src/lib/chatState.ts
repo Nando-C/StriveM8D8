@@ -1,5 +1,5 @@
-import { UNCONFIRMED, fromServer, mergeConfirmed, type LocalMessage } from '@/lib/messages'
-import { comparePositions } from '@/lib/positions'
+import { UNCONFIRMED, fromServer, mergeConfirmed, previewOf, type LocalMessage } from '@/lib/messages'
+import { comparePositions, positionOf } from '@/lib/positions'
 import type {
   ConversationSummary,
   HistoryErrorPayload,
@@ -215,9 +215,8 @@ const withSummary = (state: ChatState, summary: ConversationSummary): ChatState 
 const withLastMessage = (thread: Thread, message: LocalMessage): Thread => {
   if (thread.summary === null || message.id === null) return thread
   const last = thread.summary.lastMessage
-  const position = { ts: message.timestamp, id: message.id }
-  if (last !== null && comparePositions(position, { ts: last.timestamp, id: last.id }) <= 0) return thread
-  const preview = message.text.trim().replace(/\s+/g, ' ')
+  const position = positionOf({ id: message.id, timestamp: message.timestamp })
+  if (last !== null && comparePositions(position, positionOf(last)) <= 0) return thread
   return {
     ...thread,
     summary: {
@@ -226,7 +225,7 @@ const withLastMessage = (thread: Thread, message: LocalMessage): Thread => {
         id: message.id,
         from: message.from,
         fromName: message.fromName,
-        preview: preview.length > 80 ? `${preview.slice(0, 80)}…` : preview,
+        preview: previewOf(message.text),
         timestamp: message.timestamp,
       },
     },
@@ -368,10 +367,7 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
           messages.length > 0 &&
           newestHeld !== undefined &&
           newestHeld.id !== null &&
-          comparePositions(
-            { ts: messages[0].timestamp, id: messages[0].id },
-            { ts: newestHeld.timestamp, id: newestHeld.id },
-          ) > 0
+          comparePositions(positionOf(messages[0]), positionOf({ id: newestHeld.id, timestamp: newestHeld.timestamp })) > 0
         const merged = mergeConfirmed(
           disjoint ? thread.messages.filter(message => message.id === null) : thread.messages,
           page,

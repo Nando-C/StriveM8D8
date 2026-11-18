@@ -1,16 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { bubbles, chat, joinAsGuest, messageRow, openApp, openTab, person, send, signedInAs, tick, unique } from './helpers.js'
-
-const twoGuests = async browser => {
-    const [anaName, benName] = [unique('ana'), unique('ben')]
-    const ana = await openApp(browser)
-    await joinAsGuest(ana, anaName)
-    const ben = await openApp(browser)
-    await joinAsGuest(ben, benName)
-    await signedInAs(ana, anaName)
-    await signedInAs(ben, benName)
-    return { ana, ben, anaName, benName }
-}
+import { bubbles, chat, chooseStatus, joinAsGuest, messageRow, openTab, person, send, tick, twoGuests } from './helpers.js'
 
 test('a message goes from one tick, to two when it reaches the other person, to coloured when they read it', async ({ browser }) => {
     const { ana, ben, anaName, benName } = await twoGuests(browser)
@@ -74,8 +63,7 @@ test('an invisible reader does not turn the ticks: not live, not after the sende
     await expect(tick(ana, 'first')).toHaveAttribute('data-tick', 'seen')
 
     // Ben goes invisible, with the conversation still open in front of him.
-    await ben.getByRole('button', { name: `Account menu for ${benName}` }).click()
-    await ben.getByRole('menuitemradio', { name: /^Invisible/ }).click()
+    await chooseStatus(ben, benName, 'Invisible')
     await expect(person(ana, benName)).toBeHidden()
 
     await send(ana, 'second')
@@ -91,7 +79,6 @@ test('an invisible reader does not turn the ticks: not live, not after the sende
     await expect(tick(ana, 'first')).toHaveAttribute('data-tick', 'seen')
 
     // Visible again: it catches up at once.
-    await ben.getByRole('button', { name: `Account menu for ${benName}` }).click()
-    await ben.getByRole('menuitemradio', { name: /^Online/ }).click()
+    await chooseStatus(ben, benName, 'Online')
     await expect(tick(ana, 'second')).toHaveAttribute('data-tick', 'seen')
 })

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { joinAsGuest, openApp, openTab, people, person, signedInAs, unique } from './helpers.js'
+import { accountMenu, joinAsGuest, openApp, openTab, people, person, signedInAs, unique } from './helpers.js'
 
 test('a guest gets in with a name alone, and the name is then theirs', async ({ browser }) => {
     const name = unique('ana')
@@ -77,8 +77,7 @@ test('a guest can leave from the menu and is back on the entry screen', async ({
     await joinAsGuest(gus, name)
     await signedInAs(gus, name)
 
-    await gus.getByRole('button', { name: `Account menu for ${name}` }).click()
-    await gus.getByRole('menuitem', { name: 'Leave' }).click()
+    await accountMenu(gus, name, 'Leave')
 
     await expect(gus.getByLabel('Username')).toBeVisible()
     // And does not sign itself back in on a reload.

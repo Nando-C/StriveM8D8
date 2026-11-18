@@ -1,12 +1,12 @@
 import { useState, type FormEvent } from 'react'
-import { LoaderCircle } from 'lucide-react'
-import { Field, FormError } from '@/components/account/fields'
+import { Shell } from '@/components/account/AccountDialogs'
+import { Busy, Field, FormError } from '@/components/account/fields'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
 import {
   CLEAR_AFTER_CHOICES, CLEAR_AFTER_LABELS, MAX_STATUS_TEXT_LENGTH, clearAfterMinutes, type ClearAfter,
 } from '@/lib/status'
+import { useRequest } from '@/lib/useRequest'
 import type { Ack, OwnStatus, SetStatusPayload } from '@/types/protocol'
 
 interface StatusDialogProps {
@@ -20,18 +20,9 @@ interface StatusDialogProps {
 export function StatusDialog({ current, onSetStatus, onClose }: StatusDialogProps) {
   const [text, setText] = useState(current)
   const [clearAfter, setClearAfter] = useState<ClearAfter>('never')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const { busy, error, run } = useRequest()
 
-  const save = async (payload: SetStatusPayload) => {
-    if (busy) return
-    setBusy(true)
-    setError(null)
-    const answer = await onSetStatus(payload)
-    setBusy(false)
-    if (answer.ok) onClose()
-    else setError(answer.message)
-  }
+  const save = (payload: SetStatusPayload) => run(() => onSetStatus(payload), () => onClose())
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
@@ -39,12 +30,7 @@ export function StatusDialog({ current, onSetStatus, onClose }: StatusDialogProp
   }
 
   return (
-    <Dialog open onOpenChange={open => !open && onClose()}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Status message</DialogTitle>
-          <DialogDescription>Shown beside your name to everyone who can see you.</DialogDescription>
-        </DialogHeader>
+    <Shell title="Status message" description="Shown beside your name to everyone who can see you." onClose={onClose}>
         <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
           <Field
             id="status-text"
@@ -77,8 +63,7 @@ export function StatusDialog({ current, onSetStatus, onClose }: StatusDialogProp
           <FormError message={error} />
           <div className="flex flex-col gap-2 sm:flex-row-reverse">
             <Button type="submit" className="flex-1" disabled={busy || text.trim() === ''}>
-              {busy && <LoaderCircle aria-hidden="true" className="animate-spin" />}
-              Save
+              <Busy busy={busy}>Save</Busy>
             </Button>
             {current !== '' && (
               <Button type="button" variant="outline" className="flex-1" disabled={busy} onClick={() => void save({ text: '' })}>
@@ -87,7 +72,6 @@ export function StatusDialog({ current, onSetStatus, onClose }: StatusDialogProp
             )}
           </div>
         </form>
-      </DialogContent>
-    </Dialog>
+    </Shell>
   )
 }

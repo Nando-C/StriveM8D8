@@ -1,17 +1,20 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
 import { LoaderCircle, MessagesSquare } from 'lucide-react'
-import { Field, FormError } from '@/components/account/fields'
+import { Busy, Field, FormError } from '@/components/account/fields'
 import { RecoveryCode } from '@/components/account/RecoveryCode'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { PASSWORD_HINT, USERNAME_HINT, isPassword, passwordInput, usernameInput } from '@/lib/credentials'
+import {
+  PASSWORD_HINT, USERNAME_HINT, invitationInput, isPassword, passwordInput, usernameInput,
+} from '@/lib/credentials'
 import { deviceLabel } from '@/lib/device'
 import { bootstrapFromLink, dropCodesFromLink, invitationFromLink } from '@/lib/invitation'
 import { ask } from '@/lib/request'
 import type { ServerConfig } from '@/lib/serverConfig'
 import { loadReservation } from '@/lib/session'
+import { useRequest } from '@/lib/useRequest'
 import { WAKING_HINT, WAKING_NOTICE_DELAY_MS, useDelayed } from '@/lib/waking'
 
 type Way = 'guest' | 'signin' | 'create'
@@ -39,8 +42,16 @@ interface SubmitProps {
 function Submit({ connected, busy, disabled, children }: SubmitProps) {
   return (
     <Button type="submit" size="lg" disabled={busy || disabled}>
-      {busy && <LoaderCircle aria-hidden="true" className="animate-spin" />}
-      {!busy ? children : connected ? 'Signing in…' : 'Connecting…'}
+      <Busy busy={busy}>{!busy ? children : connected ? 'Signing in…' : 'Connecting…'}</Busy>
+    </Button>
+  )
+}
+
+/** For a form that asks the server itself: it cannot be sent until there is a connection. */
+function AskButton({ connected, busy, disabled, children }: SubmitProps) {
+  return (
+    <Button type="submit" size="lg" disabled={busy || !connected || disabled}>
+      <Busy busy={busy}>{connected ? children : 'Connecting…'}</Busy>
     </Button>
   )
 }
@@ -279,19 +290,15 @@ interface RecoverFormProps {
 function RecoverForm({ connected, username, onUsernameChange, onBack, onRecovered }: RecoverFormProps) {
   const [recoveryCode, setRecoveryCode] = useState('')
   const [newPassword, setNewPassword] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const { busy, error, run } = useRequest()
   const trimmed = username.trim()
 
-  const submit = async (event: FormEvent) => {
+  const submit = (event: FormEvent) => {
     event.preventDefault()
-    if (busy) return
-    setBusy(true)
-    setError(null)
-    const answer = await ask('resetPassword', { username: trimmed, recoveryCode, newPassword })
-    setBusy(false)
-    if (answer.ok) onRecovered(newPassword, answer.recoveryCode)
-    else setError(answer.message)
+    void run(
+      () => ask('resetPassword', { username: trimmed, recoveryCode, newPassword }),
+      answer => onRecovered(newPassword, answer.recoveryCode),
+    )
   }
 
   return (
@@ -330,14 +337,13 @@ function RecoverForm({ connected, username, onUsernameChange, onBack, onRecovere
         disabled={busy}
       />
       <FormError message={error} />
-      <Button
-        type="submit"
-        size="lg"
-        disabled={busy || !connected || trimmed === '' || recoveryCode.trim() === '' || !isPassword(newPassword)}
+      <AskButton
+        connected={connected}
+        busy={busy}
+        disabled={trimmed === '' || recoveryCode.trim() === '' || !isPassword(newPassword)}
       >
-        {busy && <LoaderCircle aria-hidden="true" className="animate-spin" />}
-        {connected ? 'Set new password' : 'Connecting…'}
-      </Button>
+        Set new password
+      </AskButton>
       <Button type="button" variant="link" size="sm" className="self-center" onClick={onBack} disabled={busy}>
         Back to sign in
       </Button>
@@ -359,28 +365,26 @@ function CreateAccountForm({ connected, needsInvitation, invitation: linked, boo
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [invitation, setInvitation] = useState(linked)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const { busy, error, run } = useRequest()
   const trimmed = username.trim()
 
-  const submit = async (event: FormEvent) => {
+  const submit = (event: FormEvent) => {
     event.preventDefault()
-    if (busy) return
-    setBusy(true)
-    setError(null)
-    // A name this browser already holds as a guest becomes the account, conversations and all.
-    const reservation = loadReservation(trimmed)
-    const answer = await ask('register', {
-      username: trimmed,
-      password,
-      deviceLabel: deviceLabel(),
-      ...(reservation === undefined ? {} : { reservation }),
-      ...(needsInvitation ? { invitation: invitation.trim() } : {}),
-      ...(bootstrapCode === '' ? {} : { bootstrapCode }),
-    })
-    setBusy(false)
-    if (answer.ok) onCreated({ username: trimmed, session: answer.session, recoveryCode: answer.recoveryCode })
-    else setError(answer.message)
+    void run(
+      () => {
+        // A name this browser already holds as a guest becomes the account, conversations and all.
+        const reservation = loadReservation(trimmed)
+        return ask('register', {
+          username: trimmed,
+          password,
+          deviceLabel: deviceLabel(),
+          ...(reservation === undefined ? {} : { reservation }),
+          ...(needsInvitation ? { invitation: invitation.trim() } : {}),
+          ...(bootstrapCode === '' ? {} : { bootstrapCode }),
+        })
+      },
+      answer => onCreated({ username: trimmed, session: answer.session, recoveryCode: answer.recoveryCode }),
+    )
   }
 
   return (
@@ -415,24 +419,20 @@ function CreateAccountForm({ connected, needsInvitation, invitation: linked, boo
           id="create-invitation"
           label="Invitation code"
           hint="Sign-up here is by invitation. The code is the last part of the link you were sent."
-          autoComplete="off"
-          autoCapitalize="none"
-          spellCheck={false}
-          maxLength={100}
+          {...invitationInput}
           value={invitation}
           onChange={event => setInvitation(event.target.value)}
           disabled={busy}
         />
       )}
       <FormError message={error} />
-      <Button
-        type="submit"
-        size="lg"
-        disabled={busy || !connected || trimmed === '' || !isPassword(password) || (needsInvitation && invitation.trim() === '')}
+      <AskButton
+        connected={connected}
+        busy={busy}
+        disabled={trimmed === '' || !isPassword(password) || (needsInvitation && invitation.trim() === '')}
       >
-        {busy && <LoaderCircle aria-hidden="true" className="animate-spin" />}
-        {connected ? 'Create account' : 'Connecting…'}
-      </Button>
+        Create account
+      </AskButton>
     </form>
   )
 }

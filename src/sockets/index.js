@@ -13,9 +13,9 @@ export const registerSocketHandlers = (io, settings) => {
     const presence = createPresence(io, { demoBot: settings.demoBot })
     const rateLimiter = createRateLimiter()
     const messages = createMessageHandlers({ io, presence, settings, rateLimiter })
-    const status = createStatusHandlers({ io, presence, rateLimiter, onVisibleAgain: messages.visibleAgain })
+    const status = createStatusHandlers({ presence, rateLimiter, onVisibleAgain: messages.visibleAgain })
     const session = createSessionHandlers({
-        io, presence, settings, rateLimiter,
+        presence, settings, rateLimiter,
         onIdentityRemoved: messages.identityRemoved, onConversationsListed: messages.listDelivered,
     })
 

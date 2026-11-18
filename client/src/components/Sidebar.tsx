@@ -5,11 +5,10 @@ import { AccountMenu, type AccountMenuProps } from '@/components/account/Account
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { UserAvatar } from '@/components/UserAvatar'
-import type { ChatEntry, PersonEntry } from '@/lib/chatSelectors'
+import { unreadLabel, type ChatEntry, type PersonEntry } from '@/lib/chatSelectors'
 import { listItem, pop, transition } from '@/lib/motion'
-import { presenceLine } from '@/lib/status'
+import { KIND_LABELS, presenceLine } from '@/lib/status'
 import { cn } from '@/lib/utils'
-import type { UserKind } from '@/types/protocol'
 
 interface SidebarProps {
   username: string
@@ -29,8 +28,6 @@ interface SidebarProps {
   onSelectPerson: (person: PersonEntry) => void
   className?: string
 }
-
-const KIND_LABELS: Partial<Record<UserKind, string>> = { guest: 'Guest', bot: 'Bot' }
 
 /**
  * One shared highlight that slides between chats instead of blinking.
@@ -84,7 +81,7 @@ function UnreadBadge({ unread }: { unread: number }) {
         // Keyed by the count, so the badge pops again each time it goes up.
         <motion.span key={unread} variants={pop} initial="hidden" animate="visible" exit="exit">
           <Badge>
-            <span aria-hidden="true">{unread > 99 ? '99+' : unread}</span>
+            <span aria-hidden="true">{unreadLabel(unread)}</span>
             <span className="sr-only">
               {unread} unread {unread === 1 ? 'message' : 'messages'}
             </span>

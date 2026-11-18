@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { Check, CheckCheck, CircleAlert, LoaderCircle } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import type { Thread } from '@/lib/chatState'
 import type { LocalMessage } from '@/lib/messages'
-import { comparePositions } from '@/lib/positions'
+import { comparePositions, positionOf } from '@/lib/positions'
 import { TICK_LABELS, tickOf, type Tick } from '@/lib/ticks'
 import { formatDay, formatTime, isSameDay } from '@/lib/format'
 import { fade, messageIn } from '@/lib/motion'
@@ -69,7 +69,9 @@ interface MessageProps {
   animateIn: boolean
 }
 
-function Message({ message, tick, animateIn }: MessageProps) {
+// Drawn again only when something about this message changes: a conversation can hold
+// hundreds, and every event in it (and every change of anyone's presence) reaches the list.
+const Message = memo(function Message({ message, tick, animateIn }: MessageProps) {
   return (
     <motion.li
       variants={messageIn(message.own)}
@@ -113,7 +115,7 @@ function Message({ message, tick, animateIn }: MessageProps) {
       </p>
     </motion.li>
   )
-}
+})
 
 export function MessageList({ title, thread, ownUserId, onLoadEarlier, onAtEndChange }: MessageListProps) {
   const root = useRef<HTMLDivElement>(null)
@@ -134,7 +136,7 @@ export function MessageList({ title, thread, ownUserId, onLoadEarlier, onAtEndCh
       ? undefined
       : messages.find(
           message =>
-            !message.own && message.id !== null && comparePositions({ ts: message.timestamp, id: message.id }, unreadFrom) > 0,
+            !message.own && message.id !== null && comparePositions(positionOf({ id: message.id, timestamp: message.timestamp }), unreadFrom) > 0,
         )?.key
 
   const viewport = () => root.current?.querySelector<HTMLElement>('[data-slot=scroll-area-viewport]') ?? null

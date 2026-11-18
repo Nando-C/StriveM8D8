@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto'
-import { createAttemptLimiter } from '../auth/attempts.js'
 import { HasherBusyError, createPasswordHasher } from '../auth/passwords.js'
 import {
     fingerprint, isSecret, newRecoveryCode, newSecret, normaliseRecoveryCode, sameString,
@@ -7,31 +6,33 @@ import {
 import { BOT } from '../bot.js'
 import { conversationsFor } from '../conversations.js'
 import { addressOfSocket } from '../clientAddress.js'
-import { isDatabaseReady } from '../db.js'
+import { isDatabaseReady, isDuplicateKey } from '../db.js'
 import { Identity, usernameKeyOf } from '../models/identity.js'
-import { INVITATION_LIFETIME_DAYS, Invitation } from '../models/invitation.js'
+import { Invitation } from '../models/invitation.js'
 import { Session } from '../models/session.js'
+import { createDeviceSessions } from './deviceSessions.js'
+import { createGuessLimiter } from './guesses.js'
+import { createInvitation, listInvitations, revokeInvitation } from './invitations.js'
 import { ownStatus } from './status.js'
-import { NOT_LOGGED_IN, SLOW_DOWN, USERNAME_PATTERN, isObject, withAck } from './validation.js'
+import {
+    NOT_LOGGED_IN, Refusal, SLOW_DOWN, USERNAME_PATTERN, isDocumentId, isObject, refuse, withAck,
+} from './validation.js'
 
-// Who somebody is, and proving it: guests, accounts, the devices an account is signed in
-// on, and invitations. Everything here answers either with `loggedin` / `loginError`
+// Who somebody is, and proving it: guests and accounts. (The devices an account is signed
+// in on are in deviceSessions.js, the limits on guessing in guesses.js, invitations in
+// invitations.js.) Everything here answers either with `loggedin` / `loginError`
 // (for `login`) or through the event's acknowledgement, as { ok: true, … } or
 // { ok: false, message }.
 
 const MIN_PASSWORD_LENGTH = 8
 const MAX_PASSWORD_LENGTH = 128
-const MAX_LABEL_LENGTH = 60
 /** Connections one account may hold at once (devices and tabs). A guest holds one. */
 const MAX_SOCKETS_PER_ACCOUNT = 5
-const MAX_SESSIONS_PER_ACCOUNT = 20
-const MAX_OPEN_INVITATIONS = 50
 /** How many accounts the member directory lists. */
 const MAX_DIRECTORY = 200
 /** How long an idle guest keeps their name where no message expiry is configured. */
 const DEFAULT_GUEST_IDLE_HOURS = 30 * 24
 const HOUR = 60 * 60_000
-const DAY = 24 * HOUR
 
 // Per socket.
 const RATE_LIMITS = {
@@ -51,41 +52,20 @@ const WRONG_PASSWORD = 'Wrong username or password'
 const WRONG_RECOVERY = 'Wrong username or recovery code'
 const PASSWORD_RULE = `Password must be ${MIN_PASSWORD_LENGTH} to ${MAX_PASSWORD_LENGTH} characters`
 
-// Thrown anywhere inside a handler to answer the client with a reason. Anything else
-// that is thrown is a fault: it is logged by name and answered generically.
-class Refusal extends Error {
-    constructor(message, extra = {}) {
-        super(message)
-        this.extra = extra
-    }
-}
-const refuse = (message, extra) => {
-    throw new Refusal(message, extra)
-}
-
 const isPassword = value =>
     typeof value === 'string' && value.length >= MIN_PASSWORD_LENGTH && value.length <= MAX_PASSWORD_LENGTH
 
-// Shown back to the account's owner only, but still stored: keep it short and printable.
-const cleanLabel = value =>
-    (typeof value === 'string' ? value : '').replace(/[^\x20-\x7E]/g, '').trim().slice(0, MAX_LABEL_LENGTH)
+/** The username a request names, trimmed; '' if it names none. (Whether it is a valid one is the caller's to check.) */
+const usernameIn = payload => (typeof payload.username === 'string' ? payload.username.trim() : '')
 
-const isDocumentId = value => typeof value === 'string' && /^[0-9a-f]{24}$/.test(value)
-
-const isDuplicateKey = error => error?.code === 11000
-
-const waitText = ms => {
-    const seconds = Math.ceil(ms / 1000)
-    return seconds < 90 ? `${seconds} s` : `${Math.ceil(seconds / 60)} min`
-}
+/** Whether a request carries the secret that holds this guest's name. */
+const holdsReservation = (payload, guest) =>
+    isSecret(payload.reservation) && sameString(fingerprint(payload.reservation), guest.secretHash)
 
 export const createSessionHandlers = ({
-    io, presence, settings, rateLimiter, onIdentityRemoved = async () => {}, onConversationsListed = async () => {},
+    presence, settings, rateLimiter, onIdentityRemoved = async () => {}, onConversationsListed = async () => {},
 }) => {
     const hasher = createPasswordHasher({ params: settings.passwordParams })
-    // Failed sign-ins and recoveries, counted per address and per (address, username).
-    const failuresByAddress = createAttemptLimiter({ freeFailures: 20 })
-    const failuresByPair = createAttemptLimiter({ freeFailures: 5 })
     // Compared as every name is: without regard to case.
     const adminNames = new Set(settings.adminUsernames.map(usernameKeyOf))
     const isAdminName = username => adminNames.has(usernameKeyOf(username))
@@ -94,15 +74,10 @@ export const createSessionHandlers = ({
 
     /** Sockets with a `login` in flight: a second one must not race the first. */
     const loggingIn = new Set()
-    // When a device session ("s:<id>") or all of a user's sessions ("u:<userId>") were
-    // last revoked. A login that began before that moment must not complete after it.
-    const revokedAt = new Map()
-    const wasRevokedSince = (startedAt, userId, deviceSessionId) =>
-        (revokedAt.get(`u:${userId}`) ?? 0) >= startedAt ||
-        (deviceSessionId !== null && (revokedAt.get(`s:${deviceSessionId}`) ?? 0) >= startedAt)
-
     const addressOf = socket => addressOfSocket(socket, settings.trustedProxyHops)
-    const allowed = (socket, key) => rateLimiter.allow(socket.id, key, RATE_LIMITS[key])
+    const allowed = rateLimiter.perSocket(RATE_LIMITS)
+    const { checkGuess, prune: pruneGuesses } = createGuessLimiter({ addressOf })
+    const devices = createDeviceSessions({ presence })
     const allowedForAddress = (socket, key) => rateLimiter.allow(`address:${addressOf(socket)}`, key, settings.limits[key])
 
     const requireDatabase = () => {
@@ -113,70 +88,25 @@ export const createSessionHandlers = ({
     // before the first write. Cached by Mongoose after the first call.
     const indexesReady = () => Promise.all([Identity.init(), Session.init(), Invitation.init()])
 
+    /** A password's hash, and a new recovery code with its hash: what an account is given together. */
+    const newCredentials = async password => {
+        const recoveryCode = newRecoveryCode()
+        const [passwordHash, recoveryHash] = await Promise.all([
+            hasher.hash(password), hasher.hash(normaliseRecoveryCode(recoveryCode)),
+        ])
+        return { recoveryCode, passwordHash, recoveryHash }
+    }
+
     /**
-     * Runs one password or recovery-code check for an (address, username), under the
-     * guessing limits. `attempt` resolves to something truthy when the guess was right;
-     * that is what this resolves to as well. The attempt is counted from the moment it
-     * starts, not from when it fails: the check is slow on purpose, and guesses sent all
-     * at once must not all get in before the first has been counted.
+     * The account called `username`, if `secret` is right for it (`hashField` says which
+     * of its secrets); null otherwise. One guess, under the guessing limits. Verified even
+     * when there is no such account, so both cases take the same time and get the same answer.
      */
-    const checkGuess = async (socket, username, attempt) => {
-        const address = addressOf(socket)
-        const pair = `${address}|${username}`
-        const tooMany = wait => refuse(`Too many attempts. Try again in ${waitText(wait)}`, { retryAfterMs: wait })
-
-        const addressWait = failuresByAddress.begin(address)
-        if (addressWait > 0) tooMany(addressWait)
-        const pairWait = failuresByPair.begin(pair)
-        if (pairWait > 0) {
-            failuresByAddress.end(address, { failed: false })
-            tooMany(pairWait)
-        }
-
-        // Something that goes wrong while checking (the database, a full hashing queue)
-        // is not a wrong guess: the attempt is released without being counted.
-        let failed = false
-        try {
-            const result = await attempt()
-            failed = !result
-            // The address keeps its count: one right answer must not reset guessing at other names.
-            if (result) failuresByPair.clear(pair)
-            return result
-        } finally {
-            failuresByAddress.end(address, { failed })
-            failuresByPair.end(pair, { failed })
-        }
-    }
-
-    const hashRecoveryCode = code => hasher.hash(normaliseRecoveryCode(code))
-
-    const createDeviceSession = async (userId, label) => {
-        const token = newSecret()
-        const session = await Session.create({ tokenHash: fingerprint(token), userId, label: cleanLabel(label) })
-        // Keep the newest few; a forgotten device's session would otherwise live as long as
-        // it is unused. Tidying up, not part of signing in: a failure here fails nothing.
-        try {
-            const extra = await Session.find({ userId }, { _id: 1 })
-                .sort({ lastUsedAt: -1, _id: -1 }).skip(MAX_SESSIONS_PER_ACCOUNT).lean()
-            if (extra.length > 0) await endDeviceSessions(userId, { _id: { $in: extra.map(doc => doc._id) } })
-        } catch (error) {
-            console.error("failed to trim old device sessions:", error.name)
-        }
-        return { token, deviceSessionId: session._id.toString() }
-    }
-
-    /** Deletes the matching device sessions of a user and disconnects whatever was using them. */
-    const endDeviceSessions = async (userId, filter, { reason = 'Signed out', exceptSocketId = null } = {}) => {
-        const sessions = await Session.find({ userId, ...filter }, { _id: 1 }).lean()
-        const ids = new Set(sessions.map(session => session._id.toString()))
-        const now = Date.now()
-        for (const id of ids) revokedAt.set(`s:${id}`, now)
-        await Session.deleteMany({ _id: { $in: sessions.map(session => session._id) } })
-
-        const user = presence.users.get(userId)
-        if (user) presence.revoke(user, { reason, only: entry => ids.has(entry.deviceSessionId), except: exceptSocketId })
-        return ids.size
-    }
+    const accountIfRight = (socket, username, secret, hashField) => checkGuess(socket, username, async () => {
+        const found = await Identity.findOne({ usernameKey: usernameKeyOf(username), kind: 'account' }).lean()
+        const matches = await hasher.verify(secret, found?.[hashField] ?? null)
+        return found && matches ? found : null
+    })
 
     /**
      * Removes an identity and everything that belongs to it, and disconnects it. The one
@@ -186,7 +116,7 @@ export const createSessionHandlers = ({
     const removeIdentity = async (userId, { reason, onlyIf = {}, keepSocketId = null } = {}) => {
         const removed = await Identity.findOneAndDelete({ userId, ...onlyIf }).lean()
         if (!removed) return false
-        revokedAt.set(`u:${userId}`, Date.now())
+        devices.revokeLoginsUnderWay(userId)
         await Promise.all([Session.deleteMany({ userId }), Invitation.deleteMany({ createdBy: userId })])
 
         const user = presence.users.get(userId)
@@ -217,8 +147,7 @@ export const createSessionHandlers = ({
 
     const tellDirectory = (event, payload) => {
         if (!directoryOn) return
-        const sockets = [...presence.users.values()].filter(seesDirectory).flatMap(user => [...user.sockets.keys()])
-        if (sockets.length > 0) io.to(sockets).emit(event, payload)
+        presence.tell([...presence.users.values()].filter(seesDirectory).map(user => user.userId), event, payload)
     }
 
     // Completes a login on a socket that has just been attached: everything the client
@@ -230,8 +159,9 @@ export const createSessionHandlers = ({
     const sendLoggedIn = async (socket, user, sessionToken, extra = {}, { undoOnFailure = true, onConfirmed = null } = {}) => {
         let conversations, members
         try {
-            conversations = await conversationsFor(user.userId)
-            if (seesDirectory(user)) members = await directory()
+            ;[conversations, members] = await Promise.all([
+                conversationsFor(user.userId), seesDirectory(user) ? directory() : undefined,
+            ])
         } catch (error) {
             if (undoOnFailure) presence.detach(socket.id)
             throw error
@@ -288,7 +218,7 @@ export const createSessionHandlers = ({
             }
         } else if (identity.kind === 'account') {
             refuse('That name belongs to an account — sign in')
-        } else if (!isSecret(payload.reservation) || !sameString(fingerprint(payload.reservation), identity.secretHash)) {
+        } else if (!holdsReservation(payload, identity)) {
             refuse(IN_USE)
         } else {
             await Identity.updateOne({ userId: identity.userId }, { lastSeenAt: new Date() })
@@ -360,7 +290,7 @@ export const createSessionHandlers = ({
             refuse(TOO_MANY_DEVICES)
         }
 
-        const created = deviceSession === null ? await createDeviceSession(identity.userId, payload.deviceLabel) : null
+        const created = deviceSession === null ? await devices.create(identity.userId, payload.deviceLabel) : null
         const deviceSessionId = created?.deviceSessionId ?? deviceSession._id.toString()
         await Identity.updateOne({ userId: identity.userId }, { lastSeenAt: new Date() })
 
@@ -371,7 +301,7 @@ export const createSessionHandlers = ({
         const abandon = async () => {
             if (created) await Session.deleteOne({ _id: deviceSessionId })
         }
-        if (wasRevokedSince(startedAt, identity.userId, deviceSessionId)) {
+        if (devices.wasRevokedSince(startedAt, identity.userId, deviceSessionId)) {
             await abandon()
             // The password was changed or reset, or this device signed out, while this
             // login was under way: whatever it proved is no longer good enough.
@@ -401,13 +331,7 @@ export const createSessionHandlers = ({
     const loginWithPassword = async (socket, username, payload, startedAt) => {
         if (typeof payload.password !== 'string' || payload.password.length > MAX_PASSWORD_LENGTH) refuse(WRONG_PASSWORD)
         requireDatabase()
-        const identity = await checkGuess(socket, username, async () => {
-            const found = await Identity.findOne({ usernameKey: usernameKeyOf(username), kind: 'account' }).lean()
-            // Verified even when there is no such account, so both cases take the same time
-            // and get the same answer.
-            const matches = await hasher.verify(payload.password, found?.passwordHash ?? null)
-            return found && matches ? found : null
-        })
+        const identity = await accountIfRight(socket, username, payload.password, 'passwordHash')
         if (!identity) refuse(WRONG_PASSWORD)
         await completeAccountLogin(socket, identity, payload, startedAt, null)
     }
@@ -426,7 +350,7 @@ export const createSessionHandlers = ({
 
     const login = async (socket, payload) => {
         const startedAt = Date.now()
-        const username = typeof payload.username === 'string' ? payload.username.trim() : ''
+        const username = usernameIn(payload)
 
         const current = presence.bySocket.get(socket.id)
         if (current) {
@@ -447,7 +371,7 @@ export const createSessionHandlers = ({
     // ---------- accounts
 
     const register = async ({ socket, user, payload }) => {
-        const username = typeof payload.username === 'string' ? payload.username.trim() : ''
+        const username = usernameIn(payload)
         if (!USERNAME_PATTERN.test(username)) refuse('Invalid username')
         if (!isPassword(payload.password)) refuse(PASSWORD_RULE)
         if (isBotName(username)) refuse(IN_USE)
@@ -478,7 +402,7 @@ export const createSessionHandlers = ({
         const existing = await Identity.findOne({ usernameKey: usernameKeyOf(username) }).lean()
         const upgrading = existing?.kind === 'guest' && !asAdmin && (
             (isOwnGuestName && user.userId === existing.userId) ||
-            (isSecret(payload.reservation) && sameString(fingerprint(payload.reservation), existing.secretHash))
+            holdsReservation(payload, existing)
         )
         if (existing && !upgrading) refuse(IN_USE)
 
@@ -487,10 +411,7 @@ export const createSessionHandlers = ({
         // Checked before the (slow) hashing, consumed after it.
         if (needsInvitation && !await Invitation.exists(invitationFilter())) refuse(INVALID_INVITATION)
 
-        const recoveryCode = newRecoveryCode()
-        const [passwordHash, recoveryHash] = await Promise.all([
-            hasher.hash(payload.password), hashRecoveryCode(recoveryCode),
-        ])
+        const { recoveryCode, passwordHash, recoveryHash } = await newCredentials(payload.password)
 
         // Deleting the invitation is what makes it single-use: only one request gets it back.
         const invitation = needsInvitation ? await Invitation.findOneAndDelete(invitationFilter()).lean() : null
@@ -500,7 +421,11 @@ export const createSessionHandlers = ({
         // first is taken back; if the first fails nothing exists yet. There is no order of
         // failures that leaves an account whose recovery code nobody was ever shown.
         const userId = upgrading ? existing.userId : randomUUID()
-        const { token, deviceSessionId } = await createDeviceSession(userId, payload.deviceLabel)
+        const { token, deviceSessionId } = await devices.create(userId, payload.deviceLabel)
+        const takeBack = async () => {
+            await Session.deleteOne({ _id: deviceSessionId }).catch(() => {})
+            if (invitation) await Invitation.create(invitation).catch(() => {})
+        }
 
         let identity
         try {
@@ -514,16 +439,14 @@ export const createSessionHandlers = ({
                     userId, username, kind: 'account', admin: asAdmin, passwordHash, recoveryHash,
                 })).toObject()
         } catch (error) {
-            await Session.deleteOne({ _id: deviceSessionId }).catch(() => {})
-            if (invitation) await Invitation.create(invitation).catch(() => {})
+            await takeBack()
             if (!isDuplicateKey(error)) throw error
             // The name went to someone else in the meantime.
             refuse(IN_USE)
         }
         if (!identity) {
             // (An upgrade whose guest was gone by now.) The invitation was not used.
-            await Session.deleteOne({ _id: deviceSessionId }).catch(() => {})
-            if (invitation) await Invitation.create(invitation).catch(() => {})
+            await takeBack()
             refuse(IN_USE)
         }
 
@@ -541,7 +464,7 @@ export const createSessionHandlers = ({
             // As an account they are now shown every other account, where that is on — and
             // must be told now, not at their next login.
             if (directoryOn && online.sockets.size > 0) {
-                io.to([...online.sockets.keys()]).emit('memberDirectory', { members: await directory() })
+                presence.tell([online.userId], 'memberDirectory', { members: await directory() })
             }
         }
         tellDirectory('memberJoined', { userId: identity.userId, username: identity.username, kind: 'account' })
@@ -549,26 +472,18 @@ export const createSessionHandlers = ({
     }
 
     const resetPassword = async ({ socket, payload }) => {
-        const username = typeof payload.username === 'string' ? payload.username.trim() : ''
+        const username = usernameIn(payload)
         if (!USERNAME_PATTERN.test(username) || typeof payload.recoveryCode !== 'string' || payload.recoveryCode.length > 100) {
             refuse(WRONG_RECOVERY)
         }
         if (!isPassword(payload.newPassword)) refuse(PASSWORD_RULE)
-        const identity = await checkGuess(socket, username, async () => {
-            const found = await Identity.findOne({ usernameKey: usernameKeyOf(username), kind: 'account' }).lean()
-            const matches = await hasher.verify(normaliseRecoveryCode(payload.recoveryCode), found?.recoveryHash ?? null)
-            return found && matches ? found : null
-        })
+        const identity = await accountIfRight(socket, username, normaliseRecoveryCode(payload.recoveryCode), 'recoveryHash')
         if (!identity) refuse(WRONG_RECOVERY)
 
         // A recovery code works once: a new one replaces it.
-        const recoveryCode = newRecoveryCode()
-        const [passwordHash, recoveryHash] = await Promise.all([
-            hasher.hash(payload.newPassword), hashRecoveryCode(recoveryCode),
-        ])
+        const { recoveryCode, passwordHash, recoveryHash } = await newCredentials(payload.newPassword)
         await Identity.updateOne({ userId: identity.userId }, { passwordHash, recoveryHash })
-        revokedAt.set(`u:${identity.userId}`, Date.now())
-        await endDeviceSessions(identity.userId, {}, { reason: 'The password was reset' })
+        await devices.end(identity.userId, {}, { reason: 'The password was reset', loginsUnderWay: true })
         return { recoveryCode }
     }
 
@@ -588,14 +503,12 @@ export const createSessionHandlers = ({
 
         const passwordHash = await hasher.hash(payload.newPassword)
         await Identity.updateOne({ userId: user.userId }, { passwordHash })
-        // A sign-in with the old password that is still being completed must not finish
-        // after this: only this connection's own session carries on.
-        revokedAt.set(`u:${user.userId}`, Date.now())
-        // Every other device is signed out; this one carries on.
-        await endDeviceSessions(
+        // Every other device is signed out; this one carries on. And a sign-in with the old
+        // password that is still being completed must not finish after this.
+        await devices.end(
             user.userId,
             { _id: { $ne: entry.deviceSessionId } },
-            { reason: 'The password was changed', exceptSocketId: socket.id },
+            { reason: 'The password was changed', exceptSocketId: socket.id, loginsUnderWay: true },
         )
         return {}
     }
@@ -615,7 +528,7 @@ export const createSessionHandlers = ({
 
     const revokeSession = async ({ user, payload }) => {
         if (!isDocumentId(payload.id)) refuse('Unknown device')
-        const ended = await endDeviceSessions(user.userId, { _id: payload.id }, { reason: 'Signed out from another device' })
+        const ended = await devices.end(user.userId, { _id: payload.id }, { reason: 'Signed out from another device' })
         if (ended === 0) refuse('Unknown device')
         return {}
     }
@@ -624,7 +537,7 @@ export const createSessionHandlers = ({
     // entry screen without reconnecting; other tabs sharing the device session are closed.
     const logout = async ({ socket, user, entry }) => {
         if (user.kind === 'account' && entry.deviceSessionId !== null && isDatabaseReady()) {
-            await endDeviceSessions(user.userId, { _id: entry.deviceSessionId }, { exceptSocketId: socket.id })
+            await devices.end(user.userId, { _id: entry.deviceSessionId }, { exceptSocketId: socket.id })
         }
         presence.detach(socket.id)
         return {}
@@ -633,40 +546,6 @@ export const createSessionHandlers = ({
     const deleteAccount = async ({ socket, user, payload }) => {
         await confirmPassword(socket, user, payload.password)
         await removeIdentity(user.userId, { reason: 'The account was deleted', keepSocketId: socket.id })
-        return {}
-    }
-
-    // ---------- invitations (administrators)
-
-    const createInvitation = async ({ user }) => {
-        const open = await Invitation.countDocuments({ createdBy: user.userId, expiresAt: { $gt: new Date() } })
-        if (open >= MAX_OPEN_INVITATIONS) refuse('Too many unused invitations: revoke some first')
-        await indexesReady()
-        const code = newSecret()
-        const invitation = await Invitation.create({
-            codeHash: fingerprint(code),
-            createdBy: user.userId,
-            expiresAt: new Date(Date.now() + INVITATION_LIFETIME_DAYS * DAY),
-        })
-        // The code is returned this once and cannot be read back later.
-        return { id: invitation._id.toString(), code, expiresAt: invitation.expiresAt.getTime() }
-    }
-
-    const listInvitations = async () => {
-        const invitations = await Invitation.find({ expiresAt: { $gt: new Date() } }).sort({ createdAt: -1 }).lean()
-        return {
-            invitations: invitations.map(invitation => ({
-                id: invitation._id.toString(),
-                createdAt: invitation.createdAt.getTime(),
-                expiresAt: invitation.expiresAt.getTime(),
-            })),
-        }
-    }
-
-    const revokeInvitation = async ({ payload }) => {
-        if (!isDocumentId(payload.id)) refuse('Unknown invitation')
-        const { deletedCount } = await Invitation.deleteOne({ _id: payload.id })
-        if (deletedCount === 0) refuse('Unknown invitation')
         return {}
     }
 
@@ -703,8 +582,7 @@ export const createSessionHandlers = ({
         // who: 'anyone' | 'signedIn' | 'account' | 'admin'
         const on = (event, { who, limit = 'account', database = true }, handler) => {
             socket.on(event, async (rawPayload, rawAck) => {
-                const { payload, reply } = withAck(rawPayload, rawAck)
-                const fail = message => reply({ ok: false, message })
+                const { payload, reply, fail } = withAck(rawPayload, rawAck)
 
                 if (!allowed(socket, limit)) return fail(SLOW_DOWN)
                 const user = presence.bySocket.get(socket.id) ?? null
@@ -740,11 +618,10 @@ export const createSessionHandlers = ({
      * for longer than the configured lifetime, and forgets old in-memory records.
      */
     const runMaintenance = async ({ now = Date.now() } = {}) => {
-        failuresByAddress.prune()
-        failuresByPair.prune()
+        pruneGuesses()
         // The per-address allowances are counted over an hour; older records say nothing.
         rateLimiter.prune(HOUR)
-        for (const [key, time] of revokedAt) if (now - time > HOUR) revokedAt.delete(key)
+        devices.prune(now, HOUR)
         if (!isDatabaseReady()) return { removedGuests: 0 }
 
         const online = [...presence.users.values()].filter(user => user.kind !== 'bot')

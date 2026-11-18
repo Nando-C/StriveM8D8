@@ -22,16 +22,14 @@ export const ownStatus = user => ({
     statusClearAt: user.statusClearAt ? new Date(user.statusClearAt).getTime() : null,
 })
 
-export const createStatusHandlers = ({ io, presence, rateLimiter, onVisibleAgain = async () => {} }) => {
-    const allowed = (socket, event) => rateLimiter.allow(socket.id, event, RATE_LIMITS[event])
+export const createStatusHandlers = ({ presence, rateLimiter, onVisibleAgain = async () => {} }) => {
+    const allowed = rateLimiter.perSocket(RATE_LIMITS)
 
     /** userId → the timer that clears their status text. Only for users who are connected. */
     const timers = new Map()
 
-    const tellOwnDevices = (user, { except = null } = {}) => {
-        const sockets = [...user.sockets.keys()].filter(socketId => socketId !== except)
-        if (sockets.length > 0) io.to(sockets).emit('ownStatus', ownStatus(user))
-    }
+    const tellOwnDevices = (user, { except = null } = {}) =>
+        presence.tell([user.userId], 'ownStatus', ownStatus(user), { exceptSocketId: except })
 
     // The text has run its time: it goes, everywhere — storage, everyone who could see
     // it, and the user's own devices. The chosen status stays.
@@ -79,8 +77,7 @@ export const createStatusHandlers = ({ io, presence, rateLimiter, onVisibleAgain
 
     const registerOn = socket => {
         socket.on('setStatus', async (rawPayload, rawAck) => {
-            const { payload, reply } = withAck(rawPayload, rawAck)
-            const fail = message => reply({ ok: false, message })
+            const { payload, reply, fail } = withAck(rawPayload, rawAck)
 
             if (!allowed(socket, 'setStatus')) return fail(SLOW_DOWN)
             if (!isObject(payload)) return fail('Invalid status')
@@ -120,10 +117,9 @@ export const createStatusHandlers = ({ io, presence, rateLimiter, onVisibleAgain
             }
             // The user may have gone while that was being stored; there is then nobody to tell.
             if (presence.users.get(user.userId) === user) {
-                const wasInvisible = user.status === 'invisible'
-                presence.update(user, changing => Object.assign(changing, next))
+                const { before, after } = presence.update(user, changing => Object.assign(changing, next))
                 // What was held back while nobody could see them is let go now.
-                if (wasInvisible && next.status !== 'invisible') {
+                if (before === null && after !== null) {
                     onVisibleAgain(user.userId).catch(error => console.error("failed to publish read positions:", error.name))
                 }
                 schedule(user)
@@ -135,11 +131,11 @@ export const createStatusHandlers = ({ io, presence, rateLimiter, onVisibleAgain
         // "Nobody is using this page" / "somebody is again". Kept in memory only: it says
         // something about a connection, and goes with it.
         socket.on('setIdle', (rawPayload, rawAck) => {
-            const { payload, reply } = withAck(rawPayload, rawAck)
-            if (!allowed(socket, 'setIdle')) return reply({ ok: false, message: SLOW_DOWN })
-            if (!isObject(payload) || typeof payload.idle !== 'boolean') return reply({ ok: false, message: 'Invalid request' })
+            const { payload, reply, fail } = withAck(rawPayload, rawAck)
+            if (!allowed(socket, 'setIdle')) return fail(SLOW_DOWN)
+            if (!isObject(payload) || typeof payload.idle !== 'boolean') return fail('Invalid request')
             const user = presence.bySocket.get(socket.id)
-            if (!user) return reply({ ok: false, message: NOT_LOGGED_IN })
+            if (!user) return fail(NOT_LOGGED_IN)
 
             presence.update(user, changing => {
                 changing.sockets.get(socket.id).idle = payload.idle
