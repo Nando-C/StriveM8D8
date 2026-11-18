@@ -1,0 +1,21 @@
+{
+  "name": "strive-chat-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "End-to-end tests: real browsers against the built client, the real server and a real (in-memory) MongoDB.",
+  "scripts": {
+    "test": "playwright test",
+    "lint": "oxlint --deny-warnings",
+    "stack": "node stack.js"
+  },
+  "engines": {
+    "node": "^22.22.2 || ^24"
+  },
+  "packageManager": "pnpm@12.18.0",
+  "devDependencies": {
+    "@playwright/test": "^1.65.1",
+    "mongodb-memory-server": "^11.3.0",
+    "oxlint": "^1.94.0"
+  }
+}

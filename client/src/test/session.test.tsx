@@ -1,16 +1,20 @@
 import { act, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
-  SESSION_KEY, connectAs, disconnect, fakeSocket, listedPeople, loggedInPayload, loginAs, messageBox,
-  personButton, renderApp, serverSays, stored, user,
+  RESERVATIONS_KEY, SESSION_KEY, connectAs, disconnect, dm, fakeSocket, listedPeople, loggedInPayload, loginAs,
+  messageBox, personButton, renderApp, reservations, secretFor, serverSays, stored, user,
 } from '@/test/harness'
+import { LOGIN_RETRY_MS } from '@/hooks/useChat'
 
-const storeSession = (username: string, sessionToken: string) =>
+// A tab that was logged in before: its session, and the secret that reserves its name.
+const storeSession = (username: string, sessionToken: string) => {
   window.sessionStorage.setItem(SESSION_KEY, JSON.stringify({ username, sessionToken }))
+  window.localStorage.setItem(RESERVATIONS_KEY, JSON.stringify({ [username]: secretFor(username) }))
+}
 
 describe('reconnecting', () => {
-  it('logs in again with the session token, and only then allows sending', async () => {
+  it('logs in again with the reservation, and only then allows sending', async () => {
     renderApp()
     const events = await loginAs('alice', [user('bob')])
     await events.click(personButton('bob'))
@@ -20,18 +24,18 @@ describe('reconnecting', () => {
     expect(messageBox('bob')).toBeDisabled()
 
     connectAs('socket-2')
-    expect(fakeSocket.sent('login').at(-1)).toEqual({ username: 'alice', sessionToken: 'token-1' })
+    expect(fakeSocket.sent('login').at(-1)).toEqual({ username: 'alice', reservation: 'secret-alice' })
     // Connected again, but not logged in yet: still no sending.
     expect(messageBox('bob')).toBeDisabled()
     expect(await screen.findByText('Signing back in as alice…')).toBeInTheDocument()
 
-    serverSays('loggedin', loggedInPayload('alice', [user('bob', 'bob-2'), user('carol')], 'token-2'))
+    serverSays('loggedin', loggedInPayload('alice', [user('bob'), user('carol')], 'token-2'))
     expect(messageBox('bob')).toBeEnabled()
     // The new snapshot replaced the old list.
     expect(listedPeople()).toEqual(['bob', 'carol'])
   })
 
-  it('uses the newest token on the next reconnect', async () => {
+  it('keeps the newest connection token, and the same reservation, across reconnects', async () => {
     renderApp()
     await loginAs('alice', [user('bob')])
     disconnect()
@@ -41,8 +45,10 @@ describe('reconnecting', () => {
     disconnect()
     connectAs('socket-3')
 
-    expect(fakeSocket.sent('login').at(-1)).toEqual({ username: 'alice', sessionToken: 'token-2' })
-    expect(stored()).toEqual({ username: 'alice', sessionToken: 'token-2' })
+    // A re-login's answer carries no reservation: the one already held must not be lost.
+    expect(fakeSocket.sent('login').at(-1)).toEqual({ username: 'alice', reservation: 'secret-alice' })
+    expect(stored()).toEqual({ username: 'alice', sessionToken: 'token-2', kind: 'guest' })
+    expect(reservations()).toEqual({ alice: 'secret-alice' })
   })
 
   it('logs in once per connection, even if the connect event is seen twice', async () => {
@@ -60,14 +66,14 @@ describe('reconnecting', () => {
     renderApp()
     const events = await loginAs('alice', [user('bob')])
     await events.click(personButton('bob'))
-    expect(fakeSocket.sent('getHistory')).toEqual([{ withUsername: 'bob' }])
+    expect(fakeSocket.sent('getHistory')).toEqual([{ conversationId: dm('alice', 'bob') }])
 
     disconnect()
     connectAs('socket-2')
     expect(fakeSocket.sent('getHistory')).toHaveLength(1)
     serverSays('loggedin', loggedInPayload('alice', [user('bob')], 'token-2'))
 
-    expect(fakeSocket.sent('getHistory')).toEqual([{ withUsername: 'bob' }, { withUsername: 'bob' }])
+    expect(fakeSocket.sent('getHistory')).toEqual([{ conversationId: dm('alice', 'bob') }, { conversationId: dm('alice', 'bob') }])
   })
 
   it('emits nothing but login while logged out: a chat picked offline loads after the next login', async () => {
@@ -84,7 +90,7 @@ describe('reconnecting', () => {
 
     serverSays('loggedin', loggedInPayload('alice', [user('bob'), user('carol')], 'token-2'))
     expect(fakeSocket.emitted.slice(before).map(entry => entry.event)).toEqual(['login', 'getHistory'])
-    expect(fakeSocket.sent('getHistory').at(-1)).toEqual({ withUsername: 'carol' })
+    expect(fakeSocket.sent('getHistory').at(-1)).toEqual({ conversationId: dm('alice', 'carol') })
   })
 
   it('returns to the form, with the reason, if logging back in is refused', async () => {
@@ -117,7 +123,7 @@ describe('leaving the page', () => {
     pageHide()
 
     expect(fakeSocket.disconnect).toHaveBeenCalledTimes(1)
-    expect(stored()).toEqual({ username: 'alice', sessionToken: 'token-1' })
+    expect(stored()).toEqual({ username: 'alice', sessionToken: 'token-1', kind: 'guest' })
   })
 
   it('does nothing when there is no connection to close', async () => {
@@ -139,7 +145,7 @@ describe('leaving the page', () => {
     expect(fakeSocket.connect).toHaveBeenCalledTimes(1)
 
     connectAs('socket-2')
-    expect(fakeSocket.sent('login').at(-1)).toEqual({ username: 'alice', sessionToken: 'token-1' })
+    expect(fakeSocket.sent('login').at(-1)).toEqual({ username: 'alice', reservation: 'secret-alice' })
   })
 
   it('does not reconnect on an ordinary page show, or one it did not close for', async () => {
@@ -165,13 +171,17 @@ describe('leaving the page', () => {
 })
 
 describe('the stored session', () => {
-  it('is written to sessionStorage on login, and never to localStorage', async () => {
+  it('is written to sessionStorage on login; only the name’s reservation goes to localStorage', async () => {
     renderApp()
 
     await loginAs('alice', [user('bob')])
 
-    expect(stored()).toEqual({ username: 'alice', sessionToken: 'token-1' })
-    expect(window.localStorage.length).toBe(0)
+    expect(stored()).toEqual({ username: 'alice', sessionToken: 'token-1', kind: 'guest' })
+    // Beside it, only what the server said it offers — nothing that identifies anyone.
+    expect(Object.keys(window.localStorage).sort()).toEqual(['strive-chat.config', RESERVATIONS_KEY])
+    expect(reservations()).toEqual({ alice: 'secret-alice' })
+    // The session is per tab, so another tab can be someone else.
+    expect(window.localStorage.getItem(SESSION_KEY)).toBeNull()
   })
 
   it('logs straight back in on load, without showing the form', async () => {
@@ -179,13 +189,13 @@ describe('the stored session', () => {
 
     renderApp()
 
-    expect(fakeSocket.sent('login')).toEqual([{ username: 'alice', sessionToken: 'token-from-before' }])
+    expect(fakeSocket.sent('login')).toEqual([{ username: 'alice', reservation: 'secret-alice' }])
     expect(screen.queryByLabelText('Username')).not.toBeInTheDocument()
     expect(screen.getByText('Signing back in as alice…')).toBeInTheDocument()
 
     serverSays('loggedin', loggedInPayload('alice', [user('bob')], 'token-new'))
     expect(listedPeople()).toEqual(['bob'])
-    expect(stored()).toEqual({ username: 'alice', sessionToken: 'token-new' })
+    expect(stored()).toEqual({ username: 'alice', sessionToken: 'token-new', kind: 'guest' })
   })
 
   it('waits for the connection before logging in with a stored session', async () => {
@@ -195,7 +205,7 @@ describe('the stored session', () => {
     expect(fakeSocket.sent('login')).toEqual([])
 
     connectAs('socket-1')
-    expect(fakeSocket.sent('login')).toEqual([{ username: 'alice', sessionToken: 'token-from-before' }])
+    expect(fakeSocket.sent('login')).toEqual([{ username: 'alice', reservation: 'secret-alice' }])
   })
 
   it('is cleared, and the form shown, when the server refuses it', async () => {
@@ -241,6 +251,156 @@ describe('being signed in from another tab', () => {
     expect(fakeSocket.connect).toHaveBeenCalledOnce()
 
     connectAs('socket-2')
-    expect(fakeSocket.sent('login').at(-1)).toEqual({ username: 'alice', sessionToken: 'token-1' })
+    expect(fakeSocket.sent('login').at(-1)).toEqual({ username: 'alice', reservation: 'secret-alice' })
+  })
+})
+
+describe('a guest name', () => {
+  it('is sent with its reservation when the same name is typed again later', async () => {
+    window.localStorage.setItem(RESERVATIONS_KEY, JSON.stringify({ alice: 'secret-alice', bob: 'secret-bob' }))
+    renderApp()
+    const events = userEvent.setup()
+
+    await events.type(screen.getByLabelText('Username'), 'alice')
+    await events.click(screen.getByRole('button', { name: 'Join' }))
+
+    expect(fakeSocket.sent('login')).toEqual([{ username: 'alice', reservation: 'secret-alice' }])
+  })
+
+  it('is found however the name is typed, and stored under the spelling the server gives back', async () => {
+    window.localStorage.setItem(RESERVATIONS_KEY, JSON.stringify({ Alice: 'secret-alice' }))
+    renderApp()
+    const events = userEvent.setup()
+
+    await events.type(screen.getByLabelText('Username'), 'ALICE')
+    await events.click(screen.getByRole('button', { name: 'Join' }))
+    expect(fakeSocket.sent('login')).toEqual([{ username: 'ALICE', reservation: 'secret-alice' }])
+
+    // The server answers with the name as its owner first spelled it; a new secret (as
+    // after the name lapsed and was taken again) replaces the old entry, not sits beside it.
+    serverSays('loggedin', { ...loggedInPayload('Alice', [], 'token-1', 'a-newer-secret') })
+    expect(reservations()).toEqual({ Alice: 'a-newer-secret' })
+  })
+
+  it('tells the server the login arrived, after the reservation has been stored', async () => {
+    renderApp()
+    const events = userEvent.setup()
+    await events.type(screen.getByLabelText('Username'), 'alice')
+    await events.click(screen.getByRole('button', { name: 'Join' }))
+    const stored: unknown[] = []
+    const confirm = vi.fn(() => void stored.push(reservations()))
+
+    act(() => fakeSocket.trigger('loggedin', loggedInPayload('alice', [], 'token-1', 'secret-alice'), confirm))
+
+    expect(confirm).toHaveBeenCalledOnce()
+    // By the time the server hears, the secret is safe: confirming first could lose it.
+    expect(stored).toEqual([{ alice: 'secret-alice' }])
+  })
+
+  it('is sent bare when this browser holds no reservation for it', async () => {
+    window.localStorage.setItem(RESERVATIONS_KEY, JSON.stringify({ bob: 'secret-bob' }))
+    renderApp()
+    const events = userEvent.setup()
+
+    // Names that are also properties of every object must not be mistaken for reservations.
+    await events.type(screen.getByLabelText('Username'), 'constructor')
+    await events.click(screen.getByRole('button', { name: 'Join' }))
+
+    expect(fakeSocket.sent('login')).toEqual([{ username: 'constructor' }])
+  })
+
+  it('keeps its reservation when the session is refused, and adds new names beside old ones', async () => {
+    window.localStorage.setItem(RESERVATIONS_KEY, JSON.stringify({ bob: 'secret-bob' }))
+    renderApp()
+    await loginAs('alice')
+    disconnect()
+    connectAs('socket-2')
+
+    serverSays('loginError', { message: 'Username already in use' })
+
+    expect(stored()).toBeNull()
+    expect(reservations()).toEqual({ bob: 'secret-bob', alice: 'secret-alice' })
+  })
+
+  it('survives stored data that is not a set of reservations', async () => {
+    window.localStorage.setItem(RESERVATIONS_KEY, '["not","an","object"]')
+    renderApp()
+
+    await loginAs('alice')
+
+    expect(fakeSocket.sent('login')).toEqual([{ username: 'alice' }])
+    expect(reservations()).toEqual({ alice: 'secret-alice' })
+  })
+})
+
+describe('a server that is not ready yet', () => {
+  it('is asked again after a pause while logging back in, instead of dropping to the form', async () => {
+    renderApp()
+    await loginAs('alice', [user('bob')])
+    disconnect()
+    connectAs('socket-2')
+    await screen.findByText('Signing back in as alice…')
+    vi.useFakeTimers()
+
+    serverSays('loginError', { message: 'Service is starting, try again', retryable: true })
+
+    expect(screen.queryByLabelText('Username')).not.toBeInTheDocument()
+    expect(screen.getByText('Signing back in as alice…')).toBeInTheDocument()
+    expect(stored()).toEqual({ username: 'alice', sessionToken: 'token-1', kind: 'guest' })
+    expect(fakeSocket.sent('login')).toHaveLength(2)
+
+    act(() => void vi.advanceTimersByTime(LOGIN_RETRY_MS))
+    expect(fakeSocket.sent('login')).toHaveLength(3)
+    expect(fakeSocket.sent('login').at(-1)).toEqual({ username: 'alice', reservation: 'secret-alice' })
+
+    serverSays('loggedin', loggedInPayload('alice', [user('bob'), user('carol')], 'token-2'))
+    expect(listedPeople()).toEqual(['bob', 'carol'])
+    act(() => void vi.advanceTimersByTime(LOGIN_RETRY_MS * 3))
+    expect(fakeSocket.sent('login')).toHaveLength(3)
+  })
+
+  it('does not retry on a connection that has since dropped', async () => {
+    renderApp()
+    await loginAs('alice')
+    disconnect()
+    connectAs('socket-2')
+    vi.useFakeTimers()
+    serverSays('loginError', { message: 'Service is starting, try again', retryable: true })
+
+    disconnect()
+    act(() => void vi.advanceTimersByTime(LOGIN_RETRY_MS * 2))
+
+    expect(fakeSocket.sent('login')).toHaveLength(2)
+  })
+
+  it('shows its message on the form when the login was typed in', async () => {
+    renderApp()
+    const events = userEvent.setup()
+    await events.type(screen.getByLabelText('Username'), 'alice')
+    await events.click(screen.getByRole('button', { name: 'Join' }))
+
+    serverSays('loginError', { message: 'Service is starting, try again', retryable: true })
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Service is starting, try again')
+    expect(screen.getByLabelText('Username')).toBeEnabled()
+  })
+})
+
+describe('being signed out by the server', () => {
+  it('returns to the form with the reason, forgets the session, and connects again for the next login', async () => {
+    renderApp()
+    await loginAs('alice', [user('bob')])
+
+    serverSays('sessionRevoked', { reason: 'This guest name expired' })
+    disconnect('io server disconnect')
+
+    expect(await screen.findByLabelText('Username')).toBeEnabled()
+    expect(screen.getByRole('alert')).toHaveTextContent('This guest name expired')
+    expect(screen.queryByText('Signed in from another tab.')).not.toBeInTheDocument()
+    expect(stored()).toBeNull()
+    // The server closed the connection; the form needs a new one.
+    expect(fakeSocket.connect).toHaveBeenCalledOnce()
+    connectAs('socket-2')
+    expect(fakeSocket.sent('login')).toHaveLength(1)
   })
 })

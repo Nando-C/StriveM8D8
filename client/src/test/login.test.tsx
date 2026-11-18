@@ -1,6 +1,6 @@
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   connectAs, disconnect, fakeSocket, listedPeople, loggedInPayload, loginAs, people, renderApp,
   serverSays, stored, user,
@@ -62,13 +62,13 @@ describe('logging in', () => {
     expect(screen.getByRole('button', { name: 'Connecting…' })).toBeDisabled()
   })
 
-  it('never uses fetch: presence comes from the socket alone', async () => {
+  it('fetches nothing but the server’s configuration: presence comes from the socket alone', async () => {
     renderApp()
     await loginAs('alice', [user('bob')])
     serverSays('newLogin', user('carol'))
 
     expect(listedPeople()).toEqual(['bob', 'carol'])
-    expect(fetch).not.toHaveBeenCalled()
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => String(url))).toEqual([expect.stringMatching(/\/config$/)])
   })
 })
 

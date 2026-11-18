@@ -9,6 +9,7 @@
     "dev": "nodemon -r dotenv/config ./src/index.js",
     "start": "node ./src/index.js",
     "lint": "oxlint --deny-warnings src test vitest.config.js",
+    "e2e": "pnpm --dir e2e test",
     "dev:all": "concurrently --names server,client --prefix-colors blue,green \"pnpm dev\" \"pnpm --dir client dev\""
   },
   "repository": {

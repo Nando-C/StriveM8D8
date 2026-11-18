@@ -25,5 +25,18 @@ export const createRateLimiter = (now = Date.now) => {
         calls.delete(owner)
     }
 
-    return { allow, forget }
+    /**
+     * Drops every owner that has made no call for `idleMs`. Owners that are connections
+     * are forgotten when they close; owners that are client addresses never close, and
+     * would otherwise be remembered for as long as the process runs.
+     */
+    const prune = idleMs => {
+        const cutoff = now() - idleMs
+        for (const [owner, byKey] of calls) {
+            const newest = Math.max(0, ...[...byKey.values()].map(times => times.at(-1) ?? 0))
+            if (newest <= cutoff) calls.delete(owner)
+        }
+    }
+
+    return { allow, forget, prune, owners: () => calls.size }
 }

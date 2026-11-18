@@ -1,17 +1,22 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import {
-  disconnect, fakeSocket, loginAs, messageBox, messageRow, messages, personButton, renderApp,
+  disconnect, dm, fakeSocket, idOf, loginAs, message, messageBox, messageRow, messages, personButton, renderApp,
   sendButton, serverSays, user,
 } from '@/test/harness'
-import type { ChatMessage, HistoryMessage, SendMessagePayload } from '@/types/protocol'
+import type { Message, SendMessagePayload } from '@/types/protocol'
 
-const live = (id: string, from: string, text: string, timestamp: number): ChatMessage => ({
-  id, from, fromId: `${from}-1`, text, timestamp,
-})
-const saved = (
-  id: string, from: string, to: string, text: string, timestamp: number, clientId: string | null = null,
-): HistoryMessage => ({ id, clientId, from, to, text, timestamp })
+/** A valid message id: 24 hex digits, sorting in the order of `n`. */
+const mid = (n: number) => n.toString(16).padStart(24, '0')
+
+/** A message in the chat between alice (the user) and `other`, written by `from`. */
+const said = (n: number, from: string, other: string, text: string, timestamp: number, clientId: string | null = null): Message =>
+  message(from, from === 'alice' ? other : 'alice', text, { id: mid(n), timestamp, clientId })
+
+const BOB = dm('alice', 'bob')
+const CAROL = dm('alice', 'carol')
+const history = (conversationId: string, list: Message[], hasMore = false) =>
+  serverSays('history', { conversationId, messages: list, hasMore })
 
 const openChatWithBob = async () => {
   renderApp()
@@ -21,16 +26,14 @@ const openChatWithBob = async () => {
 }
 
 describe('opening a conversation', () => {
-  it('requests its history and shows what comes back, oldest first', async () => {
+  it('requests its history by the conversation’s id and shows what comes back, oldest first', async () => {
     await openChatWithBob()
 
-    expect(fakeSocket.sent('getHistory')).toEqual([{ withUsername: 'bob' }])
+    // The id is worked out from the two user ids: nothing was asked of the server to get it.
+    expect(fakeSocket.sent('getHistory')).toEqual([{ conversationId: `dm:${idOf('alice')}::${idOf('bob')}` }])
     expect(screen.getByText('No messages yet')).toBeInTheDocument()
 
-    serverSays('history', {
-      withUsername: 'bob',
-      messages: [saved('m1', 'bob', 'alice', 'hi', 1000), saved('m2', 'alice', 'bob', 'hello', 2000, 'c2')],
-    })
+    history(BOB, [said(1, 'bob', 'bob', 'hi', 1000), said(2, 'alice', 'bob', 'hello', 2000, 'c2')])
 
     expect(messages()).toEqual(['hi', 'hello'])
     expect(messageRow('hello')).toHaveTextContent('You:')
@@ -41,7 +44,7 @@ describe('opening a conversation', () => {
   it('shows a history error in the conversation it belongs to', async () => {
     await openChatWithBob()
 
-    serverSays('historyError', { withUsername: 'bob', message: 'History could not be loaded' })
+    serverSays('historyError', { conversationId: BOB, message: 'History could not be loaded' })
 
     expect(screen.getByRole('alert')).toHaveTextContent('History could not be loaded')
   })
@@ -51,7 +54,7 @@ describe('opening a conversation', () => {
     await events.click(personButton('carol'))
 
     // Bob's history arrives only now, after the switch to Carol.
-    serverSays('history', { withUsername: 'bob', messages: [saved('m1', 'bob', 'alice', 'for the bob chat', 1000)] })
+    history(BOB, [said(1, 'bob', 'bob', 'for the bob chat', 1000)])
 
     expect(messages()).toEqual([])
     await events.click(personButton('bob'))
@@ -63,10 +66,10 @@ describe('receiving messages', () => {
   it('adds a message from the open conversation exactly once', async () => {
     await openChatWithBob()
 
-    serverSays('message', live('m1', 'bob', 'hello alice', 1000))
+    serverSays('message', said(1, 'bob', 'bob', 'hello alice', 1000))
     // The same message delivered twice (or again through history) is still one message.
-    serverSays('message', live('m1', 'bob', 'hello alice', 1000))
-    serverSays('history', { withUsername: 'bob', messages: [saved('m1', 'bob', 'alice', 'hello alice', 1000)] })
+    serverSays('message', said(1, 'bob', 'bob', 'hello alice', 1000))
+    history(BOB, [said(1, 'bob', 'bob', 'hello alice', 1000)])
 
     expect(messages()).toEqual(['hello alice'])
   })
@@ -74,70 +77,65 @@ describe('receiving messages', () => {
   it('keeps messages for a conversation that is not open, counts them, and shows each once when opened', async () => {
     const events = await openChatWithBob()
 
-    serverSays('message', live('c1', 'carol', 'one', 1000))
-    serverSays('message', live('c2', 'carol', 'two', 2000))
-    serverSays('message', live('c3', 'carol', 'three', 3000))
+    serverSays('message', said(1, 'carol', 'carol', 'one', 1000))
+    serverSays('message', said(2, 'carol', 'carol', 'two', 2000))
+    serverSays('message', said(3, 'carol', 'carol', 'three', 3000))
 
     expect(messages()).toEqual([])
-    expect(personButton('carol')).toHaveTextContent('3 unread messages')
+    expect(screen.getByRole('navigation', { name: 'Chats' })).toHaveTextContent('3 unread messages')
     expect(screen.getByText('New message from carol')).toBeInTheDocument()
 
     await events.click(personButton('carol'))
-    serverSays('history', {
-      withUsername: 'carol',
-      messages: [
-        saved('c1', 'carol', 'alice', 'one', 1000),
-        saved('c2', 'carol', 'alice', 'two', 2000),
-        saved('c3', 'carol', 'alice', 'three', 3000),
-      ],
-    })
+    history(CAROL, [said(1, 'carol', 'carol', 'one', 1000), said(2, 'carol', 'carol', 'two', 2000), said(3, 'carol', 'carol', 'three', 3000)])
 
     expect(messages()).toEqual(['one', 'two', 'three'])
-    expect(personButton('carol')).not.toHaveTextContent('unread')
+    expect(screen.getByRole('navigation', { name: 'Chats' })).not.toHaveTextContent('unread')
   })
 
   it('orders merged messages by time, whatever order they arrived in', async () => {
     await openChatWithBob()
 
-    serverSays('message', live('m3', 'bob', 'third', 3000))
-    serverSays('history', {
-      withUsername: 'bob',
-      messages: [saved('m1', 'bob', 'alice', 'first', 1000), saved('m2', 'alice', 'bob', 'second', 2000, 'c2')],
-    })
+    serverSays('message', said(3, 'bob', 'bob', 'third', 3000))
+    history(BOB, [said(1, 'bob', 'bob', 'first', 1000), said(2, 'alice', 'bob', 'second', 2000, 'c2')])
 
     expect(messages()).toEqual(['first', 'second', 'third'])
+  })
+
+  it('shows a message the user sent from another device as their own, without counting it as unread', async () => {
+    const events = await openChatWithBob()
+    await events.click(personButton('carol'))
+
+    // Sent from the user's phone, to bob: echoed here by the server.
+    serverSays('message', said(1, 'alice', 'bob', 'from my phone', 1000, 'a-client-id-from-the-phone'))
+
+    expect(screen.getByRole('navigation', { name: 'Chats' })).not.toHaveTextContent('unread')
+    expect(screen.queryByText(/New message from/)).not.toBeInTheDocument()
+    await events.click(personButton('bob'))
+    expect(messageRow('from my phone')).toHaveTextContent('You:')
+    expect(messageRow('from my phone')).toHaveTextContent('Sent')
   })
 })
 
 describe('sending messages', () => {
-  it('sends to the recipient’s current socket id with a client id, and shows the message as sending', async () => {
+  it('sends to the conversation with a client id, and shows the message as sending', async () => {
     const events = await openChatWithBob()
 
     await events.type(messageBox('bob'), 'hello bob')
     await events.click(sendButton())
 
     const payload = fakeSocket.last('sendmessage').payload as SendMessagePayload
-    expect(payload).toEqual({ toUserId: 'bob-1', text: 'hello bob', clientId: expect.any(String) })
+    expect(payload).toEqual({ conversationId: BOB, text: 'hello bob', clientId: expect.any(String) })
     expect(payload.clientId).toMatch(/^[A-Za-z0-9-]{1,64}$/)
     expect(messages()).toEqual(['hello bob'])
     expect(messageRow('hello bob')).toHaveTextContent('Sending…')
     expect(messageBox('bob')).toHaveValue('')
   })
 
-  it('uses the id the recipient has now, not the one they had when the chat was opened', async () => {
-    const events = await openChatWithBob()
-
-    serverSays('newLogin', user('bob', 'bob-2'))
-    await events.type(messageBox('bob'), 'still there?{Enter}')
-
-    expect((fakeSocket.last('sendmessage').payload as SendMessagePayload).toUserId).toBe('bob-2')
-  })
-
   it('marks the message sent when the server acknowledges it', async () => {
     const events = await openChatWithBob()
     await events.type(messageBox('bob'), 'hello bob{Enter}')
 
-    act(() => fakeSocket.last('sendmessage').ack!({ ok: true, id: 'm1', timestamp: 5000 }))
+    act(() => fakeSocket.last('sendmessage').ack!({ ok: true, id: mid(1), timestamp: 5000 }))
 
     expect(await screen.findByText('Sent')).toBeInTheDocument()
     expect(messageRow('hello bob')).not.toHaveTextContent('Sending…')
@@ -148,20 +146,42 @@ describe('sending messages', () => {
     const events = await openChatWithBob()
     await events.type(messageBox('bob'), 'hello bob{Enter}')
 
-    act(() => fakeSocket.last('sendmessage').ack!({ ok: false, message: 'Recipient is not online' }))
+    act(() => fakeSocket.last('sendmessage').ack!({ ok: false, message: 'Message could not be saved' }))
 
-    expect(await screen.findByText(/Not sent — Recipient is not online/)).toBeInTheDocument()
+    expect(await screen.findByText(/Not sent — Message could not be saved/)).toBeInTheDocument()
     expect(messageRow('hello bob')).not.toHaveTextContent('Sent')
   })
 
-  it('cannot send while the recipient is offline', async () => {
+  it('can send while the other person is offline: the message waits for them', async () => {
     const events = await openChatWithBob()
 
-    serverSays('userLeft', { id: 'bob-1' })
+    serverSays('userLeft', { userId: idOf('bob') })
+
+    expect(messageBox('bob')).toBeEnabled()
+    expect(screen.getByRole('heading', { name: 'bob' }).parentElement).toHaveTextContent('Offline — they will see your messages when they are back')
+    await events.type(messageBox('bob'), 'for later{Enter}')
+    expect(fakeSocket.sent('sendmessage')).toEqual([{ conversationId: BOB, text: 'for later', clientId: expect.any(String) }])
+  })
+
+  it('cannot send to someone who is no longer here', async () => {
+    const events = await openChatWithBob()
+    history(BOB, [said(1, 'bob', 'bob', 'bye', 1000)])
+
+    serverSays('conversationUpdated', {
+      conversation: {
+        id: BOB, kind: 'direct', lastMessage: null, unreadCount: 0,
+        members: [
+          { userId: idOf('alice'), username: 'alice', deliveredUpTo: null, readUpTo: null },
+          { userId: idOf('bob'), username: 'bob', deliveredUpTo: null, readUpTo: null, gone: true },
+        ],
+      },
+    })
 
     expect(messageBox('bob')).toBeDisabled()
     expect(sendButton()).toBeDisabled()
-    expect(messageBox('bob')).toHaveAttribute('placeholder', 'bob is offline')
+    expect(messageBox('bob')).toHaveAttribute('placeholder', 'bob is no longer here')
+    // What was said is still there to read.
+    expect(messages()).toEqual(['bye'])
     await events.keyboard('{Enter}')
     expect(fakeSocket.sent('sendmessage')).toEqual([])
   })
@@ -172,7 +192,7 @@ describe('sending messages', () => {
     act(() => fakeSocket.last('sendmessage').ack!({ ok: false, message: 'Message could not be saved' }))
     await events.type(messageBox('bob'), 'this one is pending{Enter}')
 
-    serverSays('history', { withUsername: 'bob', messages: [saved('m1', 'bob', 'alice', 'from history', 1000)] })
+    history(BOB, [said(1, 'bob', 'bob', 'from history', 1000)])
 
     expect(messages()).toEqual(['from history', 'this one fails', 'this one is pending'])
     expect(messageRow('this one fails')).toHaveTextContent('Not sent — Message could not be saved')
@@ -221,10 +241,7 @@ describe('a lost acknowledgement', () => {
     const clientId = await sendWithFakeTimers('are you there?')
     disconnect()
 
-    serverSays('history', {
-      withUsername: 'bob',
-      messages: [saved('m9', 'alice', 'bob', 'are you there?', 9000, clientId)],
-    })
+    history(BOB, [said(9, 'alice', 'bob', 'are you there?', 9000, clientId)])
 
     await eventually('are you there?', 'Sent')
     expect(messages()).toEqual(['are you there?'])
@@ -233,12 +250,9 @@ describe('a lost acknowledgement', () => {
 
   it('does not create a second entry when the acknowledgement arrives after history confirmed it', async () => {
     const clientId = await sendWithFakeTimers('are you there?')
-    serverSays('history', {
-      withUsername: 'bob',
-      messages: [saved('m9', 'alice', 'bob', 'are you there?', 9000, clientId)],
-    })
+    history(BOB, [said(9, 'alice', 'bob', 'are you there?', 9000, clientId)])
 
-    act(() => fakeSocket.last('sendmessage').ack!({ ok: true, id: 'm9', timestamp: 9000 }))
+    act(() => fakeSocket.last('sendmessage').ack!({ ok: true, id: mid(9), timestamp: 9000 }))
 
     await eventually('are you there?', 'Sent')
     expect(messages()).toEqual(['are you there?'])
@@ -246,10 +260,7 @@ describe('a lost acknowledgement', () => {
 
   it('a late timeout does not downgrade a message that has since been confirmed', async () => {
     const clientId = await sendWithFakeTimers('are you there?')
-    serverSays('history', {
-      withUsername: 'bob',
-      messages: [saved('m9', 'alice', 'bob', 'are you there?', 9000, clientId)],
-    })
+    history(BOB, [said(9, 'alice', 'bob', 'are you there?', 9000, clientId)])
 
     act(() => vi.advanceTimersByTime(10_000))
 

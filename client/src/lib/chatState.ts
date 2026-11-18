@@ -1,53 +1,56 @@
+import { UNCONFIRMED, fromServer, mergeConfirmed, type LocalMessage } from '@/lib/messages'
+import { comparePositions } from '@/lib/positions'
 import type {
-  ChatMessage,
+  ConversationSummary,
   HistoryErrorPayload,
-  HistoryMessage,
   HistoryPayload,
+  IdentityKind,
   LoggedInPayload,
-  NewLoginPayload,
-  OnlineUser,
+  Member,
+  Message,
+  OwnStatus,
+  Position,
+  PresencePayload,
+  PublicUser,
+  ReceiptPayload,
   UserLeftPayload,
 } from '@/types/protocol'
 
 // All chat state and every way it can change, as a pure reducer: no socket, no storage,
 // no timers. The socket wiring lives in useChat; this file only answers "given this state
-// and this event, what is the next state?".
+// and this event, what is the next state?". What the screen shows is derived from the
+// state in chatSelectors.ts; how messages merge is in messages.ts.
 
-export type MessageStatus = 'sent' | 'pending' | 'failed'
-
-/** One message as the UI shows it, whether it arrived live, from history, or was typed here. */
-export interface LocalMessage {
-  /** Stable React key: survives the pending → sent transition of the user's own messages. */
-  key: string
-  /** The server's id. `null` until the server has confirmed the message. */
-  id: string | null
-  /** The id this client generated when sending. `null` for messages it did not send. */
-  clientId: string | null
-  from: string
-  text: string
-  timestamp: number
-  /** Sent by the logged-in user. */
-  own: boolean
-  status: MessageStatus
-  /** Why a failed message failed. */
-  error?: string
-  /**
-   * When this client saw the message arrive or sent it (its own clock), or `null` for a
-   * message that came from history. Only used to decide whether it animates in.
-   */
-  arrivedAt: number | null
+/** Someone a direct chat can be opened with before any conversation exists. */
+export interface Peer {
+  userId: string
+  username: string
 }
 
-export interface Conversation {
+/** One conversation as this client holds it. */
+export interface Thread {
+  /** What the server last said about it. `null` for a chat nobody has written in yet. */
+  summary: ConversationSummary | null
+  /** Direct chats opened from the people list: who it is with, until a summary says so. */
+  peer: Peer | null
   messages: LocalMessage[]
-  /** Messages received while this conversation was not the one on screen. */
+  /** Messages from others that have not been on screen. */
   unread: number
   /** Why the last history request for this conversation failed, if it did. */
   error: string | null
+  /** Whether the server has messages older than the oldest one held here. */
+  hasMore: boolean
+  /** A request for earlier messages is waiting for its answer. */
+  loadingEarlier: boolean
+  /**
+   * Where the "New messages" line goes while this conversation is open: after this
+   * position (`null`: before everything). `undefined`: there was nothing unread.
+   */
+  unreadFrom: Position | null | undefined
 }
 
 export type Phase =
-  /** No identity: show the login form. */
+  /** No identity: show the entry screen. */
   | 'loggedOut'
   /** A login is in flight, or a session is held and the socket is not yet (re)connected. */
   | 'authenticating'
@@ -57,152 +60,183 @@ export type Phase =
 
 export interface ChatState {
   phase: Phase
+  /** The logged-in user's permanent id; `null` until the server has said. */
+  userId: string | null
   /** The logged-in (or logging-back-in) username; `null` while logged out. */
   username: string | null
+  /** Guest or account; `null` until the server has said. */
+  kind: IdentityKind | null
+  admin: boolean
+  /** What the user has chosen to show; `null` until the server has said. */
+  ownStatus: OwnStatus | null
   loginError: string | null
   /** Increases with every `loggedin`, so effects can react to each (re)login. */
   loginCount: number
-  onlineUsers: OnlineUser[]
-  /** The open conversation, by username — socket ids change on reconnect, names do not. */
+  /** Everyone connected who can be seen (this user too, unless they are invisible). */
+  onlineUsers: PublicUser[]
+  /** Where the deployment lists them: every account, connected or not. Otherwise `null`. */
+  directory: Member[] | null
+  /** The open conversation, by id. */
   selected: string | null
-  conversations: Record<string, Conversation>
+  /**
+   * Whether the page is actually being looked at. A conversation that is open in a tab
+   * nobody is looking at is not being read.
+   */
+  attentive: boolean
+  /** By conversation id. */
+  threads: Record<string, Thread>
   /** The latest message received from someone else, for announcing it to screen readers. */
-  lastIncoming: { id: string; from: string } | null
+  lastIncoming: { id: string; fromName: string; conversationId: string } | null
 }
 
 export type ChatAction =
   | { type: 'loginRequested' }
   | { type: 'loggedIn'; payload: LoggedInPayload }
   | { type: 'loginFailed'; message: string }
+  | { type: 'loggedOut' }
+  /** The guest who is logged in has just become an account. */
+  | { type: 'becameAccount'; admin: boolean }
   | { type: 'disconnected'; replaced: boolean }
-  | { type: 'userJoined'; payload: NewLoginPayload }
+  | { type: 'userJoined'; payload: PublicUser }
   | { type: 'userLeft'; payload: UserLeftPayload }
-  | { type: 'conversationSelected'; username: string }
+  | { type: 'presenceChanged'; payload: PresencePayload }
+  | { type: 'ownStatusChanged'; ownStatus: OwnStatus }
+  | { type: 'memberJoined'; payload: Member }
+  /** The whole directory, sent to someone who has just become entitled to it. */
+  | { type: 'directoryReceived'; members: Member[] }
+  | { type: 'memberLeft'; payload: UserLeftPayload }
+  | { type: 'conversationUpdated'; conversation: ConversationSummary }
+  /** `peer` is given when the conversation is opened from the people list. */
+  | { type: 'conversationSelected'; conversationId: string; peer?: Peer }
   | { type: 'conversationClosed' }
+  /** The page was hidden (another tab, a minimised window) or shown again. */
+  | { type: 'attentionChanged'; attentive: boolean }
+  | { type: 'earlierRequested'; conversationId: string }
   | { type: 'historyLoaded'; payload: HistoryPayload }
   | { type: 'historyFailed'; payload: HistoryErrorPayload }
-  | { type: 'messageReceived'; payload: ChatMessage; receivedAt: number }
-  | { type: 'sendStarted'; to: string; clientId: string; text: string; timestamp: number }
-  | { type: 'sendConfirmed'; to: string; clientId: string; id: string; timestamp: number }
-  | { type: 'sendFailed'; to: string; clientId: string; reason: string }
+  | { type: 'messageReceived'; payload: Message; receivedAt: number }
+  /** Another member received or read further. */
+  | { type: 'receipt'; payload: ReceiptPayload }
+  /** This client told the server how far it has read. */
+  | { type: 'readUpTo'; conversationId: string; position: Position }
+  | { type: 'sendStarted'; conversationId: string; clientId: string; text: string; timestamp: number }
+  | { type: 'sendConfirmed'; conversationId: string; clientId: string; id: string; timestamp: number }
+  | { type: 'sendFailed'; conversationId: string; clientId: string; reason: string }
 
-export const UNCONFIRMED = 'Delivery unconfirmed: the connection was lost'
+export const CONNECTION_LOST = 'The connection dropped before you were signed in. Please try again.'
 
-const EMPTY_CONVERSATION: Conversation = { messages: [], unread: 0, error: null }
+export const EMPTY_THREAD: Thread = {
+  summary: null,
+  peer: null,
+  messages: [],
+  unread: 0,
+  error: null,
+  hasMore: false,
+  loadingEarlier: false,
+  unreadFrom: undefined,
+}
 
 export const initialChatState = (storedUsername: string | null): ChatState => ({
   phase: storedUsername === null ? 'loggedOut' : 'authenticating',
+  userId: null,
   username: storedUsername,
+  kind: null,
+  admin: false,
+  ownStatus: null,
   loginError: null,
   loginCount: 0,
   onlineUsers: [],
+  directory: null,
   selected: null,
-  conversations: {},
+  attentive: true,
+  threads: {},
   lastIncoming: null,
 })
 
-// ---------- messages
+// ---------- threads
 
-const fromHistory = (message: HistoryMessage, ownUsername: string): LocalMessage => {
-  const own = message.from === ownUsername
-  return {
-    // The user's own messages keep the key they had while pending (their clientId).
-    key: own && message.clientId !== null ? message.clientId : message.id,
-    id: message.id,
-    clientId: message.clientId,
-    from: message.from,
-    text: message.text,
-    timestamp: message.timestamp,
-    own,
-    status: 'sent',
-    arrivedAt: null,
-  }
-}
+const threadOf = (state: ChatState, conversationId: string): Thread => state.threads[conversationId] ?? EMPTY_THREAD
 
-const fromLive = (message: ChatMessage, arrivedAt: number): LocalMessage => ({
-  key: message.id,
-  id: message.id,
-  clientId: null,
-  from: message.from,
-  text: message.text,
-  timestamp: message.timestamp,
-  own: false,
-  status: 'sent',
-  arrivedAt,
-})
-
-const byTimeThenId = (a: LocalMessage, b: LocalMessage) =>
-  a.timestamp - b.timestamp || (a.id ?? '').localeCompare(b.id ?? '')
-
-/**
- * Merges server-confirmed messages into a conversation. Never appends or replaces blindly:
- *
- * - confirmed messages are unique by server id, so a message received live and then again
- *   in history appears once;
- * - the user's unconfirmed messages (pending or failed, no server id yet) are kept, after
- *   the confirmed ones — unless a confirmed message carries the same clientId, in which
- *   case that local item *is* that message and the confirmed one takes its place. That is
- *   what rescues a send whose acknowledgement was lost.
- */
-export const mergeConfirmed = (existing: LocalMessage[], incoming: LocalMessage[]): LocalMessage[] => {
-  const confirmed = new Map<string, LocalMessage>()
-  for (const message of existing) {
-    if (message.id !== null) confirmed.set(message.id, message)
-  }
-  for (const message of incoming) {
-    if (message.id !== null) confirmed.set(message.id, message)
-  }
-
-  const confirmedClientIds = new Set<string>()
-  for (const message of confirmed.values()) {
-    if (message.clientId !== null) confirmedClientIds.add(message.clientId)
-  }
-
-  const unconfirmed = existing.filter(
-    message => message.id === null && !(message.clientId !== null && confirmedClientIds.has(message.clientId)),
-  )
-
-  return [...[...confirmed.values()].sort(byTimeThenId), ...unconfirmed]
-}
-
-// ---------- conversations
-
-const conversationOf = (state: ChatState, username: string): Conversation =>
-  state.conversations[username] ?? EMPTY_CONVERSATION
-
-const withConversation = (
-  state: ChatState,
-  username: string,
-  update: (conversation: Conversation) => Conversation,
-): ChatState => ({
+const withThread = (state: ChatState, conversationId: string, update: (thread: Thread) => Thread): ChatState => ({
   ...state,
-  conversations: { ...state.conversations, [username]: update(conversationOf(state, username)) },
+  threads: { ...state.threads, [conversationId]: update(threadOf(state, conversationId)) },
 })
 
 const updateOwnMessage = (
   state: ChatState,
-  to: string,
+  conversationId: string,
   clientId: string,
   update: (message: LocalMessage) => LocalMessage,
 ): ChatState =>
-  withConversation(state, to, conversation => ({
-    ...conversation,
-    messages: conversation.messages.map(message => (message.clientId === clientId ? update(message) : message)),
+  withThread(state, conversationId, thread => ({
+    ...thread,
+    messages: thread.messages.map(message => (message.clientId === clientId ? update(message) : message)),
   }))
 
 /** Pending messages can no longer be acknowledged once the connection is gone. */
-const failPending = (conversations: ChatState['conversations']): ChatState['conversations'] =>
+const failPending = (threads: ChatState['threads']): ChatState['threads'] =>
   Object.fromEntries(
-    Object.entries(conversations).map(([username, conversation]) => [
-      username,
+    Object.entries(threads).map(([id, thread]) => [
+      id,
       {
-        ...conversation,
-        messages: conversation.messages.map(message =>
+        ...thread,
+        loadingEarlier: false,
+        messages: thread.messages.map(message =>
           message.status === 'pending' ? { ...message, status: 'failed' as const, error: UNCONFIRMED } : message,
         ),
       },
     ]),
   )
+
+/** Whether a conversation is being read right now: it is the open one, and the page is being looked at. */
+const isOnScreen = (state: ChatState, conversationId: string) => state.selected === conversationId && state.attentive
+
+// Opening a conversation (or coming back to the page it is open on) reads it. Where
+// reading had left off is kept, so that what is new can be pointed out.
+const readNow = (state: ChatState, thread: Thread): Thread => {
+  const own = thread.summary?.members.find(member => member.userId === state.userId)
+  return {
+    ...thread,
+    unreadFrom: thread.unread > 0 ? (own?.readUpTo ?? null) : thread.unreadFrom,
+    unread: 0,
+  }
+}
+
+/** The server's word on a conversation replaces what was known; what is on screen is read. */
+const withSummary = (state: ChatState, summary: ConversationSummary): ChatState =>
+  withThread(state, summary.id, thread => ({
+    ...thread,
+    summary,
+    unread: isOnScreen(state, summary.id) ? 0 : summary.unreadCount,
+  }))
+
+// Keeps the list preview in step with messages this client has seen arrive or be
+// confirmed, between the server's own updates.
+const withLastMessage = (thread: Thread, message: LocalMessage): Thread => {
+  if (thread.summary === null || message.id === null) return thread
+  const last = thread.summary.lastMessage
+  const position = { ts: message.timestamp, id: message.id }
+  if (last !== null && comparePositions(position, { ts: last.timestamp, id: last.id }) <= 0) return thread
+  const preview = message.text.trim().replace(/\s+/g, ' ')
+  return {
+    ...thread,
+    summary: {
+      ...thread.summary,
+      lastMessage: {
+        id: message.id,
+        from: message.from,
+        fromName: message.fromName,
+        preview: preview.length > 80 ? `${preview.slice(0, 80)}…` : preview,
+        timestamp: message.timestamp,
+      },
+    },
+  }
+}
+
+const upsertUser = <User extends { userId: string }>(users: User[], user: User) => [
+  ...users.filter(candidate => candidate.userId !== user.userId),
+  user,
+]
 
 // ---------- reducer
 
@@ -213,102 +247,235 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
       // first login still shows the form, and a re-login keeps the name it already has.
       return { ...state, phase: 'authenticating', loginError: null }
 
-    case 'loggedIn':
-      return {
+    case 'loggedIn': {
+      const { payload } = action
+      // The same name can come back as a different identity (a guest name that lapsed while
+      // this tab slept and was reserved afresh). Nothing held for the old one belongs to
+      // the new one: not its conversations, not what was open.
+      const sameIdentity = state.userId === null || state.userId === payload.userId
+      const next: ChatState = {
         ...state,
+        ...(sameIdentity ? {} : { threads: {}, selected: null, lastIncoming: null }),
         phase: 'loggedIn',
-        username: action.payload.username,
+        userId: payload.userId,
+        username: payload.username,
+        kind: payload.kind,
+        admin: payload.admin,
+        ownStatus: payload.ownStatus,
         loginError: null,
         loginCount: state.loginCount + 1,
-        // The snapshot replaces whatever was known before.
-        onlineUsers: action.payload.onlineUsers,
+        // The snapshots replace whatever was known before.
+        onlineUsers: payload.onlineUsers,
+        directory: payload.members ?? null,
       }
+      // Conversations keep the messages already loaded; the server's summaries are laid over them.
+      return payload.conversations.reduce(withSummary, next)
+    }
 
     case 'loginFailed':
       // Back to the form with nothing carried over: whoever logs in next may be someone else.
       return { ...initialChatState(null), loginError: action.message }
 
+    case 'loggedOut':
+      return initialChatState(null)
+
+    case 'becameAccount':
+      return { ...state, kind: 'account', admin: action.admin }
+
     case 'disconnected': {
-      if (state.username === null) return state
+      if (state.username === null) {
+        // A first login was waiting for its answer when the connection went. No answer
+        // will come now, so the form is given back rather than left disabled for ever.
+        return state.phase === 'authenticating' ? { ...state, phase: 'loggedOut', loginError: CONNECTION_LOST } : state
+      }
       return {
         ...state,
         phase: action.replaced ? 'replaced' : 'authenticating',
-        conversations: failPending(state.conversations),
+        threads: failPending(state.threads),
       }
     }
 
-    case 'userJoined': {
-      const { username, id } = action.payload
-      // Upsert by username; also drop any other entry holding the same id.
-      const others = state.onlineUsers.filter(user => user.username !== username && user.id !== id)
-      return { ...state, onlineUsers: [...others, { username, id }] }
-    }
+    case 'userJoined':
+      return { ...state, onlineUsers: upsertUser(state.onlineUsers, action.payload) }
 
     case 'userLeft':
-      return { ...state, onlineUsers: state.onlineUsers.filter(user => user.id !== action.payload.id) }
+      return { ...state, onlineUsers: state.onlineUsers.filter(user => user.userId !== action.payload.userId) }
 
-    case 'conversationSelected':
+    case 'presenceChanged': {
+      const { userId, status, statusText } = action.payload
       return {
-        ...withConversation(state, action.username, conversation => ({ ...conversation, unread: 0 })),
-        selected: action.username,
+        ...state,
+        // Only for someone already listed: a change says nothing about who is here.
+        onlineUsers: state.onlineUsers.map(user => (user.userId === userId ? { ...user, status, statusText } : user)),
       }
+    }
+
+    case 'ownStatusChanged':
+      return { ...state, ownStatus: action.ownStatus }
+
+    case 'directoryReceived':
+      return { ...state, directory: action.members }
+
+    case 'memberJoined':
+      return state.directory === null ? state : { ...state, directory: upsertUser(state.directory, action.payload) }
+
+    case 'memberLeft':
+      return state.directory === null
+        ? state
+        : { ...state, directory: state.directory.filter(user => user.userId !== action.payload.userId) }
+
+    case 'conversationUpdated':
+      return withSummary(state, action.conversation)
+
+    case 'conversationSelected': {
+      const { conversationId, peer } = action
+      const selected = withThread(state, conversationId, thread => {
+        // The line from the last visit is not carried over to this one.
+        const opened = { ...thread, peer: peer ?? thread.peer, unreadFrom: undefined }
+        // Opened in a page nobody is looking at: it is read when they look.
+        return state.attentive ? readNow(state, opened) : opened
+      })
+      return { ...selected, selected: conversationId }
+    }
+
+    case 'attentionChanged': {
+      const next = { ...state, attentive: action.attentive }
+      if (!action.attentive || next.selected === null) return next
+      return withThread(next, next.selected, thread => readNow(next, thread))
+    }
 
     case 'conversationClosed':
       return { ...state, selected: null }
 
+    case 'earlierRequested':
+      return withThread(state, action.conversationId, thread => ({ ...thread, loadingEarlier: true }))
+
     case 'historyLoaded': {
-      const ownUsername = state.username
-      if (ownUsername === null) return state
-      const { withUsername, messages } = action.payload
+      const ownUserId = state.userId
+      if (ownUserId === null) return state
+      const { conversationId, messages, hasMore } = action.payload
       // Applied to the conversation the response names, whichever one is on screen now.
-      return withConversation(state, withUsername, conversation => ({
-        ...conversation,
-        error: null,
-        messages: mergeConfirmed(
-          conversation.messages,
-          messages.map(message => fromHistory(message, ownUsername)),
-        ),
-      }))
+      return withThread(state, conversationId, thread => {
+        const page = messages.map(message => fromServer(message, ownUserId, null))
+        // A page that starts after everything held, with more before it, does not join
+        // up with what is held: messages are missing in between (more than a page arrived
+        // while this client was away). What is held from before the gap is let go, so
+        // that the conversation is continuous again and "load earlier" pages back through
+        // the gap instead of skipping it. The user's own unconfirmed messages are kept.
+        const newestHeld = thread.messages.findLast(message => message.id !== null)
+        const disjoint =
+          hasMore &&
+          messages.length > 0 &&
+          newestHeld !== undefined &&
+          newestHeld.id !== null &&
+          comparePositions(
+            { ts: messages[0].timestamp, id: messages[0].id },
+            { ts: newestHeld.timestamp, id: newestHeld.id },
+          ) > 0
+        const merged = mergeConfirmed(
+          disjoint ? thread.messages.filter(message => message.id === null) : thread.messages,
+          page,
+        )
+        // `hasMore` speaks about what lies before this page. It only says something new
+        // if this page reaches back at least as far as anything already held.
+        const oldestHeld = merged.find(message => message.id !== null)
+        const reachesBack = messages.length === 0 || oldestHeld === undefined || oldestHeld.id === messages[0].id
+        return {
+          ...thread,
+          error: null,
+          loadingEarlier: false,
+          hasMore: reachesBack ? hasMore : thread.hasMore,
+          messages: merged,
+        }
+      })
     }
 
     case 'historyFailed': {
-      const { withUsername, message } = action.payload
-      if (withUsername === null) return state
-      return withConversation(state, withUsername, conversation => ({ ...conversation, error: message }))
+      const { conversationId, message } = action.payload
+      if (conversationId === null) return state
+      return withThread(state, conversationId, thread => ({ ...thread, error: message, loadingEarlier: false }))
     }
 
     case 'messageReceived': {
-      const { from } = action.payload
-      const alreadyKnown = conversationOf(state, from).messages.some(message => message.id === action.payload.id)
-      const next = withConversation(state, from, conversation => ({
-        ...conversation,
-        messages: mergeConfirmed(conversation.messages, [fromLive(action.payload, action.receivedAt)]),
-        unread: state.selected === from || alreadyKnown ? conversation.unread : conversation.unread + 1,
+      if (state.userId === null) return state
+      const { conversationId, id, fromName } = action.payload
+      const message = fromServer(action.payload, state.userId, action.receivedAt)
+      const alreadyKnown = threadOf(state, conversationId).messages.some(candidate => candidate.id === id)
+      // The user's own message, sent from another of their devices, is not news to them.
+      const counts = !message.own && !alreadyKnown
+      const next = withThread(state, conversationId, thread =>
+        withLastMessage(
+          {
+            ...thread,
+            messages: mergeConfirmed(thread.messages, [message]),
+            unread: counts && !isOnScreen(state, conversationId) ? thread.unread + 1 : thread.unread,
+          },
+          message,
+        ),
+      )
+      return counts ? { ...next, lastIncoming: { id, fromName, conversationId } } : next
+    }
+
+    case 'receipt': {
+      const { conversationId, userId, deliveredUpTo, readUpTo } = action.payload
+      const known = state.threads[conversationId]
+      if (known === undefined || known.summary === null) return state
+      // Positions only move forward; an event that arrives late or twice changes nothing.
+      const later = (current: Position | null, next: Position | null) => (comparePositions(next, current) > 0 ? next : current)
+      return withThread(state, conversationId, thread => ({
+        ...thread,
+        summary: thread.summary && {
+          ...thread.summary,
+          members: thread.summary.members.map(member =>
+            member.userId === userId
+              ? { ...member, deliveredUpTo: later(member.deliveredUpTo, deliveredUpTo), readUpTo: later(member.readUpTo, readUpTo) }
+              : member,
+          ),
+        },
       }))
-      return alreadyKnown ? next : { ...next, lastIncoming: { id: action.payload.id, from } }
+    }
+
+    case 'readUpTo': {
+      const { conversationId, position } = action
+      return withThread(state, conversationId, thread => {
+        if (thread.summary === null) return thread
+        return {
+          ...thread,
+          summary: {
+            ...thread.summary,
+            members: thread.summary.members.map(member =>
+              member.userId === state.userId && comparePositions(position, member.readUpTo) > 0
+                ? { ...member, readUpTo: position }
+                : member,
+            ),
+          },
+        }
+      })
     }
 
     case 'sendStarted': {
-      if (state.username === null) return state
+      if (state.userId === null || state.username === null) return state
       const pending: LocalMessage = {
         key: action.clientId,
         id: null,
         clientId: action.clientId,
-        from: state.username,
+        from: state.userId,
+        fromName: state.username,
+        kind: 'text',
         text: action.text,
         timestamp: action.timestamp,
         own: true,
         status: 'pending',
         arrivedAt: action.timestamp,
       }
-      return withConversation(state, action.to, conversation => ({
-        ...conversation,
-        messages: [...conversation.messages, pending],
+      return withThread(state, action.conversationId, thread => ({
+        ...thread,
+        messages: [...thread.messages, pending],
       }))
     }
 
     case 'sendConfirmed': {
-      const confirmed = updateOwnMessage(state, action.to, action.clientId, message => ({
+      const confirmed = updateOwnMessage(state, action.conversationId, action.clientId, message => ({
         ...message,
         id: action.id,
         timestamp: action.timestamp,
@@ -317,29 +484,17 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
       }))
       // Re-merge so the message takes its place in server order, and so a copy that
       // history already confirmed under the same id collapses into one entry.
-      return withConversation(confirmed, action.to, conversation => ({
-        ...conversation,
-        messages: mergeConfirmed(conversation.messages, []),
-      }))
+      return withThread(confirmed, action.conversationId, thread => {
+        const messages = mergeConfirmed(thread.messages, [])
+        const sent = messages.find(message => message.id === action.id)
+        return sent === undefined ? { ...thread, messages } : withLastMessage({ ...thread, messages }, sent)
+      })
     }
 
     case 'sendFailed':
-      return updateOwnMessage(state, action.to, action.clientId, message =>
+      return updateOwnMessage(state, action.conversationId, action.clientId, message =>
         // A late failure must not downgrade a message that has since been confirmed.
         message.id === null ? { ...message, status: 'failed', error: action.reason } : message,
       )
   }
 }
-
-// ---------- selectors
-
-/** Everyone online except the logged-in user (matched by name: ids change on reconnect). */
-export const otherOnlineUsers = (state: ChatState): OnlineUser[] =>
-  state.onlineUsers.filter(user => user.username !== state.username)
-
-/** The selected user's current socket id, looked up fresh; `null` if they are offline. */
-export const selectedUserId = (state: ChatState): string | null =>
-  state.onlineUsers.find(user => user.username === state.selected)?.id ?? null
-
-export const selectedConversation = (state: ChatState): Conversation =>
-  state.selected === null ? EMPTY_CONVERSATION : conversationOf(state, state.selected)
