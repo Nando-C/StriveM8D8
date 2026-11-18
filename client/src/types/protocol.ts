@@ -1,4 +1,4 @@
-// Wire protocol shared with the server (see ../../../src/sockets/index.js and the root README).
+// Wire protocol shared with the server (see ../../../src/sockets/ and the root README).
 //
 // These types are a hand-maintained copy, on purpose: the server is plain JavaScript and the
 // two packages are independent, so there is no shared-types package. When the server's
@@ -6,16 +6,106 @@
 
 export interface OnlineUser {
   username: string
-  /** The user's current socket id. Changes every time they reconnect. */
+  /**
+   * The id to address this user by: one of their socket ids. Changes when they reconnect,
+   * and — for an account on several devices — when that device disconnects before the others.
+   */
   id: string
 }
 
+/** A guest holds a name with a secret kept in one browser; an account has a password. */
+export type IdentityKind = 'guest' | 'account'
+
+/** Every acknowledgement that is not `SendMessageAck` has this shape. */
+export type Ack<Result = object> =
+  | ({ ok: true } & Result)
+  | {
+      ok: false
+      message: string
+      /** Nothing was wrong with the request: the server could not deal with it right now. */
+      retryable?: boolean
+      /** Too many wrong guesses: how long until another attempt is accepted. */
+      retryAfterMs?: number
+    }
+
 // ---------- client → server
 
-export interface LoginPayload {
+/** As a guest: a free name is reserved to this browser; a reserved one needs its secret. */
+export interface GuestLoginPayload {
   username: string
-  /** Token from a previous `loggedin`, to reclaim the same username after a reconnect. */
+  /** The secret from the `loggedin` that first reserved this name. */
+  reservation?: string
+}
+
+/** To an account, with its password. Answered with a new device `session`. */
+export interface PasswordLoginPayload {
+  username: string
+  password: string
+  /** Shown in the account's list of devices, e.g. "Firefox on Linux". */
+  deviceLabel?: string
   sessionToken?: string
+}
+
+/** To an account, with the device session from an earlier sign-in or sign-up. */
+export interface ResumeLoginPayload {
+  session: string
+  /**
+   * The token from this device's previous `loggedin`, so a reconnect replaces its old
+   * connection instead of counting as one more device. Proves nothing by itself.
+   */
+  sessionToken?: string
+}
+
+export type LoginPayload = GuestLoginPayload | PasswordLoginPayload | ResumeLoginPayload
+
+export interface RegisterPayload {
+  username: string
+  password: string
+  /** Turns the guest who holds this name into the account, keeping their conversations. */
+  reservation?: string
+  /** Required where sign-up is by invitation (see `GET /config`). */
+  invitation?: string
+  /** Only for a deployment's owner, registering an administrator name. */
+  bootstrapCode?: string
+  deviceLabel?: string
+}
+
+export type RegisterAck = Ack<{
+  /** The device session: log in with it (`{ session }`), and keep it for next time. */
+  session: string
+  /** Shown once. The only way back into the account if the password is forgotten. */
+  recoveryCode: string
+  kind: 'account'
+  admin: boolean
+}>
+
+export interface ResetPasswordPayload {
+  username: string
+  recoveryCode: string
+  newPassword: string
+}
+
+/** The old recovery code is used up; this is its replacement. */
+export type ResetPasswordAck = Ack<{ recoveryCode: string }>
+
+export interface ChangePasswordPayload {
+  currentPassword: string
+  newPassword: string
+}
+
+export interface DeviceSession {
+  id: string
+  label: string
+  createdAt: number
+  lastUsedAt: number
+  /** The session this very connection is using. */
+  current: boolean
+}
+
+export interface Invitation {
+  id: string
+  createdAt: number
+  expiresAt: number
 }
 
 export interface SendMessagePayload {
@@ -39,14 +129,32 @@ export interface GetHistoryPayload {
 export interface LoggedInPayload {
   username: string
   id: string
+  kind: IdentityKind
+  /** Administrators can invite people where sign-up is by invitation. */
+  admin: boolean
   /** Private to this client. Never sent to anyone else. */
   sessionToken: string
+  /** Guests, once: the secret that reserves the name. Sent only when the name was just reserved. */
+  reservation?: string
+  /** Accounts, after a password login: the new device session. */
+  session?: string
   /** Everyone online right now, including this user. */
   onlineUsers: OnlineUser[]
 }
 
 export interface LoginErrorPayload {
   message: string
+  /** The server could not check anyone right now (it is starting up): try again shortly. */
+  retryable?: boolean
+  /** Too many wrong guesses: how long until another attempt is accepted. */
+  retryAfterMs?: number
+  /** The device session no longer exists: forget it and ask for the password. */
+  sessionEnded?: boolean
+}
+
+/** This connection was signed out on purpose, and is about to be closed by the server. */
+export interface SessionRevokedPayload {
+  reason: string
 }
 
 /** A user came online, or an online user now has a new socket id: upsert by username. */
@@ -100,6 +208,7 @@ export interface HistoryErrorPayload {
 export interface ServerToClientEvents {
   loggedin: (payload: LoggedInPayload) => void
   loginError: (payload: LoginErrorPayload) => void
+  sessionRevoked: (payload: SessionRevokedPayload) => void
   newLogin: (payload: NewLoginPayload) => void
   userLeft: (payload: UserLeftPayload) => void
   message: (payload: ChatMessage) => void
@@ -111,4 +220,15 @@ export interface ClientToServerEvents {
   login: (payload: LoginPayload) => void
   sendmessage: (payload: SendMessagePayload, ack: (response: SendMessageAck) => void) => void
   getHistory: (payload: GetHistoryPayload) => void
+  register: (payload: RegisterPayload, ack: (response: RegisterAck) => void) => void
+  resetPassword: (payload: ResetPasswordPayload, ack: (response: ResetPasswordAck) => void) => void
+  changePassword: (payload: ChangePasswordPayload, ack: (response: Ack) => void) => void
+  deleteAccount: (payload: { password: string }, ack: (response: Ack) => void) => void
+  listSessions: (ack: (response: Ack<{ sessions: DeviceSession[] }>) => void) => void
+  revokeSession: (payload: { id: string }, ack: (response: Ack) => void) => void
+  logout: (ack: (response: Ack) => void) => void
+  /** Administrators only. The code is returned this once. */
+  createInvitation: (ack: (response: Ack<Invitation & { code: string }>) => void) => void
+  listInvitations: (ack: (response: Ack<{ invitations: Invitation[] }>) => void) => void
+  revokeInvitation: (payload: { id: string }, ack: (response: Ack) => void) => void
 }

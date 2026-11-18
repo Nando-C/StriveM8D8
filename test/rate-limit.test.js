@@ -94,12 +94,13 @@ describe('rate limits', () => {
 
     it('does not carry a limit over to a new connection', async () => {
         const first = await app.client()
-        for (let index = 0; index < 6; index++) await login(first, { username: 'alice' })
+        const { reservation } = await login(first, { username: 'alice' })
+        for (let index = 0; index < 5; index++) await login(first, { username: 'alice' })
         first.close()
         await expect.poll(async () => (await onlineUsers(app)).length).toBe(1)
 
         const second = await app.client()
-        expect((await login(second, { username: 'alice' })).ok).toBe(true)
+        expect((await login(second, { username: 'alice', reservation })).ok).toBe(true)
     })
 })
 

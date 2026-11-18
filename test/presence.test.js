@@ -20,7 +20,10 @@ describe('login', () => {
         const reply = await login(alice, { username: '  alice ' })
 
         expect(reply.ok).toBe(true)
-        expect(sortedKeys(reply)).toEqual(['id', 'ok', 'onlineUsers', 'sessionToken', 'username'])
+        expect(sortedKeys(reply)).toEqual(['admin', 'id', 'kind', 'ok', 'onlineUsers', 'reservation', 'sessionToken', 'username'])
+        expect(reply.kind).toBe('guest')
+        expect(reply.admin).toBe(false)
+        expect(reply.reservation).toEqual(expect.any(String))
         expect(reply.username).toBe('alice')
         expect(reply.id).toBe(alice.id)
         expect(reply.sessionToken).toEqual(expect.any(String))
@@ -62,7 +65,7 @@ describe('login', () => {
         expect(await onlineUsers(app)).toHaveLength(2)
     })
 
-    it('never exposes a session token to anyone else', async () => {
+    it('never exposes a session token or a reservation to anyone else', async () => {
         const alice = await app.client()
         const bob = await app.client()
         const aliceSession = await login(alice, { username: 'alice' })
@@ -74,6 +77,8 @@ describe('login', () => {
         expect(seenByOthers).not.toContain(aliceSession.sessionToken)
         expect(seenByOthers).not.toContain(bobSession.sessionToken)
         expect(seenByOthers).not.toContain('sessionToken')
+        expect(seenByOthers).not.toContain(aliceSession.reservation)
+        expect(seenByOthers).not.toContain('reservation')
     })
 
     it.each([
@@ -90,14 +95,17 @@ describe('login', () => {
         expect(await onlineUsers(app)).toEqual([])
     })
 
-    it('rejects a username that is already online, with no token or a wrong one', async () => {
+    it('rejects a guest name that is taken, with no reservation, a wrong one, or the connection token', async () => {
         const alice = await app.client()
         const intruder = await app.client()
-        await login(alice, { username: 'alice' })
+        const aliceSession = await login(alice, { username: 'alice' })
 
         expect(await login(intruder, { username: 'alice' }))
             .toEqual({ ok: false, message: 'Username already in use' })
-        expect(await login(intruder, { username: 'alice', sessionToken: 'not-the-token' }))
+        expect(await login(intruder, { username: 'alice', reservation: 'not-the-secret' }))
+            .toEqual({ ok: false, message: 'Username already in use' })
+        // The per-connection token says which old connection to replace; it proves nothing.
+        expect(await login(intruder, { username: 'alice', sessionToken: aliceSession.sessionToken }))
             .toEqual({ ok: false, message: 'Username already in use' })
         expect(await onlineUsers(app)).toEqual([{ username: 'alice', id: alice.id }])
     })
@@ -130,9 +138,11 @@ describe('session takeover', () => {
         const kicked = nextEvent(first, 'disconnect')
         const announced = nextEvent(bob, 'newLogin')
         const leftSeenByBob = record(bob, 'userLeft')
-        const reply = await login(second, { username: 'alice', sessionToken: firstSession.sessionToken })
+        const reply = await login(second, { username: 'alice', reservation: firstSession.reservation })
 
         expect(reply.ok).toBe(true)
+        // The secret is handed over once, when the name is first reserved.
+        expect(reply).not.toHaveProperty('reservation')
         expect(reply.id).toBe(second.id)
         expect(reply.sessionToken).not.toBe(firstSession.sessionToken)
         expect(await kicked).toBe('io server disconnect')
@@ -146,16 +156,19 @@ describe('session takeover', () => {
         expect(leftSeenByBob).toEqual([])
     })
 
-    it('does not accept the old token once it has been replaced', async () => {
+    it('keeps a guest to one connection: each new one replaces the last', async () => {
         const first = await app.client()
-        const firstSession = await login(first, { username: 'alice' })
+        const { reservation } = await login(first, { username: 'alice' })
         const second = await app.client()
-        await login(second, { username: 'alice', sessionToken: firstSession.sessionToken })
+        await login(second, { username: 'alice', reservation })
 
         const third = await app.client()
-        const reply = await login(third, { username: 'alice', sessionToken: firstSession.sessionToken })
+        const kicked = nextEvent(second, 'disconnect')
+        const reply = await login(third, { username: 'alice', reservation })
 
-        expect(reply).toEqual({ ok: false, message: 'Username already in use' })
+        expect(reply.ok).toBe(true)
+        expect(await kicked).toBe('io server disconnect')
+        expect(await onlineUsers(app)).toEqual([{ username: 'alice', id: third.id }])
     })
 })
 
@@ -197,17 +210,19 @@ describe('disconnect', () => {
         expect(leftSeenByAlice).toEqual([{ id: visitorId }])
     })
 
-    it('removes the user from the online list and frees the username', async () => {
+    it('removes the user from the online list, and keeps the name for them', async () => {
         const alice = await app.client()
         const bob = await app.client()
-        await login(alice, { username: 'alice' })
+        const { reservation } = await login(alice, { username: 'alice' })
         await login(bob, { username: 'bob' })
 
         alice.close()
 
         await expect.poll(() => onlineUsers(app)).toEqual([{ username: 'bob', id: bob.id }])
         const newcomer = await app.client()
-        expect((await login(newcomer, { username: 'alice' })).ok).toBe(true)
+        expect(await login(newcomer, { username: 'alice' }))
+            .toEqual({ ok: false, message: 'Username already in use' })
+        expect((await login(newcomer, { username: 'alice', reservation })).ok).toBe(true)
     })
 })
 

@@ -5,6 +5,7 @@ import { createServer } from 'http'
 import { Server } from 'socket.io'
 import { registerSocketHandlers } from './sockets/index.js'
 import { createRouter } from './routes.js'
+import { resolveSettings } from './settings.js'
 
 // Returns the origin part of a URL ("http://localhost:5173"), or null if it is not one.
 const toOrigin = value => {
@@ -18,8 +19,10 @@ const toOrigin = value => {
 
 // Builds the Express app, HTTP server and Socket.IO server, fully wired, without
 // listening or connecting to the database — the caller decides when to do both.
-// `demoBot` adds an always-online user that replies (see bot.js).
-export const createApp = ({ demoBot = false } = {}) => {
+// `options` are the deployment settings (see settings.js); every one has a default.
+export const createApp = (options = {}) => {
+    const settings = resolveSettings(options)
+
     // Browser origins allowed to talk to this server, from a comma-separated FRONTEND_URL.
     const configured = (process.env.FRONTEND_URL || '')
         .split(',')
@@ -37,6 +40,9 @@ export const createApp = ({ demoBot = false } = {}) => {
     }
 
     const app = express()
+
+    // So that Express and the socket handlers agree on a client's address (clientAddress.js).
+    if (settings.trustedProxyHops > 0) app.set('trust proxy', settings.trustedProxyHops)
 
     app.use(cors({ origin: allowedOrigins }))
     app.use(express.json())
@@ -56,9 +62,17 @@ export const createApp = ({ demoBot = false } = {}) => {
         },
     })
 
-    const { getOnlineUsers } = registerSocketHandlers(io, { demoBot })
+    const { getOnlineUsers, runMaintenance, hasherStats } = registerSocketHandlers(io, settings)
 
-    app.use(createRouter({ getOnlineUsers }))
+    // Hourly housekeeping (idle guests, last-seen times). It never keeps the process
+    // alive by itself, and stops with the server.
+    const housekeeping = setInterval(() => {
+        runMaintenance().catch(error => console.error("housekeeping failed:", error.name))
+    }, 60 * 60_000)
+    housekeeping.unref()
+    server.on('close', () => clearInterval(housekeeping))
+
+    app.use(createRouter({ getOnlineUsers, settings }))
 
     app.use((req, res, next) => next(createError(404)))
 
@@ -74,5 +88,5 @@ export const createApp = ({ demoBot = false } = {}) => {
         res.status(status).json({ message: err.message })
     })
 
-    return { app, server, io }
+    return { app, server, io, runMaintenance, hasherStats }
 }

@@ -2,7 +2,7 @@ import '@testing-library/jest-dom/vitest'
 import { cleanup } from '@testing-library/react'
 import { MotionGlobalConfig } from 'motion/react'
 import { afterEach, beforeEach, vi } from 'vitest'
-import { clearSession } from '@/lib/session'
+import { clearReservations, clearSession } from '@/lib/session'
 import { fakeSocket } from '@/test/fakeSocket'
 
 // Every test runs against the fake socket: nothing here ever opens a network connection.
@@ -46,7 +46,9 @@ afterEach(() => {
   cleanup()
   fakeSocket.reset()
   clearSession()
+  clearReservations()
   window.sessionStorage.clear()
+  window.localStorage.clear()
   vi.useRealTimers()
   vi.unstubAllGlobals()
 })

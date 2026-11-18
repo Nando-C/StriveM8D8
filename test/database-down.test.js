@@ -2,11 +2,13 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import mongoose from 'mongoose'
 import { connectDB } from '../src/db.js'
 import {
-    disconnectTestDatabase, getHistory, login, messageTo, nextEvent, onlineUsers, send, startApp,
+    PASSWORD, ask, disconnectTestDatabase, getHistory, login, messageTo, nextEvent, onlineUsers, send, startApp,
     testDatabaseUri,
 } from './helpers.js'
 
 // Its own file: it disconnects this process's database connection on purpose.
+const STARTING = { ok: false, message: 'Service is starting, try again', retryable: true }
+
 let app
 const uri = testDatabaseUri()
 
@@ -33,9 +35,16 @@ describe('with the database unavailable', () => {
             .toEqual({ ok: false, withUsername: 'bob', message: 'History could not be loaded' })
         // Far below Mongoose's 10 s command-buffering timeout: the handlers fail fast.
         expect(Date.now() - startedAt).toBeLessThan(2000)
+        // Whoever is logged in stays; nobody new can be checked, so nobody new gets in.
         expect(await onlineUsers(app)).toHaveLength(2)
+        const carol = await app.client()
+        expect(await login(carol, { username: 'carol' })).toEqual(STARTING)
+        expect(await ask(carol, 'register', { username: 'carol', password: PASSWORD }))
+            .toEqual(STARTING)
 
         await connectDB(uri)
+
+        expect((await login(carol, { username: 'carol' })).ok).toBe(true)
 
         const delivered = nextEvent(bob, 'message')
         expect((await send(alice, messageTo(bob.id, 'back again'))).ok).toBe(true)

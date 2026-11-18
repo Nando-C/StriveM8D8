@@ -143,7 +143,7 @@ describe('with the demo bot switched on', () => {
         // Reconnect before the bot's delayed answer goes out.
         const second = await app.client()
         const answered = nextEvent(second, 'message')
-        await login(second, { username: 'alice', sessionToken: session.sessionToken })
+        await login(second, { username: 'alice', reservation: session.reservation })
 
         expect((await answered).from).toBe('demo-bot')
     })

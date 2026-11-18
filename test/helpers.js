@@ -4,6 +4,9 @@ import mongoose from 'mongoose'
 import { io as connectSocket } from 'socket.io-client'
 import { createApp } from '../src/app.js'
 import { connectDB } from '../src/db.js'
+import { Identity } from '../src/models/identity.js'
+import { Invitation } from '../src/models/invitation.js'
+import { Session } from '../src/models/session.js'
 
 // createApp() reads this when called; any value keeps it from warning about a missing allowlist.
 process.env.FRONTEND_URL = 'http://localhost:5173'
@@ -20,16 +23,27 @@ export const disconnectTestDatabase = async () => {
     await mongoose.disconnect()
 }
 
+// Real password hashing takes ~150 ms and 32 MiB a time: far too slow for a test suite.
+export const FAST_PASSWORD_PARAMS = { N: 2 ** 10, r: 8, p: 1 }
+
 // Boots a fresh app instance on an ephemeral port. Presence state lives inside the
 // instance, so a new one per test means every test starts with nobody online.
+// Names are stored now, so each instance also starts with nobody registered: stopping it
+// removes every identity (messages are left to the tests that create them).
 export const startApp = async (options = {}) => {
-    const { server, io } = createApp(options)
+    const { server, io, runMaintenance, hasherStats } = createApp({ passwordParams: FAST_PASSWORD_PARAMS, ...options })
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
     const url = `http://127.0.0.1:${server.address().port}`
     const clients = []
 
-    const client = () => new Promise((resolve, reject) => {
-        const socket = connectSocket(url, { transports: ['websocket'], reconnection: false })
+    // `address` makes the connection look as if a proxy had forwarded it for that client
+    // (only believed by an app started with `trustedProxyHops`).
+    const client = ({ address } = {}) => new Promise((resolve, reject) => {
+        const socket = connectSocket(url, {
+            transports: ['websocket'],
+            reconnection: false,
+            extraHeaders: address ? { 'X-Forwarded-For': address } : {},
+        })
         clients.push(socket)
         socket.once('connect', () => resolve(socket))
         socket.once('connect_error', reject)
@@ -38,9 +52,12 @@ export const startApp = async (options = {}) => {
     const stop = async () => {
         clients.forEach(socket => socket.close())
         await new Promise(resolve => io.close(resolve))
+        if (mongoose.connection.readyState === 1) {
+            await Promise.all([Identity.deleteMany({}), Session.deleteMany({}), Invitation.deleteMany({})])
+        }
     }
 
-    return { url, io, client, stop }
+    return { url, io, client, stop, runMaintenance, hasherStats }
 }
 
 // Resolves with the payload of the next `event`, or rejects if it does not arrive in time.
@@ -87,6 +104,14 @@ const request = (socket, event, payload, successEvent, errorEvent) => new Promis
 })
 
 export const login = (socket, payload) => request(socket, 'login', payload, 'loggedin', 'loginError')
+
+// Resolves with the acknowledgement of any event that answers through one.
+export const ask = (socket, event, payload = {}) => socket.timeout(3000).emitWithAck(event, payload)
+
+export const PASSWORD = 'correct horse battery'
+
+// Creates an account and resolves with what the server returned: { ok, session, recoveryCode, … }.
+export const register = (socket, username, extra = {}) => ask(socket, 'register', { username, password: PASSWORD, ...extra })
 
 export const getHistory = (socket, payload) => request(socket, 'getHistory', payload, 'history', 'historyError')
 

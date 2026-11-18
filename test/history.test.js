@@ -21,8 +21,8 @@ const twoUsers = async () => {
     const alice = await app.client()
     const bob = await app.client()
     await login(alice, { username: 'alice' })
-    await login(bob, { username: 'bob' })
-    return { alice, bob }
+    const { reservation } = await login(bob, { username: 'bob' })
+    return { alice, bob, bobReservation: reservation }
 }
 
 const seed = (count, createdAt) => Message.insertMany(
@@ -37,7 +37,7 @@ const seed = (count, createdAt) => Message.insertMany(
 
 describe('history', () => {
     it('returns the conversation after one side reconnects with a new socket id', async () => {
-        const { alice, bob } = await twoUsers()
+        const { alice, bob, bobReservation } = await twoUsers()
         const oldBobId = bob.id
         const first = messageTo(bob.id, 'one')
         const second = messageTo(alice.id, 'two')
@@ -52,7 +52,7 @@ describe('history', () => {
         bob.close()
         await expect.poll(async () => (await onlineUsers(app)).length).toBe(1)
         const bobAgain = await app.client()
-        await login(bobAgain, { username: 'bob' })
+        await login(bobAgain, { username: 'bob', reservation: bobReservation })
         expect(bobAgain.id).not.toBe(oldBobId)
 
         const history = await getHistory(bobAgain, { withUsername: 'alice' })

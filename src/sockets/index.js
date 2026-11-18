@@ -1,57 +1,47 @@
-import { randomUUID } from 'crypto'
 import { BOT, BOT_REPLY_DELAY_MS, botReply } from '../bot.js'
 import { isDatabaseReady } from '../db.js'
 import { Message, conversationKeyFor } from '../models/message.js'
 import { createRateLimiter } from '../rateLimit.js'
+import { createPresence } from './presence.js'
+import { createSessionHandlers } from './session.js'
+import {
+    NOT_LOGGED_IN, SLOW_DOWN, USERNAME_PATTERN, isNonEmptyString, isObject, withAck,
+} from './validation.js'
 
-// Usernames are restricted because two of them are joined with "::" to key a conversation.
-const USERNAME_PATTERN = /^[A-Za-z0-9_-]{1,30}$/
 const CLIENT_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/
 const MAX_TEXT_LENGTH = 2000
 const MAX_ID_LENGTH = 100
 const HISTORY_LIMIT = 100
 
-// Per socket. The server is public and has no accounts, so every event that costs
-// something — a database write, a query, a broadcast to everyone — is capped.
+// Per socket. Every event that costs something — a database write, a query, a broadcast
+// to everyone — is capped. (The limits on signing in live in session.js.)
 const RATE_LIMITS = {
     sendmessage: { limit: 10, windowMs: 10_000 },
     getHistory: { limit: 10, windowMs: 10_000 },
-    // Each successful login is broadcast to every connected client.
-    login: { limit: 5, windowMs: 10_000 },
 }
-const SLOW_DOWN = 'Too many requests, slow down'
 
-const isObject = value => typeof value === 'object' && value !== null
-const isNonEmptyString = (value, maxLength) =>
-    typeof value === 'string' && value.length > 0 && value.length <= maxLength
-
-const publicUser = user => ({ username: user.username, id: user.id })
-
-// Wires every socket event onto `io`. Presence state is created here, per call, so each
-// app instance has its own. Returns read access to the public view of that state.
-export const registerSocketHandlers = (io, { demoBot = false } = {}) => {
-    // Entries are { username, id, sessionToken }. The token is private to its own socket:
-    // everything sent to other clients goes through getOnlineUsers().
-    // The demo bot, when enabled, is a permanent entry: it has no socket, so it never
-    // disconnects, and no token, so its name can never be taken over.
-    let onlineUsers = demoBot ? [{ username: BOT.username, id: BOT.id, sessionToken: null }] : []
-
+// Wires every socket event onto `io`. All state is created here, per call, so each app
+// instance has its own. Returns read access to the public view of who is online, and the
+// hourly housekeeping routine.
+export const registerSocketHandlers = (io, settings) => {
+    const presence = createPresence(io, { demoBot: settings.demoBot })
     const rateLimiter = createRateLimiter()
     const allowed = (socket, event) => rateLimiter.allow(socket.id, event, RATE_LIMITS[event])
+    const session = createSessionHandlers({ presence, settings, rateLimiter })
 
     // Saves the bot's answer and delivers it to wherever the user is connected by then.
-    const replyFromBot = async (toUsername, text) => {
+    const replyFromBot = async (to, text) => {
         try {
             if (!isDatabaseReady()) return
             const saved = await Message.create({
-                conversationKey: conversationKeyFor(BOT.username, toUsername),
+                conversationKey: conversationKeyFor(BOT.username, to.username),
                 from: BOT.username,
-                to: toUsername,
+                to: to.username,
                 text,
             })
-            const recipientNow = onlineUsers.find(user => user.username === toUsername)
+            const recipientNow = presence.users.get(to.userId)
             if (!recipientNow) return
-            io.to(recipientNow.id).emit('message', {
+            io.to([...recipientNow.sockets.keys()]).emit('message', {
                 id: saved._id.toString(),
                 from: BOT.username,
                 fromId: BOT.id,
@@ -63,69 +53,13 @@ export const registerSocketHandlers = (io, { demoBot = false } = {}) => {
         }
     }
 
-    const getOnlineUsers = () => onlineUsers.map(publicUser)
-
     io.on('connection', socket => {
         console.log("socket connected:", socket.id)
 
-        socket.on('login', payload => {
-            if (!allowed(socket, 'login')) {
-                socket.emit('loginError', { message: SLOW_DOWN })
-                return
-            }
+        session.registerOn(socket)
 
-            const username = isObject(payload) && typeof payload.username === 'string'
-                ? payload.username.trim()
-                : ''
-
-            if (!USERNAME_PATTERN.test(username)) {
-                socket.emit('loginError', { message: 'Invalid username' })
-                return
-            }
-
-            // The bot's name is reserved even where the bot is switched off: otherwise
-            // someone could pose as it, or read the conversations people had with it.
-            if (username === BOT.username) {
-                socket.emit('loginError', { message: 'Username already in use' })
-                return
-            }
-
-            const current = onlineUsers.find(user => user.id === socket.id)
-            if (current && current.username !== username) {
-                socket.emit('loginError', { message: 'Already logged in' })
-                return
-            }
-
-            const holder = onlineUsers.find(user => user.username === username && user.id !== socket.id)
-            if (holder) {
-                // The same user coming back on a new connection proves it with the token
-                // issued at their previous login, and takes over the stale entry.
-                if (typeof payload.sessionToken !== 'string' || payload.sessionToken !== holder.sessionToken) {
-                    socket.emit('loginError', { message: 'Username already in use' })
-                    return
-                }
-                onlineUsers = onlineUsers.filter(user => user.id !== holder.id)
-                io.sockets.sockets.get(holder.id)?.disconnect(true)
-            }
-
-            const sessionToken = randomUUID()
-            onlineUsers = onlineUsers.filter(user => user.id !== socket.id)
-            onlineUsers.push({ username, id: socket.id, sessionToken })
-
-            socket.emit('loggedin', { username, id: socket.id, sessionToken, onlineUsers: getOnlineUsers() })
-            // A repeat login by the same socket changes nothing for anyone else.
-            if (!current) {
-                socket.broadcast.emit('newLogin', { username, id: socket.id })
-            }
-        })
-
-        socket.on('sendmessage', async (payload, ack) => {
-            // A client that sends only a callback delivers it as the first argument.
-            if (typeof payload === 'function') {
-                ack = payload
-                payload = undefined
-            }
-            const reply = typeof ack === 'function' ? ack : () => {}
+        socket.on('sendmessage', async (rawPayload, rawAck) => {
+            const { payload, reply } = withAck(rawPayload, rawAck)
 
             if (!allowed(socket, 'sendmessage')) {
                 reply({ ok: false, message: SLOW_DOWN })
@@ -144,16 +78,17 @@ export const registerSocketHandlers = (io, { demoBot = false } = {}) => {
             }
             const { toUserId, text, clientId } = payload
 
-            const sender = onlineUsers.find(user => user.id === socket.id)
+            // The sender's identity comes from the server's own state, never from the client.
+            const sender = presence.bySocket.get(socket.id)
             if (!sender) {
-                reply({ ok: false, message: 'Not logged in' })
+                reply({ ok: false, message: NOT_LOGGED_IN })
                 return
             }
-            if (toUserId === socket.id) {
+            const recipient = presence.findByAddress(toUserId)
+            if (recipient === sender) {
                 reply({ ok: false, message: 'Cannot message yourself' })
                 return
             }
-            const recipient = onlineUsers.find(user => user.id === toUserId)
             if (!recipient) {
                 reply({ ok: false, message: 'Recipient is not online' })
                 return
@@ -181,21 +116,24 @@ export const registerSocketHandlers = (io, { demoBot = false } = {}) => {
             const id = saved._id.toString()
             const timestamp = saved.createdAt.getTime()
 
-            // Delivered only into the recipient's own room, never broadcast. The recipient is
-            // looked up again by username: while the message was being saved they may have
-            // reconnected under a new socket id, or gone offline (it is then in their history).
-            if (recipient.username === BOT.username) {
+            if (recipient.kind === 'bot') {
                 // No socket to deliver to: the bot answers instead, a moment later.
-                const turn = sender.botReplies ?? 0
+                const turn = sender.botReplies
                 sender.botReplies = turn + 1
-                setTimeout(() => replyFromBot(sender.username, botReply(text, turn)), BOT_REPLY_DELAY_MS).unref()
+                setTimeout(() => replyFromBot(sender, botReply(text, turn)), BOT_REPLY_DELAY_MS).unref()
                 reply({ ok: true, id, timestamp })
                 return
             }
 
-            const recipientNow = onlineUsers.find(user => user.username === recipient.username)
+            // Delivered only to the recipient's own connections, never broadcast. They are
+            // looked up again: while the message was being saved the recipient may have
+            // reconnected under a new socket id, or gone offline (it is then in their history).
+            const recipientNow = presence.users.get(recipient.userId)
             if (recipientNow) {
-                socket.to(recipientNow.id).emit('message', { id, from: sender.username, fromId: socket.id, text, timestamp })
+                // `fromId` is the id the recipient knows the sender by, which is not
+                // necessarily the socket this message came from.
+                const fromId = presence.publicId(sender) ?? socket.id
+                io.to([...recipientNow.sockets.keys()]).emit('message', { id, from: sender.username, fromId, text, timestamp })
             }
             reply({ ok: true, id, timestamp })
         })
@@ -216,9 +154,9 @@ export const registerSocketHandlers = (io, { demoBot = false } = {}) => {
                 return
             }
             // The requester's identity comes from the server's own state, never from the client.
-            const requester = onlineUsers.find(user => user.id === socket.id)
+            const requester = presence.bySocket.get(socket.id)
             if (!requester) {
-                fail('Not logged in')
+                fail(NOT_LOGGED_IN)
                 return
             }
             if (!isDatabaseReady()) {
@@ -254,16 +192,15 @@ export const registerSocketHandlers = (io, { demoBot = false } = {}) => {
         socket.on('disconnect', () => {
             console.log("socket disconnected:", socket.id)
             rateLimiter.forget(socket.id)
-            // Only a socket that is still listed has "left". One that never logged in was
-            // never announced, and one replaced by a session takeover is still online
-            // under its new id, which the others already learned from `newLogin`.
-            const wasOnline = onlineUsers.some(user => user.id === socket.id)
-            if (!wasOnline) return
-
-            onlineUsers = onlineUsers.filter(user => user.id !== socket.id)
-            socket.broadcast.emit('userLeft', { id: socket.id })
+            // Says nothing for a socket that never logged in, or one already replaced by
+            // its user's newer connection.
+            presence.detach(socket.id)
         })
     })
 
-    return { getOnlineUsers }
+    return {
+        getOnlineUsers: presence.getOnlineUsers,
+        runMaintenance: session.runMaintenance,
+        hasherStats: session.hasherStats,
+    }
 }

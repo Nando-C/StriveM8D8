@@ -8,6 +8,7 @@ import type { LoggedInPayload, OnlineUser, ServerToClientEvents } from '@/types/
 export { fakeSocket }
 
 export const SESSION_KEY = 'strive-chat.session'
+export const RESERVATIONS_KEY = 'strive-chat.reservations'
 
 interface RenderOptions {
   /** Whether the socket is already connected when the app mounts. Default: yes. */
@@ -41,19 +42,27 @@ export const loggedInPayload = (
   username: string,
   others: OnlineUser[] = [],
   sessionToken = 'token-1',
+  /** Only on the login that first reserves the name, as the server sends it. */
+  reservation?: string,
 ): LoggedInPayload => ({
   username,
   id: fakeSocket.id ?? 'socket-1',
+  kind: 'guest',
+  admin: false,
   sessionToken,
+  ...(reservation === undefined ? {} : { reservation }),
   onlineUsers: [{ username, id: fakeSocket.id ?? 'socket-1' }, ...others],
 })
+
+/** The secret the fake server hands out when `username` is first reserved. */
+export const secretFor = (username: string) => `secret-${username}`
 
 /** Types a name, submits, and answers as the server would on success. */
 export const loginAs = async (username: string, others: OnlineUser[] = []) => {
   const events = userEvent.setup()
   await events.type(screen.getByLabelText('Username'), username)
   await events.click(screen.getByRole('button', { name: 'Join' }))
-  serverSays('loggedin', loggedInPayload(username, others))
+  serverSays('loggedin', loggedInPayload(username, others, 'token-1', secretFor(username)))
   await screen.findByRole('navigation', { name: 'People online' })
   return events
 }
@@ -93,6 +102,12 @@ export const messageRow = (text: string) => {
     .find(item => item.querySelector('p')?.textContent === text)
   if (row === undefined) throw new Error(`no message "${text}" on screen`)
   return row
+}
+
+/** The guest reservations this browser holds, as `username → secret`. */
+export const reservations = (): unknown => {
+  const raw = window.localStorage.getItem(RESERVATIONS_KEY)
+  return raw === null ? {} : JSON.parse(raw)
 }
 
 export const stored = (): unknown => {

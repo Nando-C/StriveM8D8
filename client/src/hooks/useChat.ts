@@ -7,7 +7,7 @@ import {
   selectedConversation,
   selectedUserId,
 } from '@/lib/chatState'
-import { clearSession, loadSession, saveSession, type Session } from '@/lib/session'
+import { clearSession, loadReservation, loadSession, saveReservation, saveSession, type Session } from '@/lib/session'
 import { socket } from '@/lib/socket'
 import { useSocketConnected } from '@/lib/useSocketConnected'
 import type {
@@ -18,11 +18,21 @@ import type {
   LoginErrorPayload,
   LoginPayload,
   NewLoginPayload,
+  SessionRevokedPayload,
   UserLeftPayload,
 } from '@/types/protocol'
 
 /** How long to wait for the server to acknowledge a message before calling it unconfirmed. */
 const ACK_TIMEOUT_MS = 10_000
+
+/** How long to wait before logging in again after the server said it was not ready. */
+export const LOGIN_RETRY_MS = 3000
+
+/** What a guest sends to log in: the name, and the secret that reserves it if this browser holds one. */
+const guestLogin = (username: string): LoginPayload => {
+  const reservation = loadReservation(username)
+  return reservation === undefined ? { username } : { username, reservation }
+}
 
 /**
  * Connects the chat state (a pure reducer) to the socket.
@@ -31,7 +41,8 @@ const ACK_TIMEOUT_MS = 10_000
  * - nothing but `login` is emitted while logged out. socket.io-client queues events emitted
  *   while disconnected and flushes them *before* `connect` fires, i.e. before the re-login,
  *   so anything else sent early would reach the server from a logged-out socket and fail;
- * - whenever the socket connects and a session is held, it logs in again with the token;
+ * - whenever the socket connects and a session is held, it logs in again, proving the
+ *   name is its own with the reservation the server gave it;
  * - after every `loggedin`, history for the open conversation is requested again, because
  *   messages can be saved while this client was away.
  */
@@ -59,13 +70,25 @@ export const useChat = () => {
   }, [])
 
   useEffect(() => {
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    // The server signed this connection out on purpose and is about to close it.
+    let revoked = false
+
     const onConnect = () => {
       if (session.current !== null && loginSentOn.current !== socket.id) {
-        emitLogin(session.current)
+        emitLogin(guestLogin(session.current.username))
       }
     }
     const onDisconnect = (reason: string) => {
       loginSentOn.current = null
+      clearTimeout(retryTimer)
+      if (revoked) {
+        // Already back on the entry form (see onSessionRevoked). socket.io does not
+        // reconnect after the server closes a connection, and the form needs one.
+        revoked = false
+        socket.connect()
+        return
+      }
       // "io server disconnect" means the server closed this connection on purpose: the
       // session was taken over from another tab. socket.io does not reconnect by itself
       // in that case, and neither do we — two tabs would evict each other in a loop.
@@ -73,15 +96,39 @@ export const useChat = () => {
     }
 
     const onLoggedIn = (payload: LoggedInPayload) => {
+      clearTimeout(retryTimer)
       session.current = { username: payload.username, sessionToken: payload.sessionToken }
       saveSession(session.current)
+      // Sent once, when the name is first reserved: without it this browser could not
+      // have the name back after a reload.
+      if (payload.reservation !== undefined) saveReservation(payload.username, payload.reservation)
       dispatch({ type: 'loggedIn', payload })
     }
-    const onLoginError = ({ message }: LoginErrorPayload) => {
+    const onLoginError = ({ message, retryable }: LoginErrorPayload) => {
+      // Logging back in by itself, and the server only said "not yet" (it is still
+      // starting): keep the session and ask again shortly, instead of dropping the user
+      // back to the form as if their name had been refused.
+      if (retryable === true && session.current !== null) {
+        const sentOn = socket.id
+        clearTimeout(retryTimer)
+        retryTimer = setTimeout(() => {
+          if (session.current !== null && socket.connected && socket.id === sentOn) {
+            emitLogin(guestLogin(session.current.username))
+          }
+        }, LOGIN_RETRY_MS)
+        return
+      }
       session.current = null
       loginSentOn.current = null
       clearSession()
       dispatch({ type: 'loginFailed', message })
+    }
+    const onSessionRevoked = ({ reason }: SessionRevokedPayload) => {
+      revoked = true
+      session.current = null
+      loginSentOn.current = null
+      clearSession()
+      dispatch({ type: 'loginFailed', message: reason })
     }
     const onNewLogin = (payload: NewLoginPayload) => dispatch({ type: 'userJoined', payload })
     const onUserLeft = (payload: UserLeftPayload) => dispatch({ type: 'userLeft', payload })
@@ -93,6 +140,7 @@ export const useChat = () => {
     socket.on('disconnect', onDisconnect)
     socket.on('loggedin', onLoggedIn)
     socket.on('loginError', onLoginError)
+    socket.on('sessionRevoked', onSessionRevoked)
     socket.on('newLogin', onNewLogin)
     socket.on('userLeft', onUserLeft)
     socket.on('message', onMessage)
@@ -123,10 +171,12 @@ export const useChat = () => {
     // Every listener is removed again: React StrictMode runs effects twice in development,
     // and a leftover listener would handle (and render) every message twice.
     return () => {
+      clearTimeout(retryTimer)
       socket.off('connect', onConnect)
       socket.off('disconnect', onDisconnect)
       socket.off('loggedin', onLoggedIn)
       socket.off('loginError', onLoginError)
+      socket.off('sessionRevoked', onSessionRevoked)
       socket.off('newLogin', onNewLogin)
       socket.off('userLeft', onUserLeft)
       socket.off('message', onMessage)
@@ -150,7 +200,7 @@ export const useChat = () => {
   // presses Enter straight away is not made to do it twice.
   const login = useCallback(
     (username: string) => {
-      emitLogin({ username })
+      emitLogin(guestLogin(username))
     },
     [emitLogin],
   )
