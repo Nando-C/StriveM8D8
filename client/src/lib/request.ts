@@ -2,7 +2,7 @@ import { socket } from '@/lib/socket'
 import type { Ack, ClientToServerEvents } from '@/types/protocol'
 
 /** How long to wait for the server's answer before giving up on a request. */
-export const REQUEST_TIMEOUT_MS = 10_000
+const REQUEST_TIMEOUT_MS = 10_000
 
 /**
  * Requests that check or set a password. The server hashes slowly on purpose and queues

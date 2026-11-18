@@ -5,9 +5,9 @@ import { afterPosition, comparePositions, laterPosition } from './positions.js'
 // Everything about conversations that is not tied to a socket: their ids, who may see
 // what in them, and the one view of a conversation that is ever sent to a client.
 
-export const MAX_LISTED_CONVERSATIONS = 50
-export const MAX_UNREAD_SHOWN = 99
-export const PREVIEW_LENGTH = 80
+const MAX_LISTED_CONVERSATIONS = 50
+const MAX_UNREAD_SHOWN = 99
+const PREVIEW_LENGTH = 80
 
 const USER_ID = /^[A-Za-z0-9-]{1,64}$/
 
@@ -42,20 +42,20 @@ const plainPosition = position => (position?.id ? { ts: position.ts, id: positio
  */
 export const visibleTo = member => afterPosition(plainPosition(member.joinedAfter))
 
-const seesLastMessage = (conversation, member) => {
-    const last = conversation.lastMessage
-    if (!last?.id) return false
-    return comparePositions({ ts: last.timestamp, id: last.id }, plainPosition(member.joinedAfter)) > 0
-}
+/** The position of a conversation's last message (stored, or as sent to a client), or null. */
+export const lastPosition = lastMessage => (lastMessage?.id ? { ts: lastMessage.timestamp, id: lastMessage.id } : null)
+
+// (Nothing is after a position; so a conversation with no last message shows none.)
+const seesLastMessage = (conversation, member) =>
+    comparePositions(lastPosition(conversation.lastMessage), plainPosition(member.joinedAfter)) > 0
 
 /** How many messages from other people the member has not read, up to 100. */
-export const unreadCountFor = async (conversation, member) => {
+const unreadCountFor = async (conversation, member) => {
     const from = laterPosition(plainPosition(member.readUpTo), plainPosition(member.joinedAfter))
     // Most conversations, most of the time, have nothing new in them — and the conversation
     // itself already says so: its last message is not after where this member stopped.
     // Only the ones that might have something unread cost a query.
-    const last = conversation.lastMessage
-    if (!last?.id || comparePositions({ ts: last.timestamp, id: last.id }, from) <= 0) return 0
+    if (comparePositions(lastPosition(conversation.lastMessage), from) <= 0) return 0
     const count = await Message.countDocuments(
         { conversationKey: conversation._id, from: { $ne: member.userId }, ...afterPosition(from) },
         { limit: MAX_UNREAD_SHOWN + 1 },
@@ -160,10 +160,14 @@ const moveForward = async (conversationId, userId, path, position) => {
  * which case only their own, true position moves. Resolves to { moved, published }:
  * whether the true position moved, and whether what others are told did.
  */
-export const advancePosition = async (conversationId, userId, field, position, { publish = true } = {}) => ({
-    moved: await moveForward(conversationId, userId, field, position),
-    published: publish ? await moveForward(conversationId, userId, `published.${field}`, position) : false,
-})
+export const advancePosition = async (conversationId, userId, field, position, { publish = true } = {}) => {
+    // Two fields, each moved by its own atomic update: neither waits for the other.
+    const [moved, published] = await Promise.all([
+        moveForward(conversationId, userId, field, position),
+        publish ? moveForward(conversationId, userId, `published.${field}`, position) : false,
+    ])
+    return { moved, published }
+}
 
 /**
  * Brings what others are told about a member up to the truth, in every conversation

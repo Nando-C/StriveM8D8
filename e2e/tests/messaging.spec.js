@@ -1,19 +1,7 @@
 import { expect, test } from '@playwright/test'
 import {
-    bubbles, chat, chats, composer, joinAsGuest, log, SAVED, messageRow, openApp, openTab, person, send, signedInAs, unique,
+    bubbles, chat, chats, composer, joinAsGuest, log, SAVED, messageRow, openApp, openTab, person, send, signedInAs, twoGuests, unique,
 } from './helpers.js'
-
-// Two guests, each in their own browser, both signed in.
-const twoGuests = async browser => {
-    const [anaName, benName] = [unique('ana'), unique('ben')]
-    const ana = await openApp(browser)
-    await joinAsGuest(ana, anaName)
-    const ben = await openApp(browser)
-    await joinAsGuest(ben, benName)
-    await signedInAs(ana, anaName)
-    await signedInAs(ben, benName)
-    return { ana, ben, anaName, benName }
-}
 
 test('a conversation between two people: each message arrives once, on both sides, in order', async ({ browser }) => {
     const { ana, ben, anaName, benName } = await twoGuests(browser)

@@ -1,5 +1,5 @@
 import { devices, expect, test } from '@playwright/test'
-import { bubbles, chat, chats, composer, joinAsGuest, openApp, people, person, send, signedInAs, unique } from './helpers.js'
+import { bubbles, chat, chats, composer, joinAsGuest, menuButton, openApp, people, person, send, signedInAs, unique } from './helpers.js'
 
 // The same app on a phone: the list and the conversation are separate screens.
 // (Only the size and touch settings of a phone; the browser is still Chromium.)
@@ -52,7 +52,7 @@ test('on a phone, the entry screen and the account menu fit and work', async ({ 
     await joinAsGuest(cal, name)
     await signedInAs(cal, name)
 
-    await cal.getByRole('button', { name: `Account menu for ${name}` }).tap()
+    await menuButton(cal, name).tap()
     await expect(cal.getByRole('menuitem', { name: 'Create an account to keep this name' })).toBeInViewport()
     await expect(cal.getByRole('menuitem', { name: 'Leave' })).toBeInViewport()
 })

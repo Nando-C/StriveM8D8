@@ -39,6 +39,24 @@ export const createPresence = (io, { demoBot = false } = {}) => {
     }
     const getOnlineUsers = () => [...users.values()].map(publicUser).filter(Boolean)
 
+    /** Whether others may be told anything new about this user. (Someone not connected: yes.) */
+    const isShown = userId => {
+        const user = users.get(userId)
+        return !user || publicUser(user) !== null
+    }
+
+    const socketsOf = userId => [...(users.get(userId)?.sockets.keys() ?? [])]
+
+    /**
+     * Sends an event to every connected device of these users, and to nobody when there
+     * are none. The one way to address people: an emit to an empty list of sockets goes
+     * to every connection there is, so that case must never be left to the caller.
+     */
+    const tell = (userIds, event, payload, { exceptSocketId = null } = {}) => {
+        const sockets = userIds.flatMap(socketsOf).filter(socketId => socketId !== exceptSocketId)
+        if (sockets.length > 0) io.to(sockets).emit(event, payload)
+    }
+
     // Who is online is told only to sockets that are logged in as somebody. A connection
     // that never logged in learns nothing: on a deployment without guests it would
     // otherwise be handed every member's name just for connecting.
@@ -64,12 +82,14 @@ export const createPresence = (io, { demoBot = false } = {}) => {
     /**
      * Changes something about a connected user (their status, an idle flag, their kind)
      * and tells everyone else exactly what that changes for them — which, for someone
-     * invisible, is nothing.
+     * invisible, is nothing. Returns how they were shown `before` and are shown `after`
+     * (null: to nobody).
      */
     const update = (user, change) => {
         const before = users.has(user.userId) ? publicUser(user) : null
         change(user)
         announce(user, before)
+        return { before, after: users.has(user.userId) ? publicUser(user) : null }
     }
 
     /**
@@ -148,5 +168,5 @@ export const createPresence = (io, { demoBot = false } = {}) => {
         }
     }
 
-    return { users, bySocket, hooks, getOnlineUsers, publicUser, attach, detach, revoke, update }
+    return { users, bySocket, hooks, getOnlineUsers, publicUser, isShown, socketsOf, tell, attach, detach, revoke, update }
 }

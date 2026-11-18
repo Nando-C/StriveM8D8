@@ -1,4 +1,7 @@
-import type { ShownStatus, Status } from '@/types/protocol'
+import type { ShownStatus, Status, UserKind } from '@/types/protocol'
+
+/** The small label beside the name of someone who is not an account. */
+export const KIND_LABELS: Partial<Record<UserKind, string>> = { guest: 'Guest', bot: 'Bot' }
 
 /** How someone appears: one of the statuses others can be shown, or not connected. */
 export type Presence = ShownStatus | 'offline'

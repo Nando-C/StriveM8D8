@@ -11,6 +11,9 @@ const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 export const isDatabaseReady = () => mongoose.connection.readyState === 1
 
+/** A write refused by a unique index: somebody else got there first. */
+export const isDuplicateKey = error => error?.code === 11000
+
 // Connects to MongoDB, retrying until it succeeds: Mongoose does not retry a failed
 // first connection by itself. Resolves once connected (or at once, after a warning,
 // when no URI is given or the URI is malformed) and never rejects, so callers may leave it un-awaited.

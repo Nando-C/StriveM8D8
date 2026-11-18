@@ -45,20 +45,39 @@ export const openTab = async (context, path = '/') => {
     return page
 }
 
-export const signedInAs = (page, username) =>
-    expect(page.getByRole('button', { name: `Account menu for ${username}` })).toBeVisible()
+/** The signed-in user's own entry at the top of the sidebar, which opens their menu. */
+export const menuButton = (page, username) => page.getByRole('button', { name: `Account menu for ${username}` })
+
+export const signedInAs = (page, username) => expect(menuButton(page, username)).toBeVisible()
 
 export const joinAsGuest = async (page, username) => {
     await page.getByLabel('Username').fill(username)
     await page.getByRole('button', { name: 'Join' }).click()
 }
 
-/** Fills in the sign-up form and submits it; resolves with the recovery code shown. */
-export const createAccount = async (page, username, password = PASSWORD) => {
-    await page.getByRole('tab', { name: 'Create account' }).click()
+/** Two guests, each in their own browser, both signed in. */
+export const twoGuests = async browser => {
+    const [anaName, benName] = [unique('ana'), unique('ben')]
+    const ana = await openApp(browser)
+    await joinAsGuest(ana, anaName)
+    const ben = await openApp(browser)
+    await joinAsGuest(ben, benName)
+    await signedInAs(ana, anaName)
+    await signedInAs(ben, benName)
+    return { ana, ben, anaName, benName }
+}
+
+/** Fills in the sign-up form that is on screen and submits it. */
+export const fillSignUp = async (page, username, password = PASSWORD) => {
     await page.getByLabel('Username').fill(username)
     await page.getByLabel('Password').fill(password)
     await page.getByRole('button', { name: 'Create account' }).click()
+}
+
+/** Signs up from the entry screen; resolves with the recovery code shown. */
+export const createAccount = async (page, username, password = PASSWORD) => {
+    await page.getByRole('tab', { name: 'Create account' }).click()
+    await fillSignUp(page, username, password)
     const code = await page.getByRole('status', { name: 'Recovery code' }).textContent()
     await page.getByRole('button', { name: 'I’ve saved it' }).click()
     await signedInAs(page, username)
@@ -75,8 +94,14 @@ export const signIn = async (page, username, password = PASSWORD) => {
 }
 
 export const accountMenu = async (page, username, item) => {
-    await page.getByRole('button', { name: `Account menu for ${username}` }).click()
+    await menuButton(page, username).click()
     await page.getByRole('menuitem', { name: item }).click()
+}
+
+/** Picks one of the statuses in the account menu, by the start of its label. */
+export const chooseStatus = async (page, username, status) => {
+    await menuButton(page, username).click()
+    await page.getByRole('menuitemradio', { name: new RegExp(`^${status}`) }).click()
 }
 
 const entry = (list, name) => list.getByRole('button').filter({ has: list.page().getByText(name, { exact: true }) })

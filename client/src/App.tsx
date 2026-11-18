@@ -10,7 +10,7 @@ import { UserAvatar } from '@/components/UserAvatar'
 import { useChat } from '@/hooks/useChat'
 import { fade } from '@/lib/motion'
 import { useServerConfig, type ServerConfig } from '@/lib/serverConfig'
-import { presenceLine } from '@/lib/status'
+import { KIND_LABELS, presenceLine } from '@/lib/status'
 import { cn } from '@/lib/utils'
 
 function App() {
@@ -164,7 +164,7 @@ function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat
                         : open.presence === 'offline'
                           ? 'Offline — they will see your messages when they are back'
                           : presenceLine(
-                              open.kind === 'guest' ? 'Guest' : open.kind === 'bot' ? 'Bot' : undefined,
+                              open.kind === null ? undefined : KIND_LABELS[open.kind],
                               open.presence,
                               open.statusText,
                             )}

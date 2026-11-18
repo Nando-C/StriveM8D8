@@ -1,18 +1,12 @@
 import { expect, test } from '@playwright/test'
 import { BOOTSTRAP_CODE, OWNER } from '../profiles.js'
 import {
-    PASSWORD, accountMenu, bubbles, chat, openApp, openTab, people, person, send, signIn, signedInAs, unique,
+    accountMenu, bubbles, chat, fillSignUp, menuButton, openApp, openTab, people, person, send, signIn, signedInAs, unique,
 } from './helpers.js'
 
 // The same code as a private deployment: accounts only, by invitation, every member
 // listed. These run in order — the owner has to exist before anyone can be invited.
 test.describe.configure({ mode: 'serial' })
-
-const register = async (page, username) => {
-    await page.getByLabel('Username').fill(username)
-    await page.getByLabel('Password').fill(PASSWORD)
-    await page.getByRole('button', { name: 'Create account' }).click()
-}
 
 // Signs the owner in and has them make an invitation link.
 const invite = async browser => {
@@ -34,7 +28,7 @@ test('there is no way in without an account, and no way to make one without an i
 
     await visitor.getByRole('tab', { name: 'Create account' }).click()
     await visitor.getByLabel('Invitation code').fill('made-up-code')
-    await register(visitor, unique('eve'))
+    await fillSignUp(visitor, unique('eve'))
     await expect(visitor.getByRole('alert')).toHaveText('That invitation is not valid any more')
     // The owner's name cannot be picked up without the owner's code either.
     await visitor.getByLabel('Username').fill(OWNER)
@@ -47,13 +41,13 @@ test('the owner registers with the bootstrap link, as an administrator', async (
 
     await expect(owner.getByRole('tab', { name: 'Create account' })).toHaveAttribute('aria-selected', 'true')
     await expect(owner.getByLabel('Invitation code')).toBeHidden()
-    await register(owner, OWNER)
+    await fillSignUp(owner, OWNER)
     await owner.getByRole('button', { name: 'I’ve saved it' }).click()
     await signedInAs(owner, OWNER)
 
     // The code is gone from the address bar, and the owner can invite people.
     expect(new URL(owner.url()).search).toBe('')
-    await owner.getByRole('button', { name: `Account menu for ${OWNER}` }).click()
+    await menuButton(owner, OWNER).click()
     await expect(owner.getByRole('menuitem', { name: 'Invite someone' })).toBeVisible()
     await expect(owner.getByText(`${OWNER} · Account · Administrator`)).toBeVisible()
 })
@@ -67,17 +61,17 @@ test('an invitation link lets exactly one person in', async ({ browser }) => {
     // The invited person follows the link: the sign-up form, with the code filled in.
     const ana = await openApp(browser, {}, link)
     await expect(ana.getByLabel('Invitation code')).not.toHaveValue('')
-    await register(ana, anaName)
+    await fillSignUp(ana, anaName)
     await ana.getByRole('button', { name: 'I’ve saved it' }).click()
     await signedInAs(ana, anaName)
     // Members are not administrators.
-    await ana.getByRole('button', { name: `Account menu for ${anaName}` }).click()
+    await menuButton(ana, anaName).click()
     await expect(ana.getByRole('menuitem', { name: 'Devices' })).toBeVisible()
     await expect(ana.getByRole('menuitem', { name: 'Invite someone' })).toBeHidden()
 
     // Somebody the link was passed on to finds it used up.
     const second = await openApp(browser, {}, link)
-    await register(second, unique('zed'))
+    await fillSignUp(second, unique('zed'))
     await expect(second.getByRole('alert')).toHaveText('That invitation is not valid any more')
     await owner.close()
 })
@@ -87,7 +81,7 @@ test('a member who is not online is still listed, and can be written to', async 
     const { owner, dialog, link } = await invite(browser)
     const benName = unique('ben')
     const ben = await openApp(browser, {}, link)
-    await register(ben, benName)
+    await fillSignUp(ben, benName)
     await ben.getByRole('button', { name: 'I’ve saved it' }).click()
     await signedInAs(ben, benName)
     const benContext = ben.context()

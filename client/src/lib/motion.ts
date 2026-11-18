@@ -26,10 +26,13 @@ export const fade: Variants = {
 }
 
 /** A message arriving: rises a little, from the side it belongs to. */
-export const messageIn = (own: boolean): Variants => ({
-  hidden: { opacity: 0, y: 8, x: own ? 8 : -8 },
+const messageFrom = (x: number): Variants => ({
+  hidden: { opacity: 0, y: 8, x },
   visible: { opacity: 1, y: 0, x: 0, transition: transition.base },
 })
+const OWN_MESSAGE_IN = messageFrom(8)
+const OTHER_MESSAGE_IN = messageFrom(-8)
+export const messageIn = (own: boolean): Variants => (own ? OWN_MESSAGE_IN : OTHER_MESSAGE_IN)
 
 /** A person appearing in, or leaving, the list. */
 export const listItem: Variants = {

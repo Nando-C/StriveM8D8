@@ -1,14 +1,15 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Check, Copy, LoaderCircle } from 'lucide-react'
-import { Field, FormError } from '@/components/account/fields'
+import { Busy, Field, FormError, HiddenUsername } from '@/components/account/fields'
 import { RecoveryCode } from '@/components/account/RecoveryCode'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { PASSWORD_HINT, isPassword, passwordInput } from '@/lib/credentials'
+import { PASSWORD_HINT, invitationInput, isPassword, passwordInput } from '@/lib/credentials'
 import { deviceLabel } from '@/lib/device'
 import { invitationLink } from '@/lib/invitation'
 import { ask } from '@/lib/request'
+import { useRequest } from '@/lib/useRequest'
 import type { DeviceSession, Invitation } from '@/types/protocol'
 
 // The dialogs behind the account menu. Each one talks to the server itself and reports
@@ -26,7 +27,7 @@ interface ShellProps extends DialogProps {
   locked?: boolean
 }
 
-function Shell({ title, description, children, locked = false, onClose }: ShellProps) {
+export function Shell({ title, description, children, locked = false, onClose }: ShellProps) {
   return (
     <Dialog open onOpenChange={open => !open && !locked && onClose()}>
       <DialogContent showCloseButton={!locked}>
@@ -37,15 +38,6 @@ function Shell({ title, description, children, locked = false, onClose }: ShellP
         {children}
       </DialogContent>
     </Dialog>
-  )
-}
-
-function Busy({ busy, children }: { busy: boolean; children: ReactNode }) {
-  return (
-    <>
-      {busy && <LoaderCircle aria-hidden="true" className="animate-spin" />}
-      {children}
-    </>
   )
 }
 
@@ -64,29 +56,24 @@ interface CreateAccountDialogProps extends DialogProps {
 export function CreateAccountDialog({ username, needsInvitation, onCreated, onClose }: CreateAccountDialogProps) {
   const [password, setPassword] = useState('')
   const [invitation, setInvitation] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const { busy, error, run } = useRequest()
   const [recoveryCode, setRecoveryCode] = useState<string | null>(null)
 
-  const submit = async (event: FormEvent) => {
+  const submit = (event: FormEvent) => {
     event.preventDefault()
-    if (busy) return
-    setBusy(true)
-    setError(null)
-    // Sent from the guest's own connection, which is all the proof the server needs.
-    const answer = await ask('register', {
-      username,
-      password,
-      deviceLabel: deviceLabel(),
-      ...(needsInvitation ? { invitation: invitation.trim() } : {}),
-    })
-    setBusy(false)
-    if (!answer.ok) {
-      setError(answer.message)
-      return
-    }
-    onCreated(answer.session, answer.admin)
-    setRecoveryCode(answer.recoveryCode)
+    void run(
+      // Sent from the guest's own connection, which is all the proof the server needs.
+      () => ask('register', {
+        username,
+        password,
+        deviceLabel: deviceLabel(),
+        ...(needsInvitation ? { invitation: invitation.trim() } : {}),
+      }),
+      answer => {
+        onCreated(answer.session, answer.admin)
+        setRecoveryCode(answer.recoveryCode)
+      },
+    )
   }
 
   return (
@@ -100,8 +87,7 @@ export function CreateAccountDialog({ username, needsInvitation, onCreated, onCl
         <RecoveryCode code={recoveryCode} onSaved={onClose} />
       ) : (
         <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
-          {/* Not editable, but present so that a password manager saves the right pair. */}
-          <input type="text" name="username" autoComplete="username" value={username} readOnly hidden />
+          <HiddenUsername username={username} />
           <Field
             id="upgrade-password"
             label="Password"
@@ -116,10 +102,7 @@ export function CreateAccountDialog({ username, needsInvitation, onCreated, onCl
             <Field
               id="upgrade-invitation"
               label="Invitation code"
-              autoComplete="off"
-              autoCapitalize="none"
-              spellCheck={false}
-              maxLength={100}
+              {...invitationInput}
               value={invitation}
               onChange={event => setInvitation(event.target.value)}
               disabled={busy}
@@ -213,19 +196,12 @@ export function DevicesDialog({ onClose }: DialogProps) {
 export function ChangePasswordDialog({ username, onClose }: DialogProps & { username: string }) {
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const { busy, error, run } = useRequest()
   const [done, setDone] = useState(false)
 
-  const submit = async (event: FormEvent) => {
+  const submit = (event: FormEvent) => {
     event.preventDefault()
-    if (busy) return
-    setBusy(true)
-    setError(null)
-    const answer = await ask('changePassword', { currentPassword, newPassword })
-    setBusy(false)
-    if (answer.ok) setDone(true)
-    else setError(answer.message)
+    void run(() => ask('changePassword', { currentPassword, newPassword }), () => setDone(true))
   }
 
   return (
@@ -241,7 +217,7 @@ export function ChangePasswordDialog({ username, onClose }: DialogProps & { user
         </div>
       ) : (
         <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
-          <input type="text" name="username" autoComplete="username" value={username} readOnly hidden />
+          <HiddenUsername username={username} />
           <Field
             id="current-password"
             label="Current password"
@@ -380,18 +356,11 @@ interface DeleteAccountDialogProps extends DialogProps {
 
 export function DeleteAccountDialog({ username, onDeleted, onClose }: DeleteAccountDialogProps) {
   const [password, setPassword] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const { busy, error, run } = useRequest()
 
-  const submit = async (event: FormEvent) => {
+  const submit = (event: FormEvent) => {
     event.preventDefault()
-    if (busy) return
-    setBusy(true)
-    setError(null)
-    const answer = await ask('deleteAccount', { password })
-    setBusy(false)
-    if (answer.ok) onDeleted()
-    else setError(answer.message)
+    void run(() => ask('deleteAccount', { password }), () => onDeleted())
   }
 
   return (
@@ -401,7 +370,7 @@ export function DeleteAccountDialog({ username, onDeleted, onClose }: DeleteAcco
       onClose={onClose}
     >
       <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
-        <input type="text" name="username" autoComplete="username" value={username} readOnly hidden />
+        <HiddenUsername username={username} />
         <Field
           id="delete-password"
           label="Password"

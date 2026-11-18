@@ -62,7 +62,7 @@ flowchart LR
     SERVER -- "Mongoose" --> DB
 ```
 
-**Client.** Components never talk to the socket. A single hook, `useChat`, receives socket events and turns them into actions for a pure reducer (the account dialogs send their own requests through one small helper, `ask`), `chatState`, which holds presence, every conversation and the state of each message. The reducer has no socket, storage or timers in it, which makes every rule about merging and ordering messages testable in isolation.
+**Client.** Components never talk to the socket. A single hook, `useChat` (with `useSessionLogin`, which it uses for logging in), receives socket events and turns them into actions for a pure reducer (the account dialogs send their own requests through one small helper, `ask`), `chatState`, which holds presence, every conversation and the state of each message. The reducer has no socket, storage or timers in it, which makes every rule about merging and ordering messages testable in isolation.
 
 **Server.** Every connection passes the guards first: an origin allowlist applied to the WebSocket handshake, a payload size cap, and per-socket rate limits. The socket handlers validate each payload, take the sender's identity from the server's own state (never from the payload), check membership against the stored conversation, keep the list of who is connected in memory, and read and write through Mongoose. The server is built by a `createApp()` function that neither listens nor connects to a database, so tests can start a fresh, isolated instance for every case.
 
@@ -87,7 +87,10 @@ src/                        SERVER
 ├── sockets/
 │   ├── index.js            Wires everything onto each connection
 │   ├── messages.js         Sending, history, delivery to every device with its own acknowledgement, receipts
-│   ├── session.js          Guests, accounts, devices, invitations, hourly housekeeping
+│   ├── session.js          Guests and accounts: login, sign-up, passwords, hourly housekeeping
+│   ├── deviceSessions.js   The devices an account is signed in on, and ending them
+│   ├── guesses.js          Limits on guessing a password, recovery code or bootstrap code
+│   ├── invitations.js      Invitations, as administrators create, list and revoke them
 │   ├── status.js           Choosing a status, idle reports, the timer that clears a status text
 │   └── presence.js         Who is connected, who can see it, and announcing exactly what changed
 ├── conversations.js        Conversation ids, what a member may see, the one view sent to clients
@@ -101,7 +104,8 @@ client/                     CLIENT
     ├── App.tsx             Entry screen or chat shell
     ├── components/         EntryScreen, account/ (menu and dialogs), Sidebar, MessageList, MessageComposer, ConnectionBanner, …
     │   └── ui/             shadcn/ui components (source files, see below)
-    ├── hooks/useChat.ts    Connects the chat to the socket: login, presence, messages
+    ├── hooks/useChat.ts    Connects the chat to the socket: presence, messages, read reports
+    ├── hooks/useSessionLogin.ts  Who this tab is: logging in, back in after a reconnect, and out
     ├── lib/chatState.ts    Every state change, as a pure reducer (with chatSelectors.ts, messages.ts)
     ├── lib/                socket, requests, stored sessions, server config, motion timings, formatting
     ├── types/protocol.ts   The wire protocol as TypeScript types
