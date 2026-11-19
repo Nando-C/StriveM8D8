@@ -18,7 +18,7 @@ A real-time, one-to-one chat application: a Node.js + Socket.IO server with Mong
 - **Accessible and responsive.** Usable from the keyboard alone, announced to screen readers, laid out for desktop and phone, with light and dark themes and motion that is switched off when the system asks for reduced motion.
 - **Guests and accounts.** Type a name and you are in, with that name kept for your browser; or create an account with a password and use it from several devices at once — with a list of those devices, remote sign-out, and a recovery code in place of an email address.
 - **Status that means something.** Online, away (also set by itself after five minutes without activity, and only when *every* one of your devices is idle), do not disturb, and invisible — plus a line of your own that can clear itself after a while. Invisible is real: to everyone else you are indistinguishable from someone who is not connected, yet you can read and write as usual.
-- **547 automated tests**, 28 of them driving real browsers against the built app, run on every push by GitHub Actions on two Node.js versions.
+- **575 automated tests**, 28 of them driving real browsers against the built app, run on every push by GitHub Actions on two Node.js versions.
 
 ## Tech stack
 
@@ -87,6 +87,7 @@ src/                        SERVER
 ├── sockets/
 │   ├── index.js            Wires everything onto each connection
 │   ├── messages.js         Sending, history, delivery to every device with its own acknowledgement, receipts
+│   ├── groups.js           Creating a group, adding and removing members, leaving, renaming, succession
 │   ├── session.js          Guests and accounts: login, sign-up, passwords, hourly housekeeping
 │   ├── deviceSessions.js   The devices an account is signed in on, and ending them
 │   ├── guesses.js          Limits on guessing a password, recovery code or bootstrap code
@@ -158,7 +159,7 @@ Three suites, each testing what the others cannot.
 
 | | Server | Client |
 |---|---|---|
-| Tests | 312, in 17 files | 207, in 12 files |
+| Tests | 336, in 18 files | 211, in 13 files |
 | Approach | Real Socket.IO clients against a fresh server per test, with an in-memory MongoDB | The real app rendered against a fake socket; each test plays the server |
 | Lint | oxlint | oxlint, including React hooks rules |
 | Types | — | TypeScript, checked on every build |
@@ -381,6 +382,11 @@ People are identified by a permanent `userId`; usernames are labels. No event ca
 | `markRead` | `{ conversationId, upTo }` + acknowledgement callback | `{ ok: true }` or `{ ok: false, message }` |
 | `setStatus` | `{ status?, text?, clearAfterMinutes? }` + acknowledgement callback | `{ ok: true, status, statusText, statusClearAt }` or `{ ok: false, message }` |
 | `setIdle` | `{ idle }` + acknowledgement callback | `{ ok: true }` or `{ ok: false, message }` |
+| `createGroup` | `{ name, userIds }` + acknowledgement callback | `{ ok: true, conversationId }` or `{ ok: false, message }` |
+| `addMembers` | `{ conversationId, userIds }` + acknowledgement callback | `{ ok: true }` or `{ ok: false, message }` |
+| `removeMember` | `{ conversationId, userId }` + acknowledgement callback | `{ ok: true }` or `{ ok: false, message }` — the group's admin only |
+| `leaveGroup` | `{ conversationId }` + acknowledgement callback | `{ ok: true }` or `{ ok: false, message }` |
+| `renameGroup` | `{ conversationId, name }` + acknowledgement callback | `{ ok: true }` or `{ ok: false, message }` — the group's admin only |
 
 `login` has three forms:
 
@@ -400,6 +406,20 @@ People are identified by a permanent `userId`; usernames are labels. No event ca
 
 - `status`: `online`, `away`, `dnd` or `invisible`. `text`: up to 80 characters, `""` to remove it. `clearAfterMinutes`: how long the text stays, from 1 minute to a week; `null` or absent keeps it until it is changed. Only what is given changes. The choice is stored with the identity, so it is the same after a reload and on every device.
 - `idle`: whether nobody is using this connection's page. The client in this repository sends `true` after five minutes without input and `false` at the next input. A user is shown as away only while *all* of their connections are idle, and only if what they chose is `online`.
+
+#### Groups
+
+A group is a conversation with a name, an admin and up to 20 members; its id is `group:<uuid>`, given by the server. Sending, history, read positions and receipts work in it exactly as in a one-to-one conversation.
+
+- `name`: 1–50 characters. `userIds`: the other people — each must exist (the demo bot counts, where it is on). Guests and accounts can both create and be in groups.
+- Whoever creates a group is its **admin**: only they can rename it or remove someone. Any member can add people, and anyone can leave. When the admin leaves, the member who has been in the group longest takes over; when the last person leaves, the group and its messages are deleted. The bot is never the admin and never the last person.
+- **Someone added later sees only what comes after they were added** — in history, in the unread count and in the list preview. Someone removed, or who left, loses access at once: they are sent `conversationRemoved`, and from then on the group is an `Unknown conversation` to them. Added again, they start afresh from that moment.
+- Every change is recorded in the group as a message of `kind: "system"`, with no text and a `data` object for the client to put into words: `{ event: "created", actor, name, targets }`, `{ event: "added", actor, targets }`, `{ event: "removed", actor, target }`, `{ event: "left", actor }`, `{ event: "renamed", actor, name }` — `actor`, `target` and each of `targets` being `{ userId, username }` as they were at the time. These are not counted as unread.
+- When membership or the name changes, each member is first sent `conversationUpdated` and then the system `message`. The exception is the people an `added` line is about: it is where they begin, so they are sent the group but not the line.
+- Limits: 20 groups created per user (counted while the group exists, and only against its creator), 200 groups per member — adding someone who is already in 200 is refused to whoever tries.
+- A person whose identity is removed (an account deleted, a guest name that lapsed) leaves every group they were in, as if they had left themselves.
+
+Failure messages: `A group name must be 1 to 50 characters`, `Choose at least one other person`, `Unknown user`, `A group can have at most 20 members`, `Already in this group`, `Not in this group`, `Only the group admin can do that`, `To go yourself, leave the group`, `You have created 20 groups — leave or empty one first`, `You are in too many groups`, `One of these people is in too many groups`, `The group changed in the meantime — try again`, `Unknown conversation`, `Not logged in`, `Could not be saved`, `Too many requests, slow down`.
 
 `sendmessage` is always answered through its acknowledgement callback:
 
@@ -442,7 +462,8 @@ The recovery code is shown once and is the only way back into an account whose p
 | `ownStatus` | Your other connections | `{ status, statusText, statusClearAt }` | Your own status was changed on another of your devices, or its text ran out. |
 | `message` | Every connection of every member, except the one it was sent from | a message, with an acknowledgement callback | A message in one of your conversations — including your own, sent from another of your devices. **Call the acknowledgement**: it is what records the message as delivered to you, and moves the sender's tick. Each connection is sent the message separately, so each acknowledgement belongs to one person. |
 | `receipt` | The other members, on every connection | `{ conversationId, userId, deliveredUpTo, readUpTo }` | Another member has received or read further. Positions only move forward. This is what the ticks on your own messages are worked out from. |
-| `conversationUpdated` | Each member, separately | `{ conversation }` | A conversation is new to you or something about it changed (it was just created; the other person is gone; another of your devices read it). Replaces what you had. After a first message it arrives *after* the `message`. |
+| `conversationUpdated` | Each member, separately | `{ conversation }` | A conversation is new to you or something about it changed (it was just created; the other person is gone; another of your devices read it; a group's members, admin or name changed). Replaces what you had. After the first message of a one-to-one conversation it arrives *after* the `message`; for a change to a group, *before* the system message that records it. |
+| `conversationRemoved` | Every connection of someone who left a group or was removed from it | `{ id }` | You are no longer in that group: forget it. |
 | `history` | The requester only | `{ conversationId, messages, hasMore }` | Up to 100 messages, oldest first. `hasMore`: there are earlier ones; ask again with `before` set to the first message's position. |
 | `historyError` | The requester only | `{ conversationId, message }` | `Invalid conversation`, `Invalid position`, `Not logged in`, `Unknown conversation`, `History could not be loaded`, or `Too many requests, slow down`. |
 | `memberJoined` / `memberLeft` | Accounts, where `MEMBER_DIRECTORY=all` | `{ userId, username, kind }` / `{ userId }` | An account was created or removed. |
@@ -458,19 +479,20 @@ The shapes used above:
 //  statusText: a line of their own, possibly empty
 
 // a message — the same object live and in history
-{ id, conversationId, from, fromName, kind, text, timestamp, clientId }
+{ id, conversationId, from, fromName, kind, text, data?, timestamp, clientId }
 //  from: the author's userId; fromName: their name when it was sent
-//  kind: "text" (others are reserved for later features); text is null for kinds without any
+//  kind: "text", or "system" for a change to a group — then text is null and data says what happened (see Groups)
 //  clientId: the id you gave your own message, null on anyone else's
 
 // a conversation, as you are shown it
-{ id, kind, name?, members, lastMessage, unreadCount }
-//  kind: "direct" | "group"
+{ id, kind, name?, admin?, members, lastMessage, unreadCount }
+//  kind: "direct" | "group"; a group also has its name and its admin's userId, and lists its members in the order they joined
 //  members: [{ userId, username, deliveredUpTo, readUpTo, joinedAfter?, gone? }]   (positions, or null)
 //           your own entry holds your true positions; everyone else's hold what they let be known —
 //           the same thing, except that an invisible member's stand still until they are visible again
-//  lastMessage: { id, from, fromName, preview, timestamp } | null
-//  unreadCount: messages from others after your read position, at most 99
+//  lastMessage: { id, from, fromName, preview, timestamp, kind?, data? } | null
+//           null also when the last message is from before you joined; kind and data only when it is not text
+//  unreadCount: messages from others after your read position, at most 99 (system messages are not counted)
 ```
 
 `timestamp` is milliseconds since the Unix epoch. The same message has the same `id` and `timestamp` in the live `message` event, in the sender's acknowledgement, and in `history`. A member marked `gone` no longer exists: the conversation is kept for the other person, who can read it but not add to it.
@@ -479,13 +501,13 @@ The shapes used above:
 
 ### Limits
 
-The server is meant to be reachable by anyone, so each socket is rate-limited (the server's own acknowledgement wait for a delivery is 10 seconds): 10 messages per 10 seconds, 10 history requests per 10 seconds, 30 read reports per 10 seconds, 10 status changes and 30 idle reports per 10 seconds, 5 logins per 10 seconds, and 5 requests per 10 seconds for anything that checks a password. A request over the limit is refused with `Too many requests, slow down` and has no other effect. A single socket payload may not exceed 10 kB; a connection that sends more is closed.
+The server is meant to be reachable by anyone, so each socket is rate-limited (the server's own acknowledgement wait for a delivery is 10 seconds): 10 messages per 10 seconds, 10 history requests per 10 seconds, 30 read reports per 10 seconds, 10 status changes and 30 idle reports per 10 seconds, 10 group requests per 10 seconds of which at most 5 may add members, 5 logins per 10 seconds, and 5 requests per 10 seconds for anything that checks a password. A request over the limit is refused with `Too many requests, slow down` and has no other effect. A single socket payload may not exceed 10 kB; a connection that sends more is closed.
 
 A new socket costs nothing, so what matters most is also limited per client address: 10 sign-ups and 30 new guest names an hour, and wrong passwords, recovery codes or bootstrap codes — after 5 for one name (20 in all) from an address, each further one has to wait twice as long as the last, up to 15 minutes. These counts are kept in memory and depend on `TRUSTED_PROXY_HOPS` being right for the host.
 
 ### Demo bot
 
-With `DEMO_BOT=true` the server adds a user called `demo-bot` who is always online and answers every message after a short pause, so that someone who opens the app alone has somebody to talk to. To clients it is a user like any other — it appears in the online list (with `kind: "bot"`, so the interface can label it, always `online`, with a fixed status text), and its conversation is created, stored, counted as unread and reloaded exactly as one with a person would be. It answers only in its own conversations. The name `demo-bot` is reserved whether or not the bot is switched on.
+With `DEMO_BOT=true` the server adds a user called `demo-bot` who is always online and answers every message after a short pause, so that someone who opens the app alone has somebody to talk to. To clients it is a user like any other — it appears in the online list (with `kind: "bot"`, so the interface can label it, always `online`, with a fixed status text), and its conversation is created, stored, counted as unread and reloaded exactly as one with a person would be. It can also be added to a group, where it answers only messages that mention `@demo-bot`, and is left out when working out whether everyone has received or read a message. The name `demo-bot` is reserved whether or not the bot is switched on.
 
 ### REST
 
@@ -501,14 +523,14 @@ Clients do not need `/online-users` — presence arrives over the socket, and th
 ## Known limitations
 
 - **A forgotten password and a lost recovery code cannot be recovered.** There is no email address on an account, by design.
-- **One-to-one only.** The conversation model has groups in it, but nothing creates one yet.
+- **Groups exist on the server only.** The protocol for creating and managing them is complete and tested, and the client follows a group it is told about — but it has no screens yet for creating one or managing its members.
 - **At login a user is sent their 50 most recently active conversations.** Older ones still exist and receive messages, but are not listed until something happens in them.
 - **Single instance.** The list of who is online lives in the server's memory, so the server cannot be scaled to several instances as it stands.
 - **On the live demo:** messages are deleted automatically a day after they are sent, and because the server sleeps when idle on free hosting, the first visitor after a quiet spell waits for it to wake. The client says so while it waits.
 
 ### What would come next
 
-- **Group chats, file attachments and one-to-one video calls**, in that order.
+- **The interface for group chats, then file attachments and one-to-one video calls**, in that order.
 - **Horizontal scaling**, moving presence into Redis and using Socket.IO's Redis adapter.
 - **More browsers.** The end-to-end suite runs in Chromium only; Firefox and WebKit would be a configuration change and a longer run.
 

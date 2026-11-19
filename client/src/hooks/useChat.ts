@@ -15,6 +15,7 @@ import { startingSession } from '@/lib/session'
 import { socket } from '@/lib/socket'
 import { useSocketConnected } from '@/lib/useSocketConnected'
 import type {
+  ConversationRemovedPayload,
   ConversationUpdatedPayload,
   HistoryErrorPayload,
   HistoryPayload,
@@ -81,6 +82,8 @@ export const useChat = () => {
     const onMemberLeft = (payload: UserLeftPayload) => dispatch({ type: 'memberLeft', payload })
     const onConversationUpdated = ({ conversation }: ConversationUpdatedPayload) =>
       dispatch({ type: 'conversationUpdated', conversation })
+    const onConversationRemoved = ({ id }: ConversationRemovedPayload) =>
+      dispatch({ type: 'conversationRemoved', conversationId: id })
     const onMessage = (payload: Message, ack?: () => void) => {
       dispatch({ type: 'messageReceived', payload, receivedAt: Date.now() })
       // This device has it: that is what moves the sender's tick from "sent" to "delivered".
@@ -106,6 +109,7 @@ export const useChat = () => {
       on('memberDirectory', onMemberDirectory)
       on('memberLeft', onMemberLeft)
       on('conversationUpdated', onConversationUpdated)
+      on('conversationRemoved', onConversationRemoved)
       on('message', onMessage)
       on('receipt', onReceipt)
       on('history', onHistory)

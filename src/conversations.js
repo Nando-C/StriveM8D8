@@ -11,6 +11,8 @@ const PREVIEW_LENGTH = 80
 
 const USER_ID = /^[A-Za-z0-9-]{1,64}$/
 
+export const isUserId = value => typeof value === 'string' && USER_ID.test(value)
+
 /**
  * The id of the direct conversation between two users. The same from either side, so
  * neither has to ask the server for it. The client has the same function
@@ -45,11 +47,17 @@ export const visibleTo = member => afterPosition(plainPosition(member.joinedAfte
 /** The position of a conversation's last message (stored, or as sent to a client), or null. */
 export const lastPosition = lastMessage => (lastMessage?.id ? { ts: lastMessage.timestamp, id: lastMessage.id } : null)
 
-// (Nothing is after a position; so a conversation with no last message shows none.)
-const seesLastMessage = (conversation, member) =>
-    comparePositions(lastPosition(conversation.lastMessage), plainPosition(member.joinedAfter)) > 0
+/**
+ * Whether the message at `position` came after the member joined: the same rule as
+ * `visibleTo`, for one message in hand. (Nothing is after a position, so no message — a
+ * null position — is seen by nobody.)
+ */
+export const joinedBefore = (member, position) => comparePositions(position, plainPosition(member.joinedAfter)) > 0
 
-/** How many messages from other people the member has not read, up to 100. */
+const seesLastMessage = (conversation, member) => joinedBefore(member, lastPosition(conversation.lastMessage))
+
+// How many messages from other people the member has not read, up to 100. What happened
+// to the conversation itself (someone was added, it was renamed) is not a message to read.
 const unreadCountFor = async (conversation, member) => {
     const from = laterPosition(plainPosition(member.readUpTo), plainPosition(member.joinedAfter))
     // Most conversations, most of the time, have nothing new in them — and the conversation
@@ -57,7 +65,7 @@ const unreadCountFor = async (conversation, member) => {
     // Only the ones that might have something unread cost a query.
     if (comparePositions(lastPosition(conversation.lastMessage), from) <= 0) return 0
     const count = await Message.countDocuments(
-        { conversationKey: conversation._id, from: { $ne: member.userId }, ...afterPosition(from) },
+        { conversationKey: conversation._id, from: { $ne: member.userId }, kind: { $ne: 'system' }, ...afterPosition(from) },
         { limit: MAX_UNREAD_SHOWN + 1 },
     )
     return Math.min(count, MAX_UNREAD_SHOWN)
@@ -95,6 +103,8 @@ export const conversationView = (conversation, userId, unreadCount = 0) => {
         id: conversation._id,
         kind: conversation.kind,
         ...(conversation.name ? { name: conversation.name } : {}),
+        // Groups: the one member who may rename it and remove people.
+        ...(conversation.kind === 'group' ? { admin: conversation.admin ?? null } : {}),
         members: conversation.members.map(member => ({
             userId: member.userId,
             username: member.username,
@@ -109,6 +119,7 @@ export const conversationView = (conversation, userId, unreadCount = 0) => {
                 fromName: conversation.lastMessage.fromName,
                 preview: conversation.lastMessage.preview,
                 timestamp: conversation.lastMessage.timestamp,
+                ...(conversation.lastMessage.kind ? { kind: conversation.lastMessage.kind, data: conversation.lastMessage.data } : {}),
             }
             : null,
         unreadCount,

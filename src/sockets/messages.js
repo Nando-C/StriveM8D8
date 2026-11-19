@@ -1,7 +1,7 @@
-import { BOT, BOT_REPLY_DELAY_MS, botReply } from '../bot.js'
+import { BOT, BOT_REPLY_DELAY_MS, botReply, mentionsBot, withoutBotMention } from '../bot.js'
 import {
-    advancePosition, conversationViewFor, directConversationId, lastPosition, memberOf, parseDirectId, previewOf,
-    publishPositions, receiptOf, visibleTo,
+    advancePosition, conversationViewFor, directConversationId, joinedBefore, lastPosition, memberOf, parseDirectId,
+    previewOf, publishPositions, receiptOf, visibleTo,
 } from '../conversations.js'
 import { isDatabaseReady, isDuplicateKey } from '../db.js'
 import { Conversation } from '../models/conversation.js'
@@ -140,14 +140,24 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
      * Saves a message and delivers it: to every connected device of every other member,
      * and to the author's other devices. `exceptSocketId` is the connection it came from,
      * which learns the outcome through its acknowledgement instead.
+     *
+     * `content` is `{ text, clientId }`, or `{ kind: 'system', data }` for something that
+     * happened to the conversation itself; `at` gives a message the position that was
+     * decided for it beforehand. `describe` also sends every member their view of the
+     * conversation: 'after' the message (a direct chat's first), or 'before' it (a group
+     * whose members or name just changed — so nobody is sent a message of a group they
+     * have not been told they are in).
      */
-    const post = async (conversation, author, { text, clientId }, { exceptSocketId = null, created = false } = {}) => {
+    const post = async (conversation, author, content, { exceptSocketId = null, describe = null } = {}) => {
+        const { text, clientId, kind = 'text', data, at = null } = content
         const saved = await Message.create({
+            ...(at === null ? {} : { _id: at.id, createdAt: new Date(at.ts) }),
             conversationKey: conversation._id,
             from: author.userId,
             fromName: author.username,
-            kind: 'text',
+            kind,
             text,
+            data,
             clientId,
         })
         const position = positionOf(saved)
@@ -168,6 +178,8 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
                         lastMessage: {
                             id: position.id, from: author.userId, fromName: author.username,
                             preview: previewOf(text), timestamp: position.ts,
+                            // What a client words the line under the name from, when there is no text.
+                            ...(kind === 'text' ? {} : { kind, data }),
                         },
                         lastActivityAt: saved.createdAt,
                     },
@@ -184,7 +196,21 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
             console.error("failed to update a conversation after saving a message:", error.name)
         }
 
+        // Each member's view is built from the conversation as it is stored by now: the
+        // one read above predates the author's own position moving.
+        const tellEveryone = async () => {
+            try {
+                await tellMembers(await Conversation.findById(conversation._id).lean() ?? updated ?? conversation)
+            } catch (error) {
+                console.error("failed to describe a conversation:", error.name)
+            }
+        }
+        if (describe === 'before') await tellEveryone()
+
         for (const member of conversation.members) {
+            // Not for someone who joined with this very message, or after it: live or in
+            // history, a member is shown only what came after they joined.
+            if (!joinedBefore(member, position)) continue
             // The author's other devices are shown it; there is nothing to be delivered to its author.
             if (member.userId === author.userId) {
                 presence.tell([member.userId], 'message', messageView(saved, member.userId), { exceptSocketId })
@@ -197,7 +223,7 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
         // A conversation nobody has seen before is then described to each member in full
         // (who is in it, and their own unread count). It follows the message on purpose:
         // whatever a client worked out from the message alone, this replaces.
-        if (created) await tellMembers(updated ?? conversation).catch(error => console.error("failed to describe a new conversation:", error.name))
+        if (describe === 'after') await tellEveryone()
         return saved
     }
 
@@ -208,7 +234,10 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
         setTimeout(async () => {
             try {
                 if (!isDatabaseReady()) return
-                await post(conversation, { userId: BOT.id, username: BOT.username }, { text: botReply(text, turn) })
+                // As the conversation is by then: a group may have lost a member, or the bot, or be gone.
+                const current = await Conversation.findById(conversation._id).lean()
+                if (!memberOf(current, BOT.id)) return
+                await post(current, { userId: BOT.id, username: BOT.username }, { text: botReply(text, turn) })
             } catch (error) {
                 console.error("demo bot failed to reply:", error.name)
             }
@@ -253,9 +282,14 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
                     return fail('This person is no longer here')
                 }
 
-                const saved = await post(conversation, sender, { text, clientId }, { exceptSocketId: socket.id, created })
+                const saved = await post(
+                    conversation, sender, { text, clientId },
+                    { exceptSocketId: socket.id, describe: created ? 'after' : null },
+                )
                 if (memberOf(conversation, BOT.id) && settings.demoBot) {
-                    answerAsBot(conversation, sender, text)
+                    // In its own chats the bot answers everything; in a group, only what is addressed to it.
+                    if (conversation.kind === 'direct') answerAsBot(conversation, sender, text)
+                    else if (mentionsBot(text)) answerAsBot(conversation, sender, withoutBotMention(text))
                 }
                 reply({ ok: true, id: saved._id.toString(), timestamp: saved.createdAt.getTime() })
             } catch (error) {
@@ -395,5 +429,5 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
         for (const conversation of await publishPositions(userId)) tellReceipt(conversation, userId)
     }
 
-    return { registerOn, identityRemoved, listDelivered, visibleAgain }
+    return { registerOn, identityRemoved, listDelivered, visibleAgain, post, tellMembers }
 }

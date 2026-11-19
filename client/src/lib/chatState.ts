@@ -106,6 +106,8 @@ export type ChatAction =
   | { type: 'directoryReceived'; members: Member[] }
   | { type: 'memberLeft'; payload: UserLeftPayload }
   | { type: 'conversationUpdated'; conversation: ConversationSummary }
+  /** The user is no longer in this group. */
+  | { type: 'conversationRemoved'; conversationId: string }
   /** `peer` is given when the conversation is opened from the people list. */
   | { type: 'conversationSelected'; conversationId: string; peer?: Peer }
   | { type: 'conversationClosed' }
@@ -326,6 +328,17 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
     case 'conversationUpdated':
       return withSummary(state, action.conversation)
 
+    case 'conversationRemoved': {
+      const { [action.conversationId]: removed, ...threads } = state.threads
+      if (removed === undefined) return state
+      return {
+        ...state,
+        threads,
+        selected: state.selected === action.conversationId ? null : state.selected,
+        lastIncoming: state.lastIncoming?.conversationId === action.conversationId ? null : state.lastIncoming,
+      }
+    }
+
     case 'conversationSelected': {
       const { conversationId, peer } = action
       const selected = withThread(state, conversationId, thread => {
@@ -397,18 +410,19 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
       const { conversationId, id, fromName } = action.payload
       const message = fromServer(action.payload, state.userId, action.receivedAt)
       const alreadyKnown = threadOf(state, conversationId).messages.some(candidate => candidate.id === id)
+      // What happened to a group (someone was added, it was renamed) is shown in it, but
+      // is not a message to read — and the server's own word on the group came just before it.
+      const system = message.kind === 'system'
       // The user's own message, sent from another of their devices, is not news to them.
-      const counts = !message.own && !alreadyKnown
-      const next = withThread(state, conversationId, thread =>
-        withLastMessage(
-          {
-            ...thread,
-            messages: mergeConfirmed(thread.messages, [message]),
-            unread: counts && !isOnScreen(state, conversationId) ? thread.unread + 1 : thread.unread,
-          },
-          message,
-        ),
-      )
+      const counts = !message.own && !alreadyKnown && !system
+      const next = withThread(state, conversationId, thread => {
+        const received = {
+          ...thread,
+          messages: mergeConfirmed(thread.messages, [message]),
+          unread: counts && !isOnScreen(state, conversationId) ? thread.unread + 1 : thread.unread,
+        }
+        return system ? received : withLastMessage(received, message)
+      })
       return counts ? { ...next, lastIncoming: { id, fromName, conversationId } } : next
     }
 
