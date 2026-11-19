@@ -18,7 +18,8 @@ A real-time, one-to-one chat application: a Node.js + Socket.IO server with Mong
 - **Accessible and responsive.** Usable from the keyboard alone, announced to screen readers, laid out for desktop and phone, with light and dark themes and motion that is switched off when the system asks for reduced motion.
 - **Guests and accounts.** Type a name and you are in, with that name kept for your browser; or create an account with a password and use it from several devices at once — with a list of those devices, remote sign-out, and a recovery code in place of an email address.
 - **Status that means something.** Online, away (also set by itself after five minutes without activity, and only when *every* one of your devices is idle), do not disturb, and invisible — plus a line of your own that can clear itself after a while. Invisible is real: to everyone else you are indistinguishable from someone who is not connected, yet you can read and write as usual.
-- **575 automated tests**, 28 of them driving real browsers against the built app, run on every push by GitHub Actions on two Node.js versions.
+- **Group chats.** Up to twenty people, made in two clicks. Each message says who wrote it, the ticks say when *everyone* has it — press them to see who has seen it — and membership is handled the way people expect: anyone can add or leave, the creator can rename and remove, someone added later sees the conversation from that point on, and someone removed loses it at once.
+- **605 automated tests**, 30 of them driving real browsers against the built app, run on every push by GitHub Actions on two Node.js versions.
 
 ## Tech stack
 
@@ -103,7 +104,7 @@ test/                       Server integration tests (real socket clients, in-me
 client/                     CLIENT
 └── src/
     ├── App.tsx             Entry screen or chat shell
-    ├── components/         EntryScreen, account/ (menu and dialogs), Sidebar, MessageList, MessageComposer, ConnectionBanner, …
+    ├── components/         EntryScreen, account/ (menu and dialogs), groups/ (new group, details, people picker), Sidebar, MessageList, MessageComposer, ConnectionBanner, …
     │   └── ui/             shadcn/ui components (source files, see below)
     ├── hooks/useChat.ts    Connects the chat to the socket: presence, messages, read reports
     ├── hooks/useSessionLogin.ts  Who this tab is: logging in, back in after a reconnect, and out
@@ -159,7 +160,7 @@ Three suites, each testing what the others cannot.
 
 | | Server | Client |
 |---|---|---|
-| Tests | 336, in 18 files | 211, in 13 files |
+| Tests | 336, in 18 files | 239, in 13 files |
 | Approach | Real Socket.IO clients against a fresh server per test, with an in-memory MongoDB | The real app rendered against a fake socket; each test plays the server |
 | Lint | oxlint | oxlint, including React hooks rules |
 | Types | — | TypeScript, checked on every build |
@@ -168,7 +169,7 @@ Three suites, each testing what the others cannot.
 - **The tests were themselves tested.** For each suite the code was broken on purpose — a check removed, a message broadcast instead of targeted, the token comparison skipped — to confirm that a test fails each time. That exercise exposed, and led to fixing, a test helper that was passing without proving anything.
 - **Server tests cover** login and username rules, guest names and their expiry, accounts (sign-up, sign-in, several devices, revoking a device, password change, recovery, deletion, turning a guest into an account), invitations and administrator names, guessing limits, that no secret reaches another client or a log, session takeover, presence, targeted delivery, every send-failure path, malformed payloads, the origin allowlist, rate limits and the payload cap, the demo bot, message expiry, history ordering and its 100-message cap, and behaviour when the database is down, has never connected, or comes back.
 - **Client tests cover** logging in and being refused, the people list through arrivals, reconnects and departures, exactly-once merging of live messages and history, unread counts, both kinds of acknowledgement, lost acknowledgements, the three ways in and which of them a deployment offers, sign-in and sign-up with the recovery code shown once, a forgotten password, the account menu (devices, password change, invitations, signing out, deletion, a guest becoming an account), re-login with the name's reservation or the device session, the stored session, waiting for a server that is not ready, being signed out by the server, and being signed in from another tab. Elements are found by role and label, the way assistive technology finds them.
-- **End-to-end tests** (`e2e/`, Playwright with Chromium) start the whole thing the way it is deployed — an in-memory MongoDB, the real server, and the client built for production and served from its own origin — and drive two or three browsers at once. They cover:
+- **End-to-end tests** (`e2e/`, Playwright with Chromium) start the whole thing the way it is deployed — an in-memory MongoDB, the real server, and the client built for production and served from its own origin — and drive two to four browsers at once. They cover:
   - a guest name being refused from another browser and kept for its own;
   - two tabs as two people;
   - someone leaving and vanishing from the list promptly;
@@ -180,6 +181,7 @@ Three suites, each testing what the others cannot.
   - paging back through more than a hundred messages without losing your place;
   - accounts on two browsers with remote sign-out, recovery and deletion;
   - a guest becoming an account;
+  - a group of four: made, talked in, joined later (and seeing nothing earlier), renamed, someone removed, the admin leaving and the next taking over;
   - phone-sized screens.
 
   A second, smaller run uses the private-deployment settings: no guest path, sign-up refused without an invitation, the owner's bootstrap link, an invitation link that works exactly once, and writing to a member who is offline. The suite is run twice in a row before it is trusted, and has no retries: a test that passes on the second attempt is a flaky test.
@@ -523,14 +525,14 @@ Clients do not need `/online-users` — presence arrives over the socket, and th
 ## Known limitations
 
 - **A forgotten password and a lost recovery code cannot be recovered.** There is no email address on an account, by design.
-- **Groups exist on the server only.** The protocol for creating and managing them is complete and tested, and the client follows a group it is told about — but it has no screens yet for creating one or managing its members.
+- **A group has one admin and no roles beyond that**, and its messages cannot be edited or deleted. The demo bot answers in a group only when mentioned.
 - **At login a user is sent their 50 most recently active conversations.** Older ones still exist and receive messages, but are not listed until something happens in them.
 - **Single instance.** The list of who is online lives in the server's memory, so the server cannot be scaled to several instances as it stands.
 - **On the live demo:** messages are deleted automatically a day after they are sent, and because the server sleeps when idle on free hosting, the first visitor after a quiet spell waits for it to wake. The client says so while it waits.
 
 ### What would come next
 
-- **The interface for group chats, then file attachments and one-to-one video calls**, in that order.
+- **File attachments, then one-to-one video calls.**
 - **Horizontal scaling**, moving presence into Redis and using Socket.IO's Redis adapter.
 - **More browsers.** The end-to-end suite runs in Chromium only; Firefox and WebKit would be a configuration change and a longer run.
 

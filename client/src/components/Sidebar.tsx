@@ -1,8 +1,10 @@
 import type { ReactNode } from 'react'
-import { EyeOff } from 'lucide-react'
+import { EyeOff, UsersRound } from 'lucide-react'
 import { AnimatePresence, motion, useIsPresent } from 'motion/react'
 import { AccountMenu, type AccountMenuProps } from '@/components/account/AccountMenu'
+import { GroupAvatar } from '@/components/groups/GroupAvatar'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { UserAvatar } from '@/components/UserAvatar'
 import { unreadLabel, type ChatEntry, type PersonEntry } from '@/lib/chatSelectors'
@@ -26,6 +28,8 @@ interface SidebarProps {
   selectedUserId: string | null
   onSelectChat: (conversationId: string) => void
   onSelectPerson: (person: PersonEntry) => void
+  /** Opens the dialog that makes a group. */
+  onNewGroup: () => void
   className?: string
 }
 
@@ -102,6 +106,7 @@ export function Sidebar({
   selectedUserId,
   onSelectChat,
   onSelectPerson,
+  onNewGroup,
   className,
 }: SidebarProps) {
   const peopleLabel = listsEveryone ? 'People' : 'People online'
@@ -112,7 +117,15 @@ export function Sidebar({
   return (
     <aside className={cn('flex min-h-0 flex-col border-r bg-sidebar text-sidebar-foreground', className)}>
       <div className="border-b p-2">
-        <AccountMenu username={username} {...account} />
+        <div className="flex items-center gap-1">
+          <div className="min-w-0 flex-1">
+            <AccountMenu username={username} {...account} />
+          </div>
+          <Button variant="ghost" size="icon-lg" onClick={onNewGroup} disabled={!account.online}>
+            <UsersRound aria-hidden="true" />
+            <span className="sr-only">New group</span>
+          </Button>
+        </div>
         {account.ownStatus?.status === 'invisible' && (
           // Quiet, but always there: it is easy to forget, and others think you are away.
           <p role="status" className="flex items-center gap-2 px-2 pt-1 pb-1 text-xs text-muted-foreground">
@@ -141,7 +154,11 @@ export function Sidebar({
                       >
                         <SelectionHighlight current={current} />
                         {/* The line below is the last message, so here the mark is also put into words. */}
-                        <UserAvatar username={chat.title} presence={chat.presence ?? undefined} labelled className="size-8" />
+                        {chat.memberNames === null ? (
+                          <UserAvatar username={chat.title} presence={chat.presence ?? undefined} labelled className="size-8" />
+                        ) : (
+                          <GroupAvatar names={chat.memberNames} className="size-8" />
+                        )}
                         <span className="flex min-w-0 flex-1 flex-col">
                           <span className={cn('truncate', chat.unread > 0 && 'font-semibold')}>{chat.title}</span>
                           <span className="truncate text-xs font-normal text-muted-foreground">
@@ -151,7 +168,7 @@ export function Sidebar({
                               chat.presence === null ? '' : presenceLine(undefined, chat.presence, chat.statusText)
                             ) : (
                               <>
-                                {chat.previewOwn && 'You: '}
+                                {chat.previewOwn ? 'You: ' : chat.previewFrom !== null && `${chat.previewFrom}: `}
                                 {chat.preview}
                               </>
                             )}

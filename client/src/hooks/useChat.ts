@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useState } from 'react'
 import { useSessionLogin } from '@/hooks/useSessionLogin'
 import {
-  chatList, openConversation, peopleList, selectedThread, totalUnread, unreadLabel,
+  chatList, groupCandidates, openConversation, peopleList, selectedThread, totalUnread, unreadLabel,
 } from '@/lib/chatSelectors'
 import { chatReducer, initialChatState } from '@/lib/chatState'
 import { directConversationId } from '@/lib/conversationId'
@@ -245,6 +245,10 @@ export const useChat = () => {
     () => peopleList({ directory, onlineUsers, userId, username }),
     [directory, onlineUsers, userId, username],
   )
+  const candidates = useMemo(
+    () => groupCandidates({ directory, onlineUsers, userId, username, threads }),
+    [directory, onlineUsers, userId, username, threads],
+  )
   // The other person does not have to be online: the message waits for them.
   const canSend = connected && state.phase === 'loggedIn' && open !== null && open.counterpart?.gone !== true
 
@@ -301,6 +305,8 @@ export const useChat = () => {
     loginError: state.loginError,
     chats,
     people,
+    /** Everyone who could be put in a group. */
+    candidates,
     /** Whether the people list covers every account, or only who is connected. */
     listsEveryone: state.directory !== null,
     selected: state.selected,

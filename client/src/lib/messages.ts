@@ -16,6 +16,8 @@ export interface LocalMessage {
   fromName: string
   kind: MessageKind
   text: string
+  /** What a system message says happened (see lib/groupEvents.ts). */
+  data?: unknown
   timestamp: number
   /** Sent by the logged-in user (from this device or another). */
   own: boolean
@@ -54,6 +56,7 @@ export const fromServer = (message: Message, ownUserId: string, arrivedAt: numbe
     fromName: message.fromName,
     kind: message.kind,
     text: message.text ?? '',
+    ...(message.data === undefined ? {} : { data: message.data }),
     timestamp: message.timestamp,
     own,
     status: 'sent',
