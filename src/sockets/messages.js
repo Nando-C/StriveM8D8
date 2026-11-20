@@ -52,8 +52,11 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
 
     /** Tells the other members, on every device they have connected, where `userId` now stands. */
     const tellReceipt = (conversation, userId) => {
-        const others = conversation.members.map(member => member.userId).filter(memberId => memberId !== userId)
-        presence.tell(others, 'receipt', receiptOf(conversation, userId))
+        for (const other of conversation.members) {
+            if (other.userId === userId) continue
+            const receipt = receiptOf(conversation, userId, other)
+            if (receipt) presence.tell([other.userId], 'receipt', receipt)
+        }
     }
 
     /**
@@ -196,18 +199,37 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
             console.error("failed to update a conversation after saving a message:", error.name)
         }
 
-        // Each member's view is built from the conversation as it is stored by now: the
-        // one read above predates the author's own position moving.
+        // Who is in the conversation is read again each time it matters. `conversation` is
+        // as the caller found it, several round trips ago: someone may have been taken out
+        // since, and must be sent nothing more. (It also predates the author's own
+        // position moving, which each member's view shows.)
+        const asStored = async () => {
+            try {
+                return await Conversation.findById(conversation._id).lean()
+            } catch (error) {
+                console.error("failed to read a conversation again:", error.name)
+                return updated ?? conversation
+            }
+        }
         const tellEveryone = async () => {
             try {
-                await tellMembers(await Conversation.findById(conversation._id).lean() ?? updated ?? conversation)
+                const current = await asStored()
+                if (current) await tellMembers(current)
             } catch (error) {
                 console.error("failed to describe a conversation:", error.name)
             }
         }
         if (describe === 'before') await tellEveryone()
 
-        for (const member of conversation.members) {
+        const current = await asStored()
+        if (current === null) {
+            // The conversation was deleted meanwhile (the last person left a group): its
+            // messages went with it, and this one must not be left behind.
+            await Message.deleteOne({ _id: saved._id })
+                .catch(error => console.error("failed to remove a message of a deleted conversation:", error.name))
+            return saved
+        }
+        for (const member of current.members) {
             // Not for someone who joined with this very message, or after it: live or in
             // history, a member is shown only what came after they joined.
             if (!joinedBefore(member, position)) continue

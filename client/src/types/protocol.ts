@@ -255,6 +255,8 @@ export interface LoggedInPayload {
   onlineUsers: PublicUser[]
   /** This user's conversations, most recently active first (at most 50). */
   conversations: ConversationSummary[]
+  /** Every group this user is in, listed above or not. (Absent from a server that predates groups.) */
+  groupIds?: string[]
   /** Only where the deployment lists every account, and only for accounts: all of them. */
   members?: Member[]
 }

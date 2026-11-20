@@ -77,8 +77,13 @@ const otherNames = (state: Pick<ChatState, 'userId'>, thread: Thread): string[] 
   return (others.length > 0 ? others : members).map(member => member.username)
 }
 
-const activeAt = (thread: Thread) =>
-  Math.max(thread.summary?.lastMessage?.timestamp ?? 0, thread.messages.at(-1)?.timestamp ?? 0)
+// (Someone just added to a group is shown no message of it yet: for them it begins when they joined.)
+const activeAt = (state: Pick<ChatState, 'userId'>, thread: Thread) =>
+  Math.max(
+    thread.summary?.lastMessage?.timestamp ?? 0,
+    thread.messages.at(-1)?.timestamp ?? 0,
+    thread.summary?.members.find(member => member.userId === state.userId)?.joinedAfter?.ts ?? 0,
+  )
 
 /** The user's conversations, most recently active first. One that holds nothing yet is not listed. */
 export const chatList = (state: Pick<ChatState, 'threads' | 'onlineUsers' | 'userId'>): ChatEntry[] => {
@@ -107,7 +112,7 @@ export const chatList = (state: Pick<ChatState, 'threads' | 'onlineUsers' | 'use
         previewFrom: group && !system && !previewOwn ? ((showLocal ? local.fromName : last?.fromName) ?? null) : null,
         memberNames: group ? otherNames(state, thread) : null,
         unread: thread.unread,
-        activeAt: activeAt(thread),
+        activeAt: activeAt(state, thread),
       }
     })
     .sort((a, b) => b.activeAt - a.activeAt || a.title.localeCompare(b.title))

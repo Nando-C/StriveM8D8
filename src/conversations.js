@@ -71,25 +71,39 @@ const unreadCountFor = async (conversation, member) => {
     return Math.min(count, MAX_UNREAD_SHOWN)
 }
 
+// A position names a message — its id and when it was sent. Somebody who joined later is
+// not told of one from before they joined: to them it is "nothing yet".
+const sinceJoining = (viewer, position) => {
+    const plain = plainPosition(position)
+    return viewer && plain && joinedBefore(viewer, plain) ? plain : null
+}
+
 /**
- * A member's positions as `viewerId` is told them: their own true ones for themself, and
+ * A member's positions as `viewer` is told them: their own true ones for themself, and
  * for anyone else only what has been published. An invisible member's reading must not
  * show — not live, and not in what a reload fetches either.
  */
-const positionsShownTo = (member, viewerId) => {
-    const source = member.userId === viewerId ? member : member.published
-    return { deliveredUpTo: plainPosition(source?.deliveredUpTo), readUpTo: plainPosition(source?.readUpTo) }
+const positionsShownTo = (member, viewer) => {
+    if (member.userId === viewer?.userId) {
+        return { deliveredUpTo: plainPosition(member.deliveredUpTo), readUpTo: plainPosition(member.readUpTo) }
+    }
+    return {
+        deliveredUpTo: sinceJoining(viewer, member.published?.deliveredUpTo),
+        readUpTo: sinceJoining(viewer, member.published?.readUpTo),
+    }
 }
 
-/** What other members are told when one member's positions move: only ever the published ones. */
-export const receiptOf = (conversation, userId) => {
-    const member = memberOf(conversation, userId)
-    return {
-        conversationId: conversation._id,
-        userId,
-        deliveredUpTo: plainPosition(member?.published?.deliveredUpTo),
-        readUpTo: plainPosition(member?.published?.readUpTo),
-    }
+/**
+ * What another member (`viewer`) is told when one member's positions move: only ever the
+ * published ones, and nothing from before the viewer joined — null when that leaves
+ * nothing to tell.
+ */
+export const receiptOf = (conversation, userId, viewer) => {
+    const published = memberOf(conversation, userId)?.published
+    const deliveredUpTo = sinceJoining(viewer, published?.deliveredUpTo)
+    const readUpTo = sinceJoining(viewer, published?.readUpTo)
+    if (deliveredUpTo === null && readUpTo === null) return null
+    return { conversationId: conversation._id, userId, deliveredUpTo, readUpTo }
 }
 
 /**
@@ -108,8 +122,10 @@ export const conversationView = (conversation, userId, unreadCount = 0) => {
         members: conversation.members.map(member => ({
             userId: member.userId,
             username: member.username,
-            ...(member.joinedAfter?.id ? { joinedAfter: plainPosition(member.joinedAfter) } : {}),
-            ...positionsShownTo(member, userId),
+            // (When somebody else joined is itself a position: not one from before the viewer's time.)
+            ...(member.joinedAfter?.id && (member.userId === userId || sinceJoining(viewer, member.joinedAfter))
+                ? { joinedAfter: plainPosition(member.joinedAfter) } : {}),
+            ...positionsShownTo(member, viewer),
             ...(member.gone ? { gone: true } : {}),
         })),
         lastMessage: viewer && seesLastMessage(conversation, viewer)
@@ -125,6 +141,10 @@ export const conversationView = (conversation, userId, unreadCount = 0) => {
         unreadCount,
     }
 }
+
+/** The id of every group the user is in — all of them, unlike the list of conversations. */
+export const groupIdsOf = async userId =>
+    (await Conversation.find({ kind: 'group', 'members.userId': userId }, { _id: 1 }).lean()).map(group => group._id)
 
 /** The view of one conversation for one member, with its unread count looked up. */
 export const conversationViewFor = async (conversation, userId) => {

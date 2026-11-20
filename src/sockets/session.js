@@ -4,7 +4,7 @@ import {
     fingerprint, isSecret, newRecoveryCode, newSecret, normaliseRecoveryCode, sameString,
 } from '../auth/secrets.js'
 import { BOT } from '../bot.js'
-import { conversationsFor } from '../conversations.js'
+import { conversationsFor, groupIdsOf } from '../conversations.js'
 import { addressOfSocket } from '../clientAddress.js'
 import { isDatabaseReady, isDuplicateKey } from '../db.js'
 import { Identity, usernameKeyOf } from '../models/identity.js'
@@ -157,10 +157,10 @@ export const createSessionHandlers = ({
     // `onConfirmed`, if given, is called once the client has acknowledged the event — or
     // with an error if it has not within the time allowed.
     const sendLoggedIn = async (socket, user, sessionToken, extra = {}, { undoOnFailure = true, onConfirmed = null } = {}) => {
-        let conversations, members
+        let conversations, members, groupIds
         try {
-            ;[conversations, members] = await Promise.all([
-                conversationsFor(user.userId), seesDirectory(user) ? directory() : undefined,
+            ;[conversations, members, groupIds] = await Promise.all([
+                conversationsFor(user.userId), seesDirectory(user) ? directory() : undefined, groupIdsOf(user.userId),
             ])
         } catch (error) {
             if (undoOnFailure) presence.detach(socket.id)
@@ -179,6 +179,9 @@ export const createSessionHandlers = ({
             // Everyone who can be seen. (Not this user, if they are invisible.)
             onlineUsers: presence.getOnlineUsers(),
             conversations,
+            // Every group they are in: a client that was away while they were taken out of
+            // one finds out by its absence here.
+            groupIds,
             ...(members === undefined ? {} : { members }),
             ...extra,
         }, ...(onConfirmed === null ? [] : [onConfirmed]))

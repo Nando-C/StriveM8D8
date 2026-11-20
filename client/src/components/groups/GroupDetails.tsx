@@ -33,26 +33,30 @@ type View = 'details' | 'add' | 'leave'
  */
 export function GroupDetails({ conversationId, group, candidates, online, onClose }: GroupDetailsProps) {
   const [view, setView] = useState<View>('details')
-  const [name, setName] = useState(group.name)
-  const { chosen, toggle } = useChosen()
+  // What the admin has typed, if anything: until then the field shows the name as it is
+  // now, including a change made meanwhile from elsewhere.
+  const [draft, setDraft] = useState<string | null>(null)
+  const name = draft ?? group.name
   const { busy, error, run } = useRequest()
 
   const admin = group.members.find(member => member.admin)
   const memberIds = new Set(group.members.map(member => member.userId))
   const addable = candidates.filter(candidate => !memberIds.has(candidate.userId))
+  const { chosen, toggle, clear } = useChosen(addable)
   const room = MAX_GROUP_MEMBERS - group.members.length
-  const newName = name.trim()
+  // (As the server will store it.)
+  const newName = name.trim().replace(/\s+/g, ' ')
   const blocked = busy || !online
 
   const rename = (event: FormEvent) => {
     event.preventDefault()
     if (newName === '' || newName === group.name) return
-    void run(() => ask('renameGroup', { conversationId, name: newName }), () => setName(newName))
+    void run(() => ask('renameGroup', { conversationId, name: newName }), () => setDraft(null))
   }
   const remove = (userId: string) => void run(() => ask('removeMember', { conversationId, userId }), () => {})
   const add = () =>
     void run(() => ask('addMembers', { conversationId, userIds: [...chosen] }), () => {
-      for (const userId of chosen) toggle(userId)
+      clear()
       setView('details')
     })
   // (The conversation closes by itself when the server says the user is out of it.)
@@ -68,7 +72,7 @@ export function GroupDetails({ conversationId, group, candidates, online, onClos
             {group.isAdmin ? ' · You are the admin' : admin === undefined ? '' : ` · ${admin.username} is the admin`}
           </SheetDescription>
         </SheetHeader>
-        <ScrollArea className="min-h-0 flex-1">
+        <ScrollArea className="min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:!block">
           <div className="flex flex-col gap-5 px-4 pb-4">
             {!online && <p className="text-sm text-muted-foreground">Changes can be made again once you are connected.</p>}
             <FormError message={error} />
@@ -111,7 +115,7 @@ export function GroupDetails({ conversationId, group, candidates, online, onClos
                         autoComplete="off"
                         maxLength={MAX_GROUP_NAME_LENGTH}
                         value={name}
-                        onChange={event => setName(event.target.value)}
+                        onChange={event => setDraft(event.target.value)}
                         disabled={busy}
                       />
                     </div>

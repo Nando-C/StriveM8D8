@@ -55,7 +55,8 @@ function GroupTicks({ tick, receipts }: { tick: Tick; receipts: Receipts }) {
     <Popover>
       <PopoverTrigger
         aria-label={`${TICK_LABELS[tick]} — show who has seen this`}
-        className="flex items-center rounded-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+        // (Padded out to something a finger can hit, without moving the icon.)
+        className="-m-1.5 flex items-center rounded-sm p-1.5 outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
       >
         <Ticks tick={tick} />
       </PopoverTrigger>
@@ -202,7 +203,9 @@ const Message = memo(function Message({ message, tick, animateIn, sender, seenBy
         <AnimatePresence mode="wait" initial={false}>
           <motion.span
             // Keyed by what it says, so each step — sending, sent, delivered, seen — fades in.
-            key={message.status === 'sent' ? tick : message.status}
+            // (Not in a group, where the ticks are a button that may be open or focused:
+            // there the tick changes in place.)
+            key={message.status !== 'sent' ? message.status : seenBy === undefined ? tick : 'ticks'}
             variants={fade}
             initial="hidden"
             animate="visible"

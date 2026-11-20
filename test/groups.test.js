@@ -543,3 +543,125 @@ describe('the bot in a group', () => {
         expect(heard[2].text).toContain('“tell me something”')
     })
 })
+
+describe('someone who joined later', () => {
+    it('is told nothing of where the others stood before that — not in the group as shown, not in receipts', async () => {
+        const [alice, bob, carol] = await people('alice', 'bob', 'carol')
+        const id = await group(alice, [bob])
+        const reached = nextEvent(alice.socket, 'receipt')
+        const before = await send(alice.socket, messageTo(id, 'before carol'))
+        await reached
+
+        const forCarol = nextEvent(carol.socket, 'conversationUpdated')
+        expect((await ask(alice.socket, 'addMembers', { conversationId: id, userIds: ids(carol) })).ok).toBe(true)
+        const view = (await forCarol).conversation
+        const joinedAfter = memberIn(view, carol).joinedAfter
+        // Positions name messages: an earlier one would say that it exists, and when it was sent.
+        for (const earlier of [alice, bob]) {
+            const shown = memberIn(view, earlier)
+            for (const position of [shown.deliveredUpTo, shown.readUpTo]) {
+                expect(position === null || position.id === joinedAfter.id).toBe(true)
+            }
+        }
+        expect(JSON.stringify(view)).not.toContain(before.id)
+
+        // Bob reads the earlier message: news for alice, nothing carol may hear of.
+        const receipts = record(carol.socket, 'receipt')
+        const forAlice = record(alice.socket, 'receipt')
+        await markRead(bob.socket, id, positionOf(before))
+        await settle()
+        expect(forAlice).toContainEqual(expect.objectContaining({ userId: bob.userId, readUpTo: positionOf(before) }))
+        expect(JSON.stringify(receipts)).not.toContain(before.id)
+
+        // What happens from then on, she is told like anyone else.
+        const after = await send(alice.socket, messageTo(id, 'welcome'))
+        await markRead(bob.socket, id, positionOf(after))
+        await settle()
+        expect(receipts.at(-1)).toMatchObject({ userId: bob.userId, readUpTo: positionOf(after) })
+    })
+})
+
+// Each of these is two requests whose database operations interleave. They are run a few
+// times over, since any one run may happen to fall the harmless way round.
+describe('at the same moment', () => {
+    const ROUNDS = 5
+
+    /** Everything a socket is sent about one group, in order. */
+    const heardOf = (socket, id) => {
+        const heard = []
+        socket.onAny((event, payload) => {
+            const about = payload?.conversationId ?? payload?.conversation?.id ?? payload?.id
+            if (about === id) heard.push(event)
+        })
+        return heard
+    }
+    const nothingAfterRemoval = heard => {
+        expect(heard).toContain('conversationRemoved')
+        expect(heard.slice(heard.indexOf('conversationRemoved') + 1)).toEqual([])
+    }
+
+    it('a message sent as someone is removed does not reach them afterwards', async () => {
+        const [alice, bob, carol] = await people('alice', 'bob', 'carol')
+        for (let round = 0; round < ROUNDS; round += 1) {
+            const id = await group(alice, [bob, carol], `Round ${round}`)
+            await settle(50)
+            const heard = heardOf(carol.socket, id)
+            const [sent, removed] = await Promise.all([
+                send(bob.socket, messageTo(id, 'not for carol any more')),
+                ask(alice.socket, 'removeMember', { conversationId: id, userId: carol.userId }),
+            ])
+            expect([sent.ok, removed.ok]).toEqual([true, true])
+            await settle()
+            nothingAfterRemoval(heard)
+            carol.socket.offAny()
+        }
+    })
+
+    it('the admin and the next in line leave: whoever stays is the admin', async () => {
+        const [alice, bob, carol] = await people('alice', 'bob', 'carol')
+        for (let round = 0; round < ROUNDS; round += 1) {
+            const id = await group(alice, [bob, carol], `Round ${round}`)
+            await Promise.all([
+                ask(alice.socket, 'leaveGroup', { conversationId: id }),
+                ask(bob.socket, 'leaveGroup', { conversationId: id }),
+            ])
+            await settle()
+            const left = await stored(id)
+            expect(ids(...left.members)).toEqual(ids(carol))
+            expect(left.admin).toBe(carol.userId)
+        }
+    })
+
+    it('the last two people leave: nothing of the group remains, and neither is shown it again', async () => {
+        const [alice, bob] = await people('alice', 'bob')
+        for (let round = 0; round < ROUNDS; round += 1) {
+            const id = await group(alice, [bob], `Round ${round}`)
+            await settle(50)
+            const heard = [heardOf(alice.socket, id), heardOf(bob.socket, id)]
+            await Promise.all([
+                ask(alice.socket, 'leaveGroup', { conversationId: id }),
+                ask(bob.socket, 'leaveGroup', { conversationId: id }),
+            ])
+            await settle()
+            expect(await stored(id)).toBeNull()
+            expect(await Message.countDocuments({ conversationKey: id })).toBe(0)
+            heard.forEach(nothingAfterRemoval)
+            alice.socket.offAny()
+            bob.socket.offAny()
+        }
+    })
+
+    it('one person cannot create more groups than allowed by asking for several at once', async () => {
+        const [alice, bob] = await people('alice', 'bob')
+        await Conversation.insertMany(Array.from({ length: MAX_GROUPS_CREATED - 1 }, () =>
+            storedGroup([who(alice)], { admin: alice.userId, createdBy: alice.userId })))
+
+        const answers = await Promise.all(Array.from({ length: 8 }, (_, index) =>
+            ask(alice.socket, 'createGroup', { name: `Group ${index}`, userIds: ids(bob) })))
+        await settle()
+        expect(answers.filter(answer => answer.ok).length).toBeLessThanOrEqual(1)
+        expect(await Conversation.countDocuments({ createdBy: alice.userId })).toBeLessThanOrEqual(MAX_GROUPS_CREATED)
+        // A group that was turned down is not left in anyone's list.
+        expect(await Conversation.countDocuments({ 'members.userId': bob.userId })).toBe(answers.filter(answer => answer.ok).length)
+    })
+})

@@ -2,8 +2,8 @@ import { act, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { describeGroupEvent } from '@/lib/groupEvents'
 import {
-  chatButton, conversation, fakeSocket, idOf, listedChats, loginAs, message, messageBox, messageRow, messages,
-  renderApp, serverSays, user,
+  chatButton, connectAs, conversation, disconnect, fakeSocket, idOf, listedChats, loggedInPayload, loginAs, message,
+  messageBox, messageRow, messages, renderApp, serverSays, user,
 } from '@/test/harness'
 import type { ConversationSummary, GroupEvent, Message } from '@/types/protocol'
 
@@ -445,5 +445,180 @@ describe('a group’s details', () => {
     await openDetails('bob')
     serverSays('conversationRemoved', { id: TRIP })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+})
+
+describe('a group that changed while this client could not be told', () => {
+  const openThenComeBack = async (conversations: ConversationSummary[], groupIds: string[] | undefined) => {
+    const events = await withTheGroup()
+    await events.click(chatButton('Trip to Rome'))
+    serverSays('history', { conversationId: TRIP, messages: [said(2, 'carol', 'secret plans'), said(3, 'bob', 'shall we book?')], hasMore: false })
+    disconnect()
+    connectAs('socket-2')
+    serverSays('loggedin', {
+      ...loggedInPayload('alice', [user('bob')], 'token-2', undefined, conversations),
+      ...(groupIds === undefined ? {} : { groupIds }),
+    })
+  }
+
+  it('is gone after reconnecting, if the user was taken out of it meanwhile', async () => {
+    await openThenComeBack([], [])
+    await waitFor(() => expect(screen.queryByRole('log')).not.toBeInTheDocument())
+    expect(screen.queryByRole('navigation', { name: 'Chats' })).not.toBeInTheDocument()
+    expect(screen.queryByText('secret plans')).not.toBeInTheDocument()
+  })
+
+  it('is kept if the user is still in it, whether or not the server listed it this time', async () => {
+    // (The list at login is the fifty most recent conversations; the ids are of every group.)
+    await openThenComeBack([], [TRIP])
+    expect(listedChats()).toEqual(['Trip to Rome'])
+    expect(messages()).toEqual(['secret plans', 'shall we book?'])
+  })
+
+  it('is kept by a server that does not say which groups there are', async () => {
+    await openThenComeBack([], undefined)
+    expect(listedChats()).toEqual(['Trip to Rome'])
+  })
+
+  it('shows nothing from before, if the user was taken out and added again', async () => {
+    const again = trip()
+    await openThenComeBack([{
+      ...again,
+      members: again.members.map(member => (member.username === 'alice' ? { ...member, joinedAfter: position(9) } : member)),
+    }], [TRIP])
+    await waitFor(() => expect(screen.queryByText('secret plans')).not.toBeInTheDocument())
+    expect(screen.queryByText('shall we book?')).not.toBeInTheDocument()
+    expect(listedChats()).toEqual(['Trip to Rome'])
+  })
+
+  it('does not come back when an answer about it arrives after the user is out of it', async () => {
+    const events = await withTheGroup()
+    await events.click(chatButton('Trip to Rome'))
+    serverSays('conversationRemoved', { id: TRIP })
+    // The page of history that was asked for on opening it.
+    serverSays('history', { conversationId: TRIP, messages: [said(2, 'carol', 'secret plans')], hasMore: false })
+    serverSays('historyError', { conversationId: TRIP, message: 'Unknown conversation' })
+
+    await waitFor(() => expect(screen.queryByRole('navigation', { name: 'Chats' })).not.toBeInTheDocument())
+    expect(screen.queryByText('secret plans')).not.toBeInTheDocument()
+  })
+
+  it('is listed where it belongs for someone just added, who is shown no message of it yet', async () => {
+    renderApp()
+    const old = message('bob', 'alice', 'hi', { id: mid(1), timestamp: 1000 })
+    await loginAs('alice', [user('bob')], [conversation('alice', 'bob', { last: old })])
+    const added = trip()
+    serverSays('conversationUpdated', {
+      conversation: {
+        ...added,
+        members: added.members.map(member => (member.username === 'alice' ? { ...member, joinedAfter: position(9) } : member)),
+      },
+    })
+    expect(listedChats()).toEqual(['Trip to Rome', 'bob'])
+  })
+})
+
+describe('the group screens, while things change under them', () => {
+  const openNewGroup = async () => {
+    renderApp()
+    const events = await loginAs('alice', [user('bob'), user('carol')])
+    await events.click(screen.getByRole('button', { name: 'New group' }))
+    return { events, dialog: await screen.findByRole('dialog', { name: 'New group' }) }
+  }
+  const openDetails = async () => {
+    renderApp()
+    const events = await loginAs('alice', [user('bob'), user('dave'), user('erin')], [{ ...trip(), admin: idOf('alice') }])
+    await events.click(chatButton('Trip to Rome'))
+    await events.click(screen.getByRole('button', { name: 'Group details' }))
+    return { events, panel: await screen.findByRole('dialog', { name: 'Trip to Rome' }) }
+  }
+
+  it('searching for someone with Enter does not create the group', async () => {
+    const { events, dialog } = await openNewGroup()
+    await events.type(within(dialog).getByLabelText('Group name'), 'Trip')
+    await events.click(within(dialog).getByRole('checkbox', { name: /bob/ }))
+    await events.type(within(dialog).getByLabelText('People'), 'car{Enter}')
+
+    expect(fakeSocket.sent('createGroup')).toHaveLength(0)
+    expect(screen.getByRole('dialog', { name: 'New group' })).toBeInTheDocument()
+    // From the name field it still does.
+    await events.type(within(dialog).getByLabelText('Group name'), '{Enter}')
+    expect(fakeSocket.sent('createGroup')).toHaveLength(1)
+  })
+
+  it('someone ticked who can no longer be picked is not sent along unseen', async () => {
+    const { events, dialog } = await openNewGroup()
+    await events.type(within(dialog).getByLabelText('Group name'), 'Trip')
+    await events.click(within(dialog).getByRole('checkbox', { name: /bob/ }))
+    await events.click(within(dialog).getByRole('checkbox', { name: /carol/ }))
+    expect(dialog).toHaveTextContent('2 chosen')
+
+    serverSays('userLeft', { userId: idOf('bob') })
+    expect(within(dialog).queryByRole('checkbox', { name: /bob/ })).not.toBeInTheDocument()
+    expect(dialog).toHaveTextContent('1 chosen')
+    await events.click(within(dialog).getByRole('button', { name: 'Create group' }))
+    expect(fakeSocket.last('createGroup').payload).toEqual({ name: 'Trip', userIds: [idOf('carol')] })
+  })
+
+  it('someone ticked to be added, and added by somebody else first, is not asked for again', async () => {
+    const { events, panel } = await openDetails()
+    await events.click(within(panel).getByRole('button', { name: 'Add people' }))
+    await events.click(within(panel).getByRole('checkbox', { name: /dave/ }))
+    expect(within(panel).getByRole('button', { name: 'Add to group' })).toBeEnabled()
+
+    const bigger = trip()
+    serverSays('conversationUpdated', {
+      conversation: { ...bigger, admin: idOf('alice'), members: [...bigger.members, { ...named('dave'), deliveredUpTo: null, readUpTo: null }] },
+    })
+    expect(within(panel).queryByRole('checkbox', { name: /dave/ })).not.toBeInTheDocument()
+    expect(panel).toHaveTextContent('0 chosen')
+    expect(within(panel).getByRole('button', { name: 'Add to group' })).toBeDisabled()
+  })
+
+  it('the name field follows a rename made elsewhere, until the admin types in it', async () => {
+    const { events, panel } = await openDetails()
+    const field = within(panel).getByLabelText('Group name')
+    const rename = within(panel).getByRole('button', { name: 'Rename' })
+
+    serverSays('conversationUpdated', { conversation: { ...trip(), admin: idOf('alice'), name: 'Rome 2027' } })
+    expect(field).toHaveValue('Rome 2027')
+    // One click must not put the old name back.
+    expect(rename).toBeDisabled()
+
+    // Spaces the server would fold away are no change either.
+    await events.clear(field)
+    await events.type(field, ' Rome   2027 ')
+    expect(rename).toBeDisabled()
+    await events.type(field, 'x')
+    expect(rename).toBeEnabled()
+    // What is being typed is not overwritten.
+    serverSays('conversationUpdated', { conversation: { ...trip(), admin: idOf('alice'), name: 'Rome 2028' } })
+    expect(field).toHaveValue(' Rome   2027 x')
+  })
+
+  it('the list of who has seen a message stays open, and focused, as more people see it', async () => {
+    renderApp()
+    const mine = said(5, 'alice', 'I am in')
+    const events = await loginAs('alice', [user('bob')], [{
+      ...trip({ last: mine }),
+      members: [
+        { ...named('bob'), deliveredUpTo: null, readUpTo: null },
+        { ...named('alice'), deliveredUpTo: null, readUpTo: position(5) },
+      ],
+    }])
+    await events.click(chatButton('Trip to Rome'))
+    serverSays('history', { conversationId: TRIP, messages: [mine], hasMore: false })
+    await events.click(within(messageRow('I am in')).getByRole('button', { name: /^Sent/ }))
+    const popover = await screen.findByRole('dialog')
+    expect(popover).toHaveTextContent('Not delivered to anyone yet.')
+
+    // The tick itself moves on: sent, then delivered, then seen.
+    serverSays('receipt', { conversationId: TRIP, userId: idOf('bob'), deliveredUpTo: position(5), readUpTo: null })
+    await waitFor(() => expect(popover).toHaveTextContent('Delivered tobob'))
+    serverSays('receipt', { conversationId: TRIP, userId: idOf('bob'), deliveredUpTo: position(5), readUpTo: position(5) })
+    await waitFor(() => expect(popover).toHaveTextContent('Seen bybob'))
+    expect(popover).toBeInTheDocument()
+    expect(popover.contains(document.activeElement)).toBe(true)
+    expect(await within(messageRow('I am in')).findByRole('button', { name: /^Seen/, hidden: true })).toBeInTheDocument()
   })
 })

@@ -122,18 +122,34 @@ export const createGroupHandlers = ({ presence, settings, rateLimiter, messages 
         if (!without) return false
         presence.tell([leaver.userId], 'conversationRemoved', { id })
 
-        const people = without.members.filter(member => member.userId !== BOT.id)
-        if (people.length === 0) {
-            await Promise.all([Conversation.deleteOne({ _id: id }), Message.deleteMany({ conversationKey: id })])
-            return true
-        }
-        const current = without.admin === leaver.userId
-            ? await Conversation.findOneAndUpdate(
-                { _id: id, admin: leaver.userId }, { $set: { admin: people[0].userId } }, { returnDocument: 'after' },
-            ).lean() ?? without
-            : without
-        await record(current, author, data)
+        const current = await settle(without)
+        if (current) await record(current, author, data)
         return true
+    }
+
+    // After someone has gone: deletes the group if no people are left, and otherwise makes
+    // sure its admin is one of its members. Resolves to the group as it then is, or null
+    // if it is gone. Several people can go at the same moment, each seeing the group as it
+    // was after their own departure — so the new admin is appointed only if still a
+    // member, in the same operation, and otherwise chosen again from the group as stored.
+    const settle = async group => {
+        for (let attempt = 0; group && attempt < MAX_GROUP_MEMBERS; attempt++) {
+            const people = group.members.filter(member => member.userId !== BOT.id)
+            if (people.length === 0) {
+                // The group first, then its messages: a line being written into it at this
+                // moment is either caught by the second, or finds no group and removes itself.
+                await Conversation.deleteOne({ _id: group._id })
+                await Message.deleteMany({ conversationKey: group._id })
+                return null
+            }
+            if (people.some(member => member.userId === group.admin)) return group
+            group = await Conversation.findOneAndUpdate(
+                { _id: group._id, admin: group.admin, 'members.userId': people[0].userId },
+                { $set: { admin: people[0].userId } },
+                { returnDocument: 'after' },
+            ).lean() ?? await Conversation.findById(group._id).lean()
+        }
+        return group
     }
 
     // ---------- the events
@@ -158,6 +174,12 @@ export const createGroupHandlers = ({ presence, settings, rateLimiter, messages 
             members: [actor, ...others],
         })
         const conversation = created.toObject()
+        // Counted again now that it exists: of several made at the same moment, each was
+        // counted before the others existed. (Then all of them may be turned down.)
+        if (await Conversation.countDocuments({ kind: 'group', createdBy: user.userId }) > MAX_GROUPS_CREATED) {
+            await Conversation.deleteOne({ _id: conversation._id })
+            refuse(TOO_MANY_CREATED)
+        }
         await record(conversation, actor, { event: 'created', actor, name, targets: others })
         return { conversationId: conversation._id }
     }

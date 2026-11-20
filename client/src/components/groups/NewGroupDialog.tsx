@@ -18,7 +18,7 @@ interface NewGroupDialogProps {
 
 export function NewGroupDialog({ candidates, onCreated, onClose }: NewGroupDialogProps) {
   const [name, setName] = useState('')
-  const { chosen, toggle } = useChosen()
+  const { chosen, toggle } = useChosen(candidates)
   const { busy, error, run } = useRequest()
   const ready = name.trim() !== '' && chosen.size > 0
 

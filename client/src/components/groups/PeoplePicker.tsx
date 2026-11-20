@@ -38,8 +38,10 @@ export function PeoplePicker({ id, candidates, selected, onToggle, max, disabled
         autoComplete="off"
         value={search}
         onChange={event => setSearch(event.target.value)}
+        // Enter here is part of searching: it must not submit a form the picker is in.
+        onKeyDown={event => event.key === 'Enter' && event.preventDefault()}
       />
-      <ScrollArea className="max-h-56 rounded-lg border [&_[data-slot=scroll-area-viewport]]:max-h-56">
+      <ScrollArea className="max-h-56 rounded-lg border [&_[data-slot=scroll-area-viewport]]:max-h-56 [&_[data-slot=scroll-area-viewport]>div]:!block">
         {matching.length === 0 ? (
           <p className="p-3 text-sm text-muted-foreground">Nobody matches “{search.trim()}”.</p>
         ) : (
