@@ -17,7 +17,13 @@ process.env.FRONTEND_URL = 'http://localhost:5173'
 // Each test file gets its own database inside the shared in-memory MongoDB.
 export const testDatabaseUri = () => `${inject('mongoUri').replace(/\/?$/, '/')}test-${randomUUID()}`
 
-export const connectTestDatabase = () => connectDB(testDatabaseUri())
+// Every collection's indexes are built here, before any test starts the clock: a new
+// database builds them on first use, and with every test file doing so at once in the one
+// MongoDB, the first login of a file could take longer than a request is given to answer.
+export const connectTestDatabase = async () => {
+    await connectDB(testDatabaseUri())
+    await Promise.all(Object.values(mongoose.models).map(model => model.init()))
+}
 
 export const disconnectTestDatabase = async () => {
     if (mongoose.connection.readyState === 1) {

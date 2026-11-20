@@ -261,10 +261,10 @@ export const createSessionHandlers = ({
         // be none the wiser. Until the browser confirms, the reservation is provisional:
         // if the connection closes first, or no confirmation comes in time, it is undone.
         let settled = false
-        const giveUp = () => {
+        const giveUp = async () => {
             if (settled) return
             settled = true
-            void undoReservation()
+            await undoReservation()
         }
         socket.once('disconnect', giveUp)
         let delivered = false
@@ -280,7 +280,8 @@ export const createSessionHandlers = ({
                 },
             })
         } finally {
-            if (!delivered) giveUp()
+            // (Waited for: the client is told to try again only once the name is free again.)
+            if (!delivered) await giveUp()
         }
     }
 
