@@ -299,7 +299,7 @@ describe('making a group', () => {
     await events.type(within(dialog).getByLabelText('Group name'), 'Trip')
     await events.click(within(dialog).getByRole('checkbox', { name: /bob/ }))
     await events.click(create(dialog))
-    answer('createGroup', { ok: false, message: 'You have created 20 groups — leave or empty one first' })
+    answer('createGroup', { ok: false, message: 'You have created 20 groups — leave one first' })
 
     expect(await within(dialog).findByRole('alert')).toHaveTextContent('You have created 20 groups')
     expect(create(dialog)).toBeEnabled()

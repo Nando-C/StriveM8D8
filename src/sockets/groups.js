@@ -21,7 +21,7 @@ import { NOT_LOGGED_IN, Refusal, SLOW_DOWN, isObject, refuse, withAck } from './
 
 export const MAX_GROUP_NAME_LENGTH = 50
 export const MAX_GROUP_MEMBERS = 20
-/** Groups one user may have created that still exist. */
+/** Groups one user may have created and still be in. */
 export const MAX_GROUPS_CREATED = 20
 /** Groups one user may be in. */
 export const MAX_GROUP_MEMBERSHIPS = 200
@@ -44,7 +44,7 @@ const UNKNOWN_USER = 'Unknown user'
 const GROUP_FULL = `A group can have at most ${MAX_GROUP_MEMBERS} members`
 const ADMIN_ONLY = 'Only the group admin can do that'
 const CHANGED = 'The group changed in the meantime — try again'
-const TOO_MANY_CREATED = `You have created ${MAX_GROUPS_CREATED} groups — leave or empty one first`
+const TOO_MANY_CREATED = `You have created ${MAX_GROUPS_CREATED} groups — leave one first`
 const TOO_MANY_OWN = 'You are in too many groups'
 const TOO_MANY_THEIRS = 'One of these people is in too many groups'
 
@@ -83,6 +83,23 @@ export const createGroupHandlers = ({ presence, settings, rateLimiter, messages 
         const counts = await Promise.all(userIds.filter(userId => userId !== BOT.id).map(userId =>
             Conversation.countDocuments({ kind: 'group', 'members.userId': userId }, { limit: MAX_GROUP_MEMBERSHIPS })))
         if (counts.some(count => count >= MAX_GROUP_MEMBERSHIPS)) refuse(message)
+    }
+
+    // Groups the user made and is still in: leaving one gives the place back. (One they
+    // left lives on with the people still in it, and counts against nobody.)
+    const groupsMadeBy = userId =>
+        Conversation.countDocuments({ kind: 'group', createdBy: userId, 'members.userId': userId })
+
+    // Someone can stop existing (an account deleted, a guest name lapsed) between being
+    // found to exist and being put in a group — after their groups were gone through, so
+    // nothing would ever take them out of this one. Whoever is not there any more leaves.
+    const withoutTheVanished = async (conversation, people) => {
+        const userIds = people.map(person => person.userId).filter(userId => userId !== BOT.id)
+        const existing = new Set((await Identity.find({ userId: { $in: userIds } }, { userId: 1 }).lean()).map(identity => identity.userId))
+        for (const person of people) {
+            if (person.userId === BOT.id || existing.has(person.userId)) continue
+            await depart(conversation, person, person, { event: 'left', actor: person })
+        }
     }
 
     /** The group a request names, if the asker is in it. One answer for "no such group" and "not yours". */
@@ -162,8 +179,7 @@ export const createGroupHandlers = ({ presence, settings, rateLimiter, messages 
 
         // Counted against whoever makes the group, never against the people put in it:
         // nobody can use up someone else's allowance.
-        const made = await Conversation.countDocuments({ kind: 'group', createdBy: user.userId }, { limit: MAX_GROUPS_CREATED })
-        if (made >= MAX_GROUPS_CREATED) refuse(TOO_MANY_CREATED)
+        if (await groupsMadeBy(user.userId) >= MAX_GROUPS_CREATED) refuse(TOO_MANY_CREATED)
         await requireRoomFor([user.userId], TOO_MANY_OWN)
         await requireRoomFor(others.map(other => other.userId), TOO_MANY_THEIRS)
 
@@ -176,11 +192,12 @@ export const createGroupHandlers = ({ presence, settings, rateLimiter, messages 
         const conversation = created.toObject()
         // Counted again now that it exists: of several made at the same moment, each was
         // counted before the others existed. (Then all of them may be turned down.)
-        if (await Conversation.countDocuments({ kind: 'group', createdBy: user.userId }) > MAX_GROUPS_CREATED) {
+        if (await groupsMadeBy(user.userId) > MAX_GROUPS_CREATED) {
             await Conversation.deleteOne({ _id: conversation._id })
             refuse(TOO_MANY_CREATED)
         }
         await record(conversation, actor, { event: 'created', actor, name, targets: others })
+        await withoutTheVanished(conversation, others)
         return { conversationId: conversation._id }
     }
 
@@ -212,6 +229,7 @@ export const createGroupHandlers = ({ presence, settings, rateLimiter, messages 
         ).lean()
         if (!updated) refuse(CHANGED)
         await record(updated, named(user), { event: 'added', actor: named(user), targets: added }, at)
+        await withoutTheVanished(updated, added)
         return {}
     }
 

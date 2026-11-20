@@ -1,6 +1,6 @@
 import { EMPTY_THREAD, type ChatState, type Thread } from '@/lib/chatState'
 import { describeGroupEvent } from '@/lib/groupEvents'
-import { oneLine } from '@/lib/messages'
+import { oneLine, type LocalMessage } from '@/lib/messages'
 import type { Presence } from '@/lib/status'
 import type { Member, PublicUser, UserKind } from '@/types/protocol'
 
@@ -77,11 +77,15 @@ const otherNames = (state: Pick<ChatState, 'userId'>, thread: Thread): string[] 
   return (others.length > 0 ? others : members).map(member => member.username)
 }
 
+// A message that failed to send stays at the end of the conversation, to be tried again —
+// but it was never said, and is not what the conversation last held.
+const sentOrGoing = (message: LocalMessage) => message.status !== 'failed'
+
 // (Someone just added to a group is shown no message of it yet: for them it begins when they joined.)
 const activeAt = (state: Pick<ChatState, 'userId'>, thread: Thread) =>
   Math.max(
     thread.summary?.lastMessage?.timestamp ?? 0,
-    thread.messages.at(-1)?.timestamp ?? 0,
+    thread.messages.findLast(sentOrGoing)?.timestamp ?? 0,
     thread.summary?.members.find(member => member.userId === state.userId)?.joinedAfter?.ts ?? 0,
   )
 
@@ -92,7 +96,7 @@ export const chatList = (state: Pick<ChatState, 'threads' | 'onlineUsers' | 'use
     .filter(([, thread]) => thread.summary !== null || thread.messages.length > 0)
     .map(([id, thread]) => {
       const counterpart = counterpartOf(state, thread)
-      const local = thread.messages.at(-1)
+      const local = thread.messages.findLast(sentOrGoing)
       const last = thread.summary?.lastMessage ?? null
       // An unconfirmed message of the user's own is newer than anything the server has said.
       const showLocal = local !== undefined && (last === null || local.id === null || local.timestamp >= last.timestamp)

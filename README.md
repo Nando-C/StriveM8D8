@@ -19,7 +19,7 @@ A real-time, one-to-one chat application: a Node.js + Socket.IO server with Mong
 - **Guests and accounts.** Type a name and you are in, with that name kept for your browser; or create an account with a password and use it from several devices at once — with a list of those devices, remote sign-out, and a recovery code in place of an email address.
 - **Status that means something.** Online, away (also set by itself after five minutes without activity, and only when *every* one of your devices is idle), do not disturb, and invisible — plus a line of your own that can clear itself after a while. Invisible is real: to everyone else you are indistinguishable from someone who is not connected, yet you can read and write as usual.
 - **Group chats.** Up to twenty people, made in two clicks. Each message says who wrote it, the ticks say when *everyone* has it — press them to see who has seen it — and membership is handled the way people expect: anyone can add or leave, the creator can rename and remove, someone added later sees the conversation from that point on, and someone removed loses it at once.
-- **621 automated tests**, 30 of them driving real browsers against the built app, run on every push by GitHub Actions on two Node.js versions.
+- **626 automated tests**, 30 of them driving real browsers against the built app, run on every push by GitHub Actions on two Node.js versions.
 
 ## Tech stack
 
@@ -160,7 +160,7 @@ Three suites, each testing what the others cannot.
 
 | | Server | Client |
 |---|---|---|
-| Tests | 341, in 18 files | 250, in 13 files |
+| Tests | 345, in 18 files | 251, in 13 files |
 | Approach | Real Socket.IO clients against a fresh server per test, with an in-memory MongoDB | The real app rendered against a fake socket; each test plays the server |
 | Lint | oxlint | oxlint, including React hooks rules |
 | Types | — | TypeScript, checked on every build |
@@ -418,10 +418,10 @@ A group is a conversation with a name, an admin and up to 20 members; its id is 
 - **Someone added later sees only what comes after they were added** — in history, in the unread count and in the list preview. Someone removed, or who left, loses access at once: they are sent `conversationRemoved`, and from then on the group is an `Unknown conversation` to them. Added again, they start afresh from that moment.
 - Every change is recorded in the group as a message of `kind: "system"`, with no text and a `data` object for the client to put into words: `{ event: "created", actor, name, targets }`, `{ event: "added", actor, targets }`, `{ event: "removed", actor, target }`, `{ event: "left", actor }`, `{ event: "renamed", actor, name }` — `actor`, `target` and each of `targets` being `{ userId, username }` as they were at the time. These are not counted as unread.
 - When membership or the name changes, each member is first sent `conversationUpdated` and then the system `message`. The exception is the people an `added` line is about: it is where they begin, so they are sent the group but not the line.
-- Limits: 20 groups created per user (counted while the group exists, and only against its creator), 200 groups per member — adding someone who is already in 200 is refused to whoever tries. The 20 holds exactly; the 200 is checked just before the change, so requests made at the same instant can pass it by a few.
+- Limits: 20 groups created per user (counted while its creator is still in it, and only against its creator: leaving one gives the place back), 200 groups per member — adding someone who is already in 200 is refused to whoever tries. The 20 holds exactly; the 200 is checked just before the change, so requests made at the same instant can pass it by a few.
 - A person whose identity is removed (an account deleted, a guest name that lapsed) leaves every group they were in, as if they had left themselves.
 
-Failure messages: `A group name must be 1 to 50 characters`, `Choose at least one other person`, `Unknown user`, `A group can have at most 20 members`, `Already in this group`, `Not in this group`, `Only the group admin can do that`, `To go yourself, leave the group`, `You have created 20 groups — leave or empty one first`, `You are in too many groups`, `One of these people is in too many groups`, `The group changed in the meantime — try again`, `Unknown conversation`, `Not logged in`, `Could not be saved`, `Too many requests, slow down`.
+Failure messages: `A group name must be 1 to 50 characters`, `Choose at least one other person`, `Unknown user`, `A group can have at most 20 members`, `Already in this group`, `Not in this group`, `Only the group admin can do that`, `To go yourself, leave the group`, `You have created 20 groups — leave one first`, `You are in too many groups`, `One of these people is in too many groups`, `The group changed in the meantime — try again`, `Unknown conversation`, `Not logged in`, `Could not be saved`, `Too many requests, slow down`.
 
 `sendmessage` is always answered through its acknowledgement callback:
 

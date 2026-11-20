@@ -235,7 +235,12 @@ export const createSessionHandlers = ({
             // carry on as a user who is about to stop existing.
             const attached = presence.bySocket.get(socket.id)
             if (attached?.userId === identity.userId) presence.revoke(attached, { reason: 'The login could not be completed — try again' })
-            await Identity.deleteOne({ userId: identity.userId, kind: 'guest', secretHash: identity.secretHash }).catch(() => {})
+            // Announced for a moment, they may already have been written to or put in a
+            // group: they go the way anyone who stops existing goes.
+            await removeIdentity(identity.userId, {
+                reason: 'The login could not be completed — try again',
+                onlyIf: { kind: 'guest', secretHash: identity.secretHash },
+            }).catch(error => console.error("failed to undo a reservation:", error?.name))
         }
         if (!socket.connected) {
             await undoReservation()

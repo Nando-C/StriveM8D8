@@ -189,8 +189,9 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
                 },
                 { returnDocument: 'after' },
             ).lean()
-            // Whoever wrote a message has read everything up to it.
-            await advance(conversation._id, author.userId, 'readUpTo', position)
+            // Whoever wrote a message has read everything up to it. (Not so for a change
+            // to a group: it can be made from the details panel without looking at a thing.)
+            if (kind !== 'system') await advance(conversation._id, author.userId, 'readUpTo', position)
             // The bot has no device to acknowledge anything: what is said to it has reached it.
             if (settings.demoBot && author.userId !== BOT.id && memberOf(conversation, BOT.id) && conversation.kind === 'direct') {
                 await advance(conversation._id, BOT.id, 'deliveredUpTo', position)

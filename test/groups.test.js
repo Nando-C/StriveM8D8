@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BOT } from '../src/bot.js'
 import { Conversation } from '../src/models/conversation.js'
 import { Identity } from '../src/models/identity.js'
@@ -7,7 +7,7 @@ import { Message } from '../src/models/message.js'
 import { MAX_GROUPS_CREATED, MAX_GROUP_MEMBERSHIPS, MAX_GROUP_MEMBERS } from '../src/sockets/groups.js'
 import {
     PASSWORD, acknowledging, ask, connectTestDatabase, disconnectTestDatabase, getHistory, join, login, markRead,
-    messageTo, nextEvent, positionOf, record, register, send, settle, startApp,
+    dm, messageTo, nextEvent, positionOf, record, register, send, settle, startApp,
 } from './helpers.js'
 
 let app
@@ -130,9 +130,23 @@ describe('creating a group', () => {
             storedGroup([who(alice), who(bob)], { createdBy: alice.userId, admin: alice.userId })))
 
         expect(await ask(alice.socket, 'createGroup', { name: 'One more', userIds: ids(bob) }))
-            .toEqual({ ok: false, message: 'You have created 20 groups — leave or empty one first' })
+            .toEqual({ ok: false, message: 'You have created 20 groups — leave one first' })
         // Bob is in all twenty and has made none: his allowance is untouched.
         expect((await ask(bob.socket, 'createGroup', { name: 'Mine', userIds: ids(alice) })).ok).toBe(true)
+    })
+
+    it('counts only the groups its creator is still in: leaving one makes room for another', async () => {
+        const [alice, bob] = await people('alice', 'bob')
+        const made = Array.from({ length: MAX_GROUPS_CREATED }, () =>
+            storedGroup([who(alice), who(bob)], { createdBy: alice.userId, admin: alice.userId }))
+        await Conversation.insertMany(made)
+        expect((await ask(alice.socket, 'createGroup', { name: 'One more', userIds: ids(bob) })).ok).toBe(false)
+
+        expect(await ask(alice.socket, 'leaveGroup', { conversationId: made[0]._id })).toEqual({ ok: true })
+        // The group she left goes on without her, and is nobody's to answer for.
+        expect(await stored(made[0]._id)).toMatchObject({ admin: bob.userId })
+        expect((await ask(alice.socket, 'createGroup', { name: 'One more', userIds: ids(bob) })).ok).toBe(true)
+        expect((await ask(alice.socket, 'createGroup', { name: 'And another', userIds: ids(bob) })).ok).toBe(false)
     })
 
     it('cannot put anyone in more groups than one person may be in', async () => {
@@ -663,5 +677,77 @@ describe('at the same moment', () => {
         expect(await Conversation.countDocuments({ createdBy: alice.userId })).toBeLessThanOrEqual(MAX_GROUPS_CREATED)
         // A group that was turned down is not left in anyone's list.
         expect(await Conversation.countDocuments({ 'members.userId': bob.userId })).toBe(answers.filter(answer => answer.ok).length)
+    })
+})
+
+describe('changing a group', () => {
+    it('does not count as having read what was said in it', async () => {
+        const [alice, bob] = await people('alice', 'bob')
+        const id = await group(alice, [bob])
+        const arrived = nextEvent(alice.socket, 'message')
+        const unread = await send(bob.socket, messageTo(id, 'has alice seen this?'))
+        await arrived
+        await settle()
+
+        // Alice renames the group and adds someone, from the details panel, without reading.
+        const [carol] = await people('carol')
+        const receipts = record(bob.socket, 'receipt')
+        expect(await ask(alice.socket, 'renameGroup', { conversationId: id, name: 'Renamed' })).toEqual({ ok: true })
+        expect(await ask(alice.socket, 'addMembers', { conversationId: id, userIds: ids(carol) })).toEqual({ ok: true })
+        await settle()
+
+        const hers = memberIn(await stored(id), alice)
+        expect(hers.readUpTo?.id).not.toBe(unread.id)
+        expect(hers.readUpTo === null || hers.readUpTo === undefined || hers.readUpTo.ts < unread.timestamp || hers.readUpTo.id < unread.id).toBe(true)
+        expect(receipts.filter(receipt => receipt.userId === alice.userId && receipt.readUpTo?.id >= unread.id)).toEqual([])
+
+        // At her next login it is still waiting for her.
+        alice.socket.close()
+        const session = await login(await app.client(), { username: 'alice', reservation: alice.reservation })
+        expect(session.conversations.find(conversation => conversation.id === id).unreadCount).toBe(1)
+    })
+})
+
+describe('someone who stops existing at an awkward moment', () => {
+    it('is not left in a group they were being added to just then', async () => {
+        const [alice, bob, carol] = await people('alice', 'bob', 'carol')
+        const id = await group(alice, [bob])
+
+        // Carol's name lapses after she was found to exist, and before she is put in.
+        const update = Conversation.findOneAndUpdate.bind(Conversation)
+        const spy = vi.spyOn(Conversation, 'findOneAndUpdate').mockImplementationOnce((...args) => {
+            const query = update(...args)
+            const exec = query.exec.bind(query)
+            query.exec = async () => {
+                await Identity.deleteOne({ userId: carol.userId })
+                return exec()
+            }
+            return query
+        })
+        try {
+            await ask(alice.socket, 'addMembers', { conversationId: id, userIds: ids(carol) })
+        } finally {
+            spy.mockRestore()
+        }
+        await settle()
+        expect(ids(...(await stored(id)).members)).toEqual(ids(alice, bob))
+    })
+
+    it('leaves the groups they were put in, if their first login is never confirmed', async () => {
+        await app.stop()
+        app = await startApp({ reservationAckTimeoutMs: 300 })
+        const [alice, bob] = await people('alice', 'bob')
+
+        // A new guest who is announced, and whose browser never confirms the login.
+        const announced = nextEvent(alice.socket, 'newLogin')
+        const socket = await app.client()
+        socket.emit('login', { username: 'carol' })
+        const carol = await announced
+        const id = await group(alice, [bob, { userId: carol.userId }])
+        await send(alice.socket, messageTo(dm(alice, carol), 'hello carol'))
+
+        await expect.poll(() => Identity.countDocuments({ userId: carol.userId })).toBe(0)
+        await expect.poll(async () => ids(...(await stored(id)).members)).toEqual(ids(alice, bob))
+        await expect.poll(async () => memberIn(await stored(dm(alice, carol)), carol).gone).toBe(true)
     })
 })

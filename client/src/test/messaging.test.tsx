@@ -1,7 +1,7 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import {
-  disconnect, dm, fakeSocket, idOf, loginAs, message, messageBox, messageRow, messages, personButton, renderApp,
+  chatButton, disconnect, dm, fakeSocket, idOf, loginAs, message, messageBox, messageRow, messages, personButton, renderApp,
   sendButton, serverSays, user,
 } from '@/test/harness'
 import type { Message, SendMessagePayload } from '@/types/protocol'
@@ -150,6 +150,19 @@ describe('sending messages', () => {
 
     expect(await screen.findByText(/Not sent — Message could not be saved/)).toBeInTheDocument()
     expect(messageRow('hello bob')).not.toHaveTextContent('Sent')
+  })
+
+  it('does not show a message that failed as the last thing said, once more has been said', async () => {
+    const events = await openChatWithBob()
+    await events.type(messageBox('bob'), 'never sent{Enter}')
+    act(() => fakeSocket.last('sendmessage').ack!({ ok: false, message: 'Too many requests, slow down' }))
+    await screen.findByText(/Not sent/)
+
+    serverSays('message', message('bob', 'alice', 'did you say something?'))
+    expect(chatButton('bob')).toHaveTextContent('did you say something?')
+    expect(chatButton('bob')).not.toHaveTextContent('never sent')
+    // It is still there to be tried again.
+    expect(messageRow('never sent')).toHaveTextContent('Not sent')
   })
 
   it('can send while the other person is offline: the message waits for them', async () => {
