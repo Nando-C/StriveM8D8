@@ -19,6 +19,15 @@ const TIPS = [
     "Anyone can join this demo, so please don't share anything private. To keep your name, create an account from the menu on your name.",
 ]
 
+// "@demo-bot", as a word of its own, in any case.
+const MENTION = new RegExp(`(^|[^A-Za-z0-9_@-])@${BOT.username}(?![A-Za-z0-9_-])`, 'gi')
+
+/** Whether a message in a group is addressed to the bot. */
+export const mentionsBot = text => String(text).search(MENTION) !== -1
+
+/** The message without the bot's name in it: what it is answering. */
+export const withoutBotMention = text => String(text).replace(MENTION, '$1 ').trim()
+
 /**
  * The bot's answer to `text`. Pure: the same text and turn always give the same reply.
  * `turn` is how many replies this user has already had, and walks through the tips.
@@ -27,7 +36,8 @@ export const botReply = (text, turn = 0) => {
     const tip = TIPS[Math.abs(Math.trunc(turn)) % TIPS.length]
     const said = String(text).trim().replace(/\s+/g, ' ')
 
-    if (/^(hi|hello|hey|hola|yo)\b/i.test(said)) {
+    // (Nothing but the bot's name, in a group, is a greeting too.)
+    if (said === '' || /^(hi|hello|hey|hola|yo)\b/i.test(said)) {
         return `Hello! ${tip}`
     }
 

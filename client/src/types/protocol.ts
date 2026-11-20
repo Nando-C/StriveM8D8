@@ -180,6 +180,18 @@ export interface MarkReadPayload {
   upTo: Position
 }
 
+/** 1 to 50 characters; one to nineteen other people, each of whom must exist. */
+export interface CreateGroupPayload {
+  name: string
+  userIds: string[]
+}
+
+/** Any member may add people, up to twenty members in all. */
+export interface AddMembersPayload {
+  conversationId: string
+  userIds: string[]
+}
+
 // ---------- server → client
 
 export interface ConversationMember {
@@ -202,9 +214,12 @@ export interface LastMessage {
   id: string
   from: string
   fromName: string
-  /** One line, at most 80 characters. */
+  /** One line, at most 80 characters. '' for a message that is not text. */
   preview: string
   timestamp: number
+  /** Only when the last message is not text: its kind and structured content. */
+  kind?: MessageKind
+  data?: unknown
 }
 
 /** A conversation as this user is shown it. */
@@ -212,10 +227,13 @@ export interface ConversationSummary {
   id: string
   kind: 'direct' | 'group'
   name?: string
+  /** Groups: the `userId` of the member who may rename it and remove people. */
+  admin?: string | null
+  /** Groups: in the order they joined. */
   members: ConversationMember[]
   /** `null` if there is none, or none this user may see. */
   lastMessage: LastMessage | null
-  /** Messages from others after this user's read position, up to 99. */
+  /** Messages from others after this user's read position, up to 99. System messages are not counted. */
   unreadCount: number
 }
 
@@ -237,6 +255,8 @@ export interface LoggedInPayload {
   onlineUsers: PublicUser[]
   /** This user's conversations, most recently active first (at most 50). */
   conversations: ConversationSummary[]
+  /** Every group this user is in, listed above or not. (Absent from a server that predates groups.) */
+  groupIds?: string[]
   /** Only where the deployment lists every account, and only for accounts: all of them. */
   members?: Member[]
 }
@@ -262,6 +282,23 @@ export interface UserLeftPayload {
 
 export type MessageKind = 'text' | 'system' | 'call' | 'deleted'
 
+/** Someone named in a system message, as they were called then: they may be gone by now. */
+export interface NamedUser {
+  userId: string
+  username: string
+}
+
+/**
+ * The `data` of a `system` message in a group: what happened, to be put into words by
+ * the client. `actor` is who did it (and the author of the message).
+ */
+export type GroupEvent =
+  | { event: 'created'; actor: NamedUser; name: string; targets: NamedUser[] }
+  | { event: 'added'; actor: NamedUser; targets: NamedUser[] }
+  | { event: 'removed'; actor: NamedUser; target: NamedUser }
+  | { event: 'left'; actor: NamedUser }
+  | { event: 'renamed'; actor: NamedUser; name: string }
+
 /** A message, live or in history: the same shape, and the same `id`, in both. */
 export interface Message {
   id: string
@@ -273,7 +310,7 @@ export interface Message {
   kind: MessageKind
   /** `null` for kinds that carry no text. */
   text: string | null
-  /** Structured content of system and call messages. */
+  /** Structured content of system (see `GroupEvent`) and call messages. */
   data?: unknown
   timestamp: number
   /** The id this client gave the message when sending it; `null` on anyone else's. */
@@ -306,6 +343,11 @@ export interface ConversationUpdatedPayload {
   conversation: ConversationSummary
 }
 
+/** This user is no longer in that group (they left, or were removed): forget it. */
+export interface ConversationRemovedPayload {
+  id: string
+}
+
 // ---------- event maps for socket.io's typed sockets
 
 export interface ServerToClientEvents {
@@ -326,6 +368,7 @@ export interface ServerToClientEvents {
   receipt: (payload: ReceiptPayload) => void
   /** A conversation is new to this user, or something about it changed: replace it. */
   conversationUpdated: (payload: ConversationUpdatedPayload) => void
+  conversationRemoved: (payload: ConversationRemovedPayload) => void
   /** Member directory only: an account was created / removed. */
   memberJoined: (payload: Member) => void
   /** The whole directory: sent to a guest at the moment they become an account. */
@@ -344,6 +387,13 @@ export interface ClientToServerEvents {
   setIdle: (payload: { idle: boolean }, ack: (response: Ack) => void) => void
   /** "I have read this conversation up to here." */
   markRead: (payload: MarkReadPayload, ack: (response: Ack) => void) => void
+  createGroup: (payload: CreateGroupPayload, ack: (response: Ack<{ conversationId: string }>) => void) => void
+  addMembers: (payload: AddMembersPayload, ack: (response: Ack) => void) => void
+  /** The group's admin only. */
+  removeMember: (payload: { conversationId: string; userId: string }, ack: (response: Ack) => void) => void
+  leaveGroup: (payload: { conversationId: string }, ack: (response: Ack) => void) => void
+  /** The group's admin only. */
+  renameGroup: (payload: { conversationId: string; name: string }, ack: (response: Ack) => void) => void
   register: (payload: RegisterPayload, ack: (response: RegisterAck) => void) => void
   resetPassword: (payload: ResetPasswordPayload, ack: (response: ResetPasswordAck) => void) => void
   changePassword: (payload: ChangePasswordPayload, ack: (response: Ack) => void) => void

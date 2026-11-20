@@ -126,7 +126,43 @@ export const tick = (page, text) => messageRow(page, text).locator('[data-tick]'
 
 /** The open conversation. */
 export const log = page => page.getByRole('log')
-/** Every message bubble in the open conversation, in order. */
-export const bubbles = page => log(page).locator('li > p:first-of-type')
+/** Every message bubble in the open conversation, in order — and, in a group, each line about the group. */
+export const bubbles = page => log(page).locator('[data-bubble]')
+
+/** Several guests, each in their own browser, all signed in: `{ page, name }` each, in the order asked for. */
+export const guests = async (browser, ...names) => {
+    const joined = []
+    for (const name of names) {
+        const page = await openApp(browser)
+        const username = unique(name)
+        await joinAsGuest(page, username)
+        joined.push({ page, name: username })
+    }
+    for (const { page, name } of joined) await signedInAs(page, name)
+    return joined
+}
+
+/** Ticks the people named in the picker that is on screen. */
+export const choosePeople = async (scope, ...names) => {
+    for (const name of names) await scope.getByRole('checkbox', { name: new RegExp(name) }).click()
+}
+
+/** Makes a group from the sidebar; it is open when this resolves. */
+export const createGroup = async (page, name, ...memberNames) => {
+    await page.getByRole('button', { name: 'New group' }).click()
+    const dialog = page.getByRole('dialog', { name: 'New group' })
+    await dialog.getByLabel('Group name').fill(name)
+    await choosePeople(dialog, ...memberNames)
+    await dialog.getByRole('button', { name: 'Create group' }).click()
+    await expect(composer(page)).toBeVisible()
+}
+
+/** Opens the details of the group that is open, and resolves with the panel. */
+export const groupDetails = async (page, name) => {
+    await page.getByRole('button', { name: 'Group details' }).click()
+    const panel = page.getByRole('dialog', { name })
+    await expect(panel).toBeVisible()
+    return panel
+}
 /** The row (author, text, status) of the message with exactly this text. */
 export const messageRow = (page, text) => log(page).getByRole('listitem').filter({ has: page.getByText(text, { exact: true }) })

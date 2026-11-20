@@ -13,13 +13,17 @@ const conversationSchema = new mongoose.Schema({
     _id: String,
     kind: { type: String, required: true, enum: ['direct', 'group'] },
     name: String,
+    /** Groups: who made it. Counted against their allowance of groups for as long as it exists. */
     createdBy: String,
+    /** Groups: the userId of the member who may rename it and remove people. */
+    admin: String,
     members: [{
         _id: false,
         userId: { type: String, required: true },
         /** A copy, for display: the member's identity may no longer exist. */
         username: { type: String, required: true },
-        /** Groups: the member sees only what comes after this. Absent in direct chats. */
+        // Groups: the member sees only what comes after this — the position of the system
+        // message that added them. Absent in direct chats and for a group's first members.
         joinedAfter: position,
         // How far this member has received and read: the truth, which only they are told
         // (their own unread counts depend on it)…
@@ -37,11 +41,16 @@ const conversationSchema = new mongoose.Schema({
         fromName: String,
         preview: String,
         timestamp: Number,
+        /** Only for a last message that is not text: its kind and structured content. */
+        kind: String,
+        data: mongoose.Schema.Types.Mixed,
     }, { _id: false }),
     lastActivityAt: { type: Date, default: Date.now },
 })
 // "The conversations of this user, most recently active first."
 conversationSchema.index({ 'members.userId': 1, lastActivityAt: -1 })
+// "How many groups has this user created?"
+conversationSchema.index({ createdBy: 1 }, { sparse: true })
 
 export const Conversation = mongoose.model('Conversation', conversationSchema)
 

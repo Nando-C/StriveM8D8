@@ -131,7 +131,7 @@ describe('signing in', () => {
     it('logs in with the session from sign-up, as an account', async () => {
         const { socket, session } = await signUp('alice')
 
-        expect(sortedKeys(session)).toEqual(['admin', 'conversations', 'kind', 'ok', 'onlineUsers', 'ownStatus', 'sessionToken', 'userId', 'username'])
+        expect(sortedKeys(session)).toEqual(['admin', 'conversations', 'groupIds', 'kind', 'ok', 'onlineUsers', 'ownStatus', 'sessionToken', 'userId', 'username'])
         expect(session).toMatchObject({ ok: true, username: 'alice', kind: 'account', admin: false })
         expect(await onlineUsers(app)).toEqual([{ userId: session.userId, username: 'alice', kind: 'account', status: 'online', statusText: '' }])
         expect(JSON.stringify(session)).not.toContain(socket.id)

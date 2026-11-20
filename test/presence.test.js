@@ -21,7 +21,7 @@ describe('login', () => {
 
         expect(reply.ok).toBe(true)
         expect(sortedKeys(reply)).toEqual([
-            'admin', 'conversations', 'kind', 'ok', 'onlineUsers', 'ownStatus', 'reservation', 'sessionToken', 'userId', 'username',
+            'admin', 'conversations', 'groupIds', 'kind', 'ok', 'onlineUsers', 'ownStatus', 'reservation', 'sessionToken', 'userId', 'username',
         ])
         expect(reply.kind).toBe('guest')
         expect(reply.admin).toBe(false)

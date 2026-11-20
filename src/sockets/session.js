@@ -4,7 +4,7 @@ import {
     fingerprint, isSecret, newRecoveryCode, newSecret, normaliseRecoveryCode, sameString,
 } from '../auth/secrets.js'
 import { BOT } from '../bot.js'
-import { conversationsFor } from '../conversations.js'
+import { conversationsFor, groupIdsOf } from '../conversations.js'
 import { addressOfSocket } from '../clientAddress.js'
 import { isDatabaseReady, isDuplicateKey } from '../db.js'
 import { Identity, usernameKeyOf } from '../models/identity.js'
@@ -157,10 +157,10 @@ export const createSessionHandlers = ({
     // `onConfirmed`, if given, is called once the client has acknowledged the event — or
     // with an error if it has not within the time allowed.
     const sendLoggedIn = async (socket, user, sessionToken, extra = {}, { undoOnFailure = true, onConfirmed = null } = {}) => {
-        let conversations, members
+        let conversations, members, groupIds
         try {
-            ;[conversations, members] = await Promise.all([
-                conversationsFor(user.userId), seesDirectory(user) ? directory() : undefined,
+            ;[conversations, members, groupIds] = await Promise.all([
+                conversationsFor(user.userId), seesDirectory(user) ? directory() : undefined, groupIdsOf(user.userId),
             ])
         } catch (error) {
             if (undoOnFailure) presence.detach(socket.id)
@@ -179,6 +179,9 @@ export const createSessionHandlers = ({
             // Everyone who can be seen. (Not this user, if they are invisible.)
             onlineUsers: presence.getOnlineUsers(),
             conversations,
+            // Every group they are in: a client that was away while they were taken out of
+            // one finds out by its absence here.
+            groupIds,
             ...(members === undefined ? {} : { members }),
             ...extra,
         }, ...(onConfirmed === null ? [] : [onConfirmed]))
@@ -232,7 +235,12 @@ export const createSessionHandlers = ({
             // carry on as a user who is about to stop existing.
             const attached = presence.bySocket.get(socket.id)
             if (attached?.userId === identity.userId) presence.revoke(attached, { reason: 'The login could not be completed — try again' })
-            await Identity.deleteOne({ userId: identity.userId, kind: 'guest', secretHash: identity.secretHash }).catch(() => {})
+            // Announced for a moment, they may already have been written to or put in a
+            // group: they go the way anyone who stops existing goes.
+            await removeIdentity(identity.userId, {
+                reason: 'The login could not be completed — try again',
+                onlyIf: { kind: 'guest', secretHash: identity.secretHash },
+            }).catch(error => console.error("failed to undo a reservation:", error?.name))
         }
         if (!socket.connected) {
             await undoReservation()
@@ -253,10 +261,10 @@ export const createSessionHandlers = ({
         // be none the wiser. Until the browser confirms, the reservation is provisional:
         // if the connection closes first, or no confirmation comes in time, it is undone.
         let settled = false
-        const giveUp = () => {
+        const giveUp = async () => {
             if (settled) return
             settled = true
-            void undoReservation()
+            await undoReservation()
         }
         socket.once('disconnect', giveUp)
         let delivered = false
@@ -272,7 +280,8 @@ export const createSessionHandlers = ({
                 },
             })
         } finally {
-            if (!delivered) giveUp()
+            // (Waited for: the client is told to try again only once the name is free again.)
+            if (!delivered) await giveUp()
         }
     }
 

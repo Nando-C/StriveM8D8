@@ -1,13 +1,18 @@
+import { useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { ArrowLeft, MessagesSquare } from 'lucide-react'
+import { ArrowLeft, Info, MessagesSquare } from 'lucide-react'
 import { ConnectionBanner } from '@/components/ConnectionBanner'
 import { EntryScreen } from '@/components/EntryScreen'
+import { GroupAvatar } from '@/components/groups/GroupAvatar'
+import { GroupDetails } from '@/components/groups/GroupDetails'
+import { NewGroupDialog } from '@/components/groups/NewGroupDialog'
 import { MessageComposer } from '@/components/MessageComposer'
 import { MessageList } from '@/components/MessageList'
 import { Sidebar } from '@/components/Sidebar'
 import { Button } from '@/components/ui/button'
 import { UserAvatar } from '@/components/UserAvatar'
 import { useChat } from '@/hooks/useChat'
+import type { Candidate, OpenGroup } from '@/lib/chatSelectors'
 import { fade } from '@/lib/motion'
 import { useServerConfig, type ServerConfig } from '@/lib/serverConfig'
 import { KIND_LABELS, presenceLine } from '@/lib/status'
@@ -64,7 +69,31 @@ function OutdatedNotice() {
   )
 }
 
+interface GroupDetailsButtonProps {
+  conversationId: string
+  group: OpenGroup
+  candidates: Candidate[]
+  online: boolean
+}
+
+// The way into a group's details. Lives inside the open conversation, so the panel
+// closes by itself when another conversation is opened — or when this one is taken away.
+function GroupDetailsButton(props: GroupDetailsButtonProps) {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <Button variant="ghost" size="icon" className="ml-auto" onClick={() => setOpen(true)}>
+        <Info aria-hidden="true" />
+        <span className="sr-only">Group details</span>
+      </Button>
+      {open && <GroupDetails {...props} onClose={() => setOpen(false)} />}
+    </>
+  )
+}
+
 function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat>; config: ServerConfig; username: string }) {
+  const [creatingGroup, setCreatingGroup] = useState(false)
+  const online = chat.connected && chat.phase === 'loggedIn'
 
   const open = chat.open
   const blockedReason = !chat.connected
@@ -99,7 +128,7 @@ function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat
             kind: chat.kind,
             admin: chat.admin,
             config,
-            online: chat.connected && chat.phase === 'loggedIn',
+            online,
             ownStatus: chat.ownStatus,
             onSetStatus: chat.setStatus,
             onBecameAccount: chat.becomeAccount,
@@ -113,6 +142,7 @@ function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat
           selectedUserId={open?.counterpart?.userId ?? null}
           onSelectChat={chat.selectConversation}
           onSelectPerson={chat.openChatWith}
+          onNewGroup={() => setCreatingGroup(true)}
           className={cn('w-full md:w-72 md:shrink-0', open !== null && 'hidden md:flex')}
         />
         <main className={cn('min-w-0 flex-1 flex-col', open === null ? 'hidden md:flex' : 'flex')}>
@@ -153,11 +183,20 @@ function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat
                   <ArrowLeft aria-hidden="true" />
                   <span className="sr-only">Back to chats</span>
                 </Button>
-                <UserAvatar username={open.title} presence={open.presence ?? undefined} className="size-9" />
+                {open.group === null ? (
+                  <UserAvatar username={open.title} presence={open.presence ?? undefined} className="size-9" />
+                ) : (
+                  <GroupAvatar
+                    names={open.group.members.filter(member => !member.own || open.group?.members.length === 1).map(member => member.username)}
+                    className="size-9"
+                  />
+                )}
                 <div className="min-w-0">
                   <h1 className="truncate font-medium">{open.title}</h1>
-                  <p className="text-xs text-muted-foreground">
-                    {open.counterpart?.gone
+                  <p className="truncate text-xs text-muted-foreground">
+                    {open.group !== null
+                      ? `${open.group.members.length} ${open.group.members.length === 1 ? 'member' : 'members'}: ${open.group.members.map(member => (member.own ? 'you' : member.username)).join(', ')}`
+                      : open.counterpart?.gone
                       ? 'No longer here'
                       : open.presence === null
                         ? ''
@@ -170,12 +209,17 @@ function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat
                             )}
                   </p>
                 </div>
+                {open.group !== null && (
+                  <GroupDetailsButton conversationId={open.id} group={open.group} candidates={chat.candidates} online={online} />
+                )}
               </header>
               <MessageList
                 key={open.id}
                 title={open.title}
                 thread={chat.thread}
                 ownUserId={chat.userId}
+                group={open.group !== null}
+                joinedLater={open.group?.joinedLater === true}
                 onLoadEarlier={chat.loadEarlier}
                 onAtEndChange={chat.reportAtEnd}
               />
@@ -190,6 +234,13 @@ function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat
           )}
         </main>
       </div>
+      {creatingGroup && (
+        <NewGroupDialog
+          candidates={chat.candidates}
+          onCreated={chat.selectConversation}
+          onClose={() => setCreatingGroup(false)}
+        />
+      )}
     </div>
   )
 }

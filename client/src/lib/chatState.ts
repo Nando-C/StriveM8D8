@@ -106,6 +106,8 @@ export type ChatAction =
   | { type: 'directoryReceived'; members: Member[] }
   | { type: 'memberLeft'; payload: UserLeftPayload }
   | { type: 'conversationUpdated'; conversation: ConversationSummary }
+  /** The user is no longer in this group. */
+  | { type: 'conversationRemoved'; conversationId: string }
   /** `peer` is given when the conversation is opened from the people list. */
   | { type: 'conversationSelected'; conversationId: string; peer?: Peer }
   | { type: 'conversationClosed' }
@@ -162,13 +164,19 @@ const withThread = (state: ChatState, conversationId: string, update: (thread: T
   threads: { ...state.threads, [conversationId]: update(threadOf(state, conversationId)) },
 })
 
+// For something that is only ever an answer about a conversation already held (a page of
+// history, the outcome of a send). If the conversation has gone meanwhile — the user was
+// taken out of a group — the answer must not bring it back as a conversation of its own.
+const withKnownThread = (state: ChatState, conversationId: string, update: (thread: Thread) => Thread): ChatState =>
+  state.threads[conversationId] === undefined ? state : withThread(state, conversationId, update)
+
 const updateOwnMessage = (
   state: ChatState,
   conversationId: string,
   clientId: string,
   update: (message: LocalMessage) => LocalMessage,
 ): ChatState =>
-  withThread(state, conversationId, thread => ({
+  withKnownThread(state, conversationId, thread => ({
     ...thread,
     messages: thread.messages.map(message => (message.clientId === clientId ? update(message) : message)),
   }))
@@ -207,8 +215,35 @@ const withSummary = (state: ChatState, summary: ConversationSummary): ChatState 
   withThread(state, summary.id, thread => ({
     ...thread,
     summary,
+    messages: sinceJoining(thread.messages, summary.members.find(member => member.userId === state.userId)?.joinedAfter),
     unread: isOnScreen(state, summary.id) ? 0 : summary.unreadCount,
   }))
+
+// Someone taken out of a group and put back in while this client was away starts afresh:
+// what it still holds from their first time there is no longer theirs to see.
+const sinceJoining = (messages: LocalMessage[], joinedAfter: Position | null | undefined): LocalMessage[] => {
+  if (joinedAfter == null) return messages
+  const visible = (message: LocalMessage) =>
+    message.id === null || comparePositions(positionOf({ id: message.id, timestamp: message.timestamp }), joinedAfter) > 0
+  return messages.every(visible) ? messages : messages.filter(visible)
+}
+
+// Groups the server no longer counts the user in: they were taken out, or it was deleted,
+// while this client was not connected to be told.
+const withoutLostGroups = (state: ChatState, groupIds: string[] | undefined): ChatState => {
+  if (groupIds === undefined) return state
+  const still = new Set(groupIds)
+  const lost = Object.entries(state.threads)
+    .filter(([id, thread]) => thread.summary?.kind === 'group' && !still.has(id))
+    .map(([id]) => id)
+  if (lost.length === 0) return state
+  return {
+    ...state,
+    threads: Object.fromEntries(Object.entries(state.threads).filter(([id]) => !lost.includes(id))),
+    selected: state.selected !== null && lost.includes(state.selected) ? null : state.selected,
+    lastIncoming: state.lastIncoming !== null && lost.includes(state.lastIncoming.conversationId) ? null : state.lastIncoming,
+  }
+}
 
 // Keeps the list preview in step with messages this client has seen arrive or be
 // confirmed, between the server's own updates.
@@ -268,7 +303,7 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
         directory: payload.members ?? null,
       }
       // Conversations keep the messages already loaded; the server's summaries are laid over them.
-      return payload.conversations.reduce(withSummary, next)
+      return payload.conversations.reduce(withSummary, withoutLostGroups(next, payload.groupIds))
     }
 
     case 'loginFailed':
@@ -326,6 +361,17 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
     case 'conversationUpdated':
       return withSummary(state, action.conversation)
 
+    case 'conversationRemoved': {
+      const { [action.conversationId]: removed, ...threads } = state.threads
+      if (removed === undefined) return state
+      return {
+        ...state,
+        threads,
+        selected: state.selected === action.conversationId ? null : state.selected,
+        lastIncoming: state.lastIncoming?.conversationId === action.conversationId ? null : state.lastIncoming,
+      }
+    }
+
     case 'conversationSelected': {
       const { conversationId, peer } = action
       const selected = withThread(state, conversationId, thread => {
@@ -347,14 +393,14 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
       return { ...state, selected: null }
 
     case 'earlierRequested':
-      return withThread(state, action.conversationId, thread => ({ ...thread, loadingEarlier: true }))
+      return withKnownThread(state, action.conversationId, thread => ({ ...thread, loadingEarlier: true }))
 
     case 'historyLoaded': {
       const ownUserId = state.userId
       if (ownUserId === null) return state
       const { conversationId, messages, hasMore } = action.payload
       // Applied to the conversation the response names, whichever one is on screen now.
-      return withThread(state, conversationId, thread => {
+      return withKnownThread(state, conversationId, thread => {
         const page = messages.map(message => fromServer(message, ownUserId, null))
         // A page that starts after everything held, with more before it, does not join
         // up with what is held: messages are missing in between (more than a page arrived
@@ -389,7 +435,7 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
     case 'historyFailed': {
       const { conversationId, message } = action.payload
       if (conversationId === null) return state
-      return withThread(state, conversationId, thread => ({ ...thread, error: message, loadingEarlier: false }))
+      return withKnownThread(state, conversationId, thread => ({ ...thread, error: message, loadingEarlier: false }))
     }
 
     case 'messageReceived': {
@@ -397,18 +443,19 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
       const { conversationId, id, fromName } = action.payload
       const message = fromServer(action.payload, state.userId, action.receivedAt)
       const alreadyKnown = threadOf(state, conversationId).messages.some(candidate => candidate.id === id)
+      // What happened to a group (someone was added, it was renamed) is shown in it, but
+      // is not a message to read — and the server's own word on the group came just before it.
+      const system = message.kind === 'system'
       // The user's own message, sent from another of their devices, is not news to them.
-      const counts = !message.own && !alreadyKnown
-      const next = withThread(state, conversationId, thread =>
-        withLastMessage(
-          {
-            ...thread,
-            messages: mergeConfirmed(thread.messages, [message]),
-            unread: counts && !isOnScreen(state, conversationId) ? thread.unread + 1 : thread.unread,
-          },
-          message,
-        ),
-      )
+      const counts = !message.own && !alreadyKnown && !system
+      const next = withThread(state, conversationId, thread => {
+        const received = {
+          ...thread,
+          messages: mergeConfirmed(thread.messages, [message]),
+          unread: counts && !isOnScreen(state, conversationId) ? thread.unread + 1 : thread.unread,
+        }
+        return system ? received : withLastMessage(received, message)
+      })
       return counts ? { ...next, lastIncoming: { id, fromName, conversationId } } : next
     }
 
@@ -433,7 +480,7 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
 
     case 'readUpTo': {
       const { conversationId, position } = action
-      return withThread(state, conversationId, thread => {
+      return withKnownThread(state, conversationId, thread => {
         if (thread.summary === null) return thread
         return {
           ...thread,
@@ -480,7 +527,7 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
       }))
       // Re-merge so the message takes its place in server order, and so a copy that
       // history already confirmed under the same id collapses into one entry.
-      return withThread(confirmed, action.conversationId, thread => {
+      return withKnownThread(confirmed, action.conversationId, thread => {
         const messages = mergeConfirmed(thread.messages, [])
         const sent = messages.find(message => message.id === action.id)
         return sent === undefined ? { ...thread, messages } : withLastMessage({ ...thread, messages }, sent)

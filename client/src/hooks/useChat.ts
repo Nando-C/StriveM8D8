@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useState } from 'react'
 import { useSessionLogin } from '@/hooks/useSessionLogin'
 import {
-  chatList, openConversation, peopleList, selectedThread, totalUnread, unreadLabel,
+  chatList, groupCandidates, openConversation, peopleList, selectedThread, totalUnread, unreadLabel,
 } from '@/lib/chatSelectors'
 import { chatReducer, initialChatState } from '@/lib/chatState'
 import { directConversationId } from '@/lib/conversationId'
@@ -15,6 +15,7 @@ import { startingSession } from '@/lib/session'
 import { socket } from '@/lib/socket'
 import { useSocketConnected } from '@/lib/useSocketConnected'
 import type {
+  ConversationRemovedPayload,
   ConversationUpdatedPayload,
   HistoryErrorPayload,
   HistoryPayload,
@@ -81,6 +82,8 @@ export const useChat = () => {
     const onMemberLeft = (payload: UserLeftPayload) => dispatch({ type: 'memberLeft', payload })
     const onConversationUpdated = ({ conversation }: ConversationUpdatedPayload) =>
       dispatch({ type: 'conversationUpdated', conversation })
+    const onConversationRemoved = ({ id }: ConversationRemovedPayload) =>
+      dispatch({ type: 'conversationRemoved', conversationId: id })
     const onMessage = (payload: Message, ack?: () => void) => {
       dispatch({ type: 'messageReceived', payload, receivedAt: Date.now() })
       // This device has it: that is what moves the sender's tick from "sent" to "delivered".
@@ -106,6 +109,7 @@ export const useChat = () => {
       on('memberDirectory', onMemberDirectory)
       on('memberLeft', onMemberLeft)
       on('conversationUpdated', onConversationUpdated)
+      on('conversationRemoved', onConversationRemoved)
       on('message', onMessage)
       on('receipt', onReceipt)
       on('history', onHistory)
@@ -241,6 +245,10 @@ export const useChat = () => {
     () => peopleList({ directory, onlineUsers, userId, username }),
     [directory, onlineUsers, userId, username],
   )
+  const candidates = useMemo(
+    () => groupCandidates({ directory, onlineUsers, userId, username, threads }),
+    [directory, onlineUsers, userId, username, threads],
+  )
   // The other person does not have to be online: the message waits for them.
   const canSend = connected && state.phase === 'loggedIn' && open !== null && open.counterpart?.gone !== true
 
@@ -297,6 +305,8 @@ export const useChat = () => {
     loginError: state.loginError,
     chats,
     people,
+    /** Everyone who could be put in a group. */
+    candidates,
     /** Whether the people list covers every account, or only who is connected. */
     listsEveryone: state.directory !== null,
     selected: state.selected,
