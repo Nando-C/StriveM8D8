@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type SyntheticEvent } from 'react'
 import { ask } from '@/lib/request'
 
 // The address a file can be fetched from is given out by the server for a few minutes at
@@ -58,24 +58,35 @@ export const saveFile = async (fileId: string): Promise<boolean> => {
   return true
 }
 
+/** A failure this close to when an address lapses is taken to be the address lapsing. */
+const LAPSE_LEEWAY_MS = 5000
+
 /**
  * The address to show a file from, once `wanted` (it is near the screen).
- * `failed()` is for when loading from the address did not work: one fresh address is
- * tried, and after that `broken` says the file cannot be shown here.
+ * `failed()` is for when loading from the address did not work: a fresh address is
+ * tried, and if that does not work either `broken` says the file cannot be shown here.
+ * (An address that fails once its time is up has lapsed — they last minutes, and a
+ * video can be watched for longer: that says nothing against the file.)
+ *
+ * One file per use: a component that goes from one file to another must be keyed by the file.
  */
 export const useFileUrl = (fileId: string, wanted: boolean) => {
   const [url, setUrl] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
   const [broken, setBroken] = useState(false)
   const failures = useRef(0)
+  /** Until when the address in use is good; null while there is none. */
+  const until = useRef<number | null>(null)
 
   useEffect(() => {
     if (!wanted || broken) return
     let current = true
     void fileUrl(fileId).then(found => {
       if (!current) return
-      if (found === null) setBroken(true)
-      else setUrl(found)
+      if (found === null) return setBroken(true)
+      // (Its own life, as the server gave it — however long ago, and whoever asked.)
+      until.current = known.get(fileId)?.expiresAt ?? Date.now()
+      setUrl(found)
     })
     return () => {
       current = false
@@ -83,7 +94,12 @@ export const useFileUrl = (fileId: string, wanted: boolean) => {
   }, [fileId, wanted, attempt, broken])
 
   const failed = useCallback(() => {
+    // (Reported again for an address already given up: counted once.)
+    if (until.current === null) return
+    if (Date.now() >= until.current - LAPSE_LEEWAY_MS) failures.current = 0
+    until.current = null
     forgetFileUrl(fileId)
+    // Nothing is shown from the dead address while the fresh one is fetched.
     setUrl(null)
     failures.current += 1
     if (failures.current > 1) setBroken(true)
@@ -91,4 +107,32 @@ export const useFileUrl = (fileId: string, wanted: boolean) => {
   }, [fileId])
 
   return { url, broken, failed }
+}
+
+/**
+ * The same for sound and video, with what its element needs (`media`): when the address
+ * lapses while it is being played, it carries on from where it was with a fresh one.
+ */
+export const useMediaUrl = (fileId: string, wanted: boolean) => {
+  const { url, broken, failed } = useFileUrl(fileId, wanted)
+  const resume = useRef<{ at: number; playing: boolean } | null>(null)
+
+  const onError = useCallback((event: SyntheticEvent<HTMLMediaElement>) => {
+    const element = event.currentTarget
+    if (element.currentTime > 0) resume.current = { at: element.currentTime, playing: !element.paused && !element.ended }
+    failed()
+  }, [failed])
+
+  const onLoadedMetadata = useCallback((event: SyntheticEvent<HTMLMediaElement>) => {
+    const from = resume.current
+    if (from === null) return
+    resume.current = null
+    const element = event.currentTarget
+    element.currentTime = from.at
+    if (from.playing) void element.play().catch(() => {})
+    // (Paused when its address lapsed: it does not start by itself, whatever the element would do.)
+    else element.pause()
+  }, [])
+
+  return { url, broken, media: { onError, onLoadedMetadata } }
 }

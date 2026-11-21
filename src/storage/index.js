@@ -5,6 +5,7 @@ import { createS3Storage } from './s3.js'
 //
 //   presignUpload({ key, type, size, baseUrl })            → { url, headers }
 //   presignDownload({ key, name, type, inline, baseUrl })  → url
+//   copy(from, to)                             → whether there was anything at `from`
 //   head(key)                                              → { size } or null
 //   remove(key)
 //

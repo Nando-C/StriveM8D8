@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react'
 import { ChevronLeft, ChevronRight, Download } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
-import { formatBytes, kindOf } from '@/lib/files'
-import { saveFile, useFileUrl } from '@/lib/fileUrls'
+import { formatBytes, kindOf, type FileKind } from '@/lib/files'
+import { saveFile, useFileUrl, useMediaUrl } from '@/lib/fileUrls'
 import type { Attachment } from '@/types/protocol'
 
 interface MediaViewerProps {
@@ -15,10 +15,31 @@ interface MediaViewerProps {
   onClose: () => void
 }
 
+const CANNOT = <p className="p-6 text-center text-sm text-white">This file cannot be shown here. It can still be downloaded.</p>
+const LOADING = <p className="text-sm text-white/70">Loading…</p>
+
+function ShownVideo({ file }: { file: Attachment }) {
+  const { url, broken, media } = useMediaUrl(file.id, true)
+  if (broken) return CANNOT
+  if (url === null) return LOADING
+  // eslint-disable-next-line jsx-a11y/media-has-caption -- a file someone sent: there are no captions to offer
+  return <video src={url} controls autoPlay playsInline aria-label={file.name} {...media} className="max-h-full max-w-full" />
+}
+
+/** One file, as large as there is room for. */
+function Shown({ file, kind }: { file: Attachment; kind: FileKind }) {
+  const { url, broken, failed } = useFileUrl(file.id, kind !== 'video')
+  if (kind === 'video') return <ShownVideo file={file} />
+  if (broken) return CANNOT
+  if (url === null) return LOADING
+  return kind === 'image'
+    ? <img src={url} alt={file.name} onError={failed} className="max-h-full max-w-full object-contain" />
+    : <iframe src={url} title={file.name} className="size-full bg-white" />
+}
+
 /** A picture, a video or a PDF at full size, over the conversation. */
 export function MediaViewer({ file, gallery, onShow, onClose }: MediaViewerProps) {
   const kind = kindOf(file.type)
-  const { url, broken, failed } = useFileUrl(file.id, true)
   const [saving, setSaving] = useState(false)
   const at = gallery.findIndex(candidate => candidate.id === file.id)
   const previous = at > 0 ? gallery[at - 1] : undefined
@@ -59,18 +80,8 @@ export function MediaViewer({ file, gallery, onShow, onClose }: MediaViewerProps
           </Button>
         </div>
         <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-lg bg-black/90" data-viewer={kind}>
-          {broken ? (
-            <p className="p-6 text-center text-sm text-white">This file cannot be shown here. It can still be downloaded.</p>
-          ) : url === null ? (
-            <p className="text-sm text-white/70">Loading…</p>
-          ) : kind === 'image' ? (
-            <img key={file.id} src={url} alt={file.name} onError={failed} className="max-h-full max-w-full object-contain" />
-          ) : kind === 'video' ? (
-            // eslint-disable-next-line jsx-a11y/media-has-caption -- a file someone sent: there are no captions to offer
-            <video key={file.id} src={url} controls autoPlay playsInline aria-label={file.name} onError={failed} className="max-h-full max-w-full" />
-          ) : (
-            <iframe key={file.id} src={url} title={file.name} className="size-full bg-white" />
-          )}
+          {/* (Keyed: nothing learnt about one file's address is carried over to the next.) */}
+          <Shown key={file.id} file={file} kind={kind} />
           {previous !== undefined && (
             <Button variant="secondary" size="icon" className="absolute top-1/2 left-2 -translate-y-1/2 rounded-full" onClick={() => onShow(previous.id)}>
               <ChevronLeft aria-hidden="true" />

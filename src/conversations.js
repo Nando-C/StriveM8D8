@@ -12,7 +12,7 @@ const PREVIEW_LENGTH = 80
 
 // Kinds of message that are not something to read: what happened to a group, and what is
 // left of a message its author deleted.
-const NOT_TO_READ = ['system', 'deleted']
+export const NOT_TO_READ = ['system', 'deleted']
 
 const USER_ID = /^[A-Za-z0-9-]{1,64}$/
 

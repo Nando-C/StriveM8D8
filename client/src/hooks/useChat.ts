@@ -5,6 +5,7 @@ import {
 } from '@/lib/chatSelectors'
 import { chatReducer, initialChatState } from '@/lib/chatState'
 import { directConversationId } from '@/lib/conversationId'
+import { giveBackUploads, uploadsCanBeGivenBack } from '@/lib/giveBack'
 import { listen } from '@/lib/listen'
 import { UNCONFIRMED } from '@/lib/messages'
 import { useIdleReporter } from '@/lib/useIdleReporter'
@@ -255,6 +256,11 @@ export const useChat = () => {
   )
   const candidates = useMemo(() => groupCandidates({ userId, threads }, people), [userId, threads, people])
   // The other person does not have to be online: the message waits for them.
+  // Logged in (again): whatever could not be given back while the connection was down.
+  useEffect(() => {
+    uploadsCanBeGivenBack(state.userId, connected && state.phase === 'loggedIn')
+  }, [state.userId, connected, state.phase, state.loginCount])
+
   const canSend = connected && state.phase === 'loggedIn' && open !== null && open.counterpart?.gone !== true
 
   /** `attachments`: files already uploaded for this conversation, as the message will carry them. */
@@ -273,6 +279,11 @@ export const useChat = () => {
         conversationId, text, clientId,
         ...(attachments.length > 0 ? { attachments: attachments.map(file => file.id) } : {}),
       }, (error, response) => {
+        // A message that was refused leaves its files uploaded and waiting, where they
+        // would stand in the way of attaching anything else: their places are given back.
+        // (Not when there was simply no answer: it may yet go, and must not lose its files
+        // for being slow. If it never does, the server lets go of them by itself.)
+        if (!error && !response.ok && attachments.length > 0) giveBackUploads(attachments.map(file => file.id))
         if (error) {
           dispatch({ type: 'sendFailed', conversationId, clientId, reason: UNCONFIRMED })
         } else if (response.ok) {

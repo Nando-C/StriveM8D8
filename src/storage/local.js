@@ -1,6 +1,6 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { createReadStream, createWriteStream } from 'node:fs'
-import { mkdir, rm, stat } from 'node:fs/promises'
+import { copyFile, mkdir, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { Router } from 'express'
@@ -9,7 +9,7 @@ import { DOWNLOAD_URL_SECONDS, UPLOAD_URL_SECONDS, contentDisposition } from './
 
 // Files in a folder on this machine, for development and tests: no account, no network.
 // It behaves like the real thing as far as a browser can tell — the bytes travel over
-// URLs that are signed, expire, and allow one request each — but they are served by this
+// URLs that are signed, expire, and allow one kind of request each — but they are served by this
 // server (`router`), which a real deployment must never do with its ephemeral disk.
 
 // A key is `files/<uuid>`: it names one file directly under the folder, and nothing else.
@@ -106,6 +106,15 @@ export const createLocalStorage = ({ directory }) => {
         presignDownload: async ({ key, name, type, inline, baseUrl }) =>
             urlFor(baseUrl, { op: 'get', key: (pathOf(key), key), name, type, inline }, DOWNLOAD_URL_SECONDS),
         head: async key => stat(pathOf(key)).then(found => ({ size: found.size }), () => null),
+        copy: async (from, to) => {
+            try {
+                await copyFile(pathOf(from), pathOf(to))
+                return true
+            } catch (error) {
+                if (error?.code === 'ENOENT') return false
+                throw error
+            }
+        },
         remove: async key => {
             await rm(pathOf(key), { force: true })
         },
