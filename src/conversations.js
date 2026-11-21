@@ -1,5 +1,6 @@
 import { Conversation } from './models/conversation.js'
 import { Message } from './models/message.js'
+import { BOT } from './bot.js'
 import { afterPosition, comparePositions, laterPosition } from './positions.js'
 
 // Everything about conversations that is not tied to a socket: their ids, who may see
@@ -126,6 +127,9 @@ export const conversationView = (conversation, userId, unreadCount = 0) => {
                 ? { joinedAfter: plainPosition(member.joinedAfter) } : {}),
             ...positionsShownTo(member, viewer),
             ...(member.gone ? { gone: true } : {}),
+            // The bot has no device and reads only what is addressed to it: a client leaves
+            // it out when working out whether everyone in a group has seen something.
+            ...(member.userId === BOT.id ? { bot: true } : {}),
         })),
         lastMessage: viewer && seesLastMessage(conversation, viewer)
             ? {
@@ -161,63 +165,89 @@ export const conversationsFor = async userId => {
     return Promise.all(conversations.map(conversation => conversationViewFor(conversation, userId)))
 }
 
-// Moves one position of one member forward to `position`. Never backwards: the condition
-// is part of the same atomic update. `path` is relative to the member entry.
-const moveForward = async (conversationId, userId, path, position) => {
-    const result = await Conversation.updateOne(
-        {
-            _id: conversationId,
-            members: {
-                $elemMatch: {
-                    userId,
-                    $or: [
-                        { [path]: null },
-                        { [`${path}.ts`]: { $lt: position.ts } },
-                        { [`${path}.ts`]: position.ts, [`${path}.id`]: { $lt: position.id } },
-                    ],
-                },
-            },
-        },
-        { $set: { [`members.$.${path}`]: position } },
-    )
-    return result.modifiedCount === 1
-}
+// The condition under which the member entry `name` (an array filter) may take `position`
+// at `path`: it is this user's, and stands before it. Never backwards.
+const standsBefore = (name, userId, path, position) => ({
+    [`${name}.userId`]: userId,
+    $or: [
+        { [`${name}.${path}`]: null },
+        { [`${name}.${path}.ts`]: { $lt: position.ts } },
+        { [`${name}.${path}.ts`]: position.ts, [`${name}.${path}.id`]: { $lt: position.id } },
+    ],
+})
+
+const earlierPosition = (a, b) => (comparePositions(a, b) <= 0 ? a : b)
 
 /**
- * Moves one member's `field` (readUpTo or deliveredUpTo) forward to `position`.
+ * Moves one member's `field` (readUpTo or deliveredUpTo) forward to `position`. Reading
+ * something implies having received it, so `readUpTo` takes `deliveredUpTo` along.
  *
  * `publish`: whether everyone else may be told — false while the member is invisible, in
- * which case only their own, true position moves. Resolves to { moved, published }:
- * whether the true position moved, and whether what others are told did.
+ * which case only their own, true positions move.
+ *
+ * All of it is one operation on the conversation. Resolves to:
+ *   moved         whether the true `field` moved
+ *   conversation  the conversation as it is afterwards (null if the user is not in it)
+ *   publishedFrom where what others are told stood before, if it moved — the earlier of
+ *                 the two when both did; undefined if nothing others can see changed
  */
 export const advancePosition = async (conversationId, userId, field, position, { publish = true } = {}) => {
-    // Two fields, each moved by its own atomic update: neither waits for the other.
-    const [moved, published] = await Promise.all([
-        moveForward(conversationId, userId, field, position),
-        publish ? moveForward(conversationId, userId, `published.${field}`, position) : false,
-    ])
-    return { moved, published }
+    const fields = field === 'readUpTo' ? ['deliveredUpTo', 'readUpTo'] : ['deliveredUpTo']
+    const paths = [...fields, ...(publish ? fields.map(each => `published.${each}`) : [])]
+    // One array filter per path: each moves only if it stands before `position`.
+    // Sent through the driver itself: Mongoose would cast the array filters against the
+    // schema and drop their `$or`, leaving every position free to move backwards.
+    const before = await Conversation.collection.findOneAndUpdate(
+        { _id: conversationId, 'members.userId': userId },
+        { $set: Object.fromEntries(paths.map((path, index) => [`members.$[m${index}].${path}`, position])) },
+        { arrayFilters: paths.map((path, index) => standsBefore(`m${index}`, userId, path, position)), returnDocument: 'before' },
+    )
+    const was = memberOf(before, userId)
+    if (!was) return { moved: false, conversation: null }
+
+    const stood = path => plainPosition(path.startsWith('published.') ? was.published?.[path.slice(10)] : was[path])
+    const movedPaths = paths.filter(path => comparePositions(stood(path), position) < 0)
+    const now = { ...was, published: { ...was.published } }
+    for (const path of movedPaths) {
+        if (path.startsWith('published.')) now.published[path.slice(10)] = position
+        else now[path] = position
+    }
+    const publishedMoved = movedPaths.filter(path => path.startsWith('published.'))
+    return {
+        moved: movedPaths.includes(field),
+        conversation: { ...before, members: before.members.map(member => (member === was ? now : member)) },
+        ...(publishedMoved.length > 0 ? { publishedFrom: publishedMoved.map(stood).reduce(earlierPosition) } : {}),
+    }
 }
 
 /**
  * Brings what others are told about a member up to the truth, in every conversation
- * they are in: what happens when someone stops being invisible. Resolves to the
- * conversations (as stored afterwards) in which something others can see changed.
+ * they are in: what happens when someone stops being invisible. Resolves to
+ * `{ conversation, publishedFrom }` (as `advancePosition` gives them) for each
+ * conversation in which something others can see changed.
  */
 export const publishPositions = async userId => {
     const conversations = await Conversation.find({ 'members.userId': userId }).lean()
     const changed = []
     for (const conversation of conversations) {
         const member = memberOf(conversation, userId)
-        let moved = false
-        for (const field of ['deliveredUpTo', 'readUpTo']) {
+        // Each published position is brought up to its own true one (they can differ:
+        // read up to one message, received up to a later one). The true ones are there
+        // already, so only what is published can move.
+        let latest = null
+        const from = []
+        for (const field of ['readUpTo', 'deliveredUpTo']) {
             const truth = plainPosition(member[field])
-            if (truth === null || comparePositions(truth, plainPosition(member.published?.[field])) <= 0) continue
-            if (await moveForward(conversation._id, userId, `published.${field}`, truth)) moved = true
+            if (truth === null) continue
+            const result = await advancePosition(conversation._id, userId, field, truth)
+            if ('publishedFrom' in result) {
+                latest = result.conversation
+                from.push(result.publishedFrom)
+            }
         }
-        if (moved) changed.push(await Conversation.findById(conversation._id).lean())
+        if (latest) changed.push({ conversation: latest, publishedFrom: from.reduce(earlierPosition) })
     }
-    return changed.filter(Boolean)
+    return changed
 }
 
 /** The text shown under a conversation's name in the list. */

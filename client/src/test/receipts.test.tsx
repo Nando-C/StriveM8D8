@@ -5,8 +5,8 @@ import type { LocalMessage } from '@/lib/messages'
 import { createReadReporter } from '@/lib/readReporter'
 import { audienceOf, receiptsOf, tickOf } from '@/lib/ticks'
 import {
-  chatButton, conversation, dm, fakeSocket, idOf, loginAs, message, messageBox, messageRow, renderApp,
-  serverSays, user,
+  chatButton, conversation, dm, fakeSocket, idOf, loginAs, message, messageBox, messageRow, personButton,
+  renderApp, serverSays, user,
 } from '@/test/harness'
 import type { ConversationMember, ConversationSummary, Message, Position } from '@/types/protocol'
 
@@ -80,7 +80,7 @@ describe('working out a tick', () => {
     const summary = group(
       member('ana', { readUpTo: at(9) }),
       // Never reads anything it is not mentioned in.
-      member('demo-bot'),
+      { ...member('demo-bot'), bot: true },
       // Added after message 5: it was never in front of them.
       member('newcomer', { joinedAfter: at(6) }),
     )
@@ -125,6 +125,21 @@ describe('ticks on the user’s own messages', () => {
     expect(messageRow('three').querySelector('[data-tick]')?.outerHTML).not.toBe(messageRow('two').querySelector('[data-tick]')?.outerHTML)
     // The other person's messages have no ticks.
     expect(messageRow('two').querySelector('[data-tick]')).toBeNull()
+  })
+
+  it('are right for a first message that was received before the server described the conversation', async () => {
+    renderApp()
+    const events = await loginAs('alice', [user('bob')])
+    await events.click(personButton('bob'))
+    await events.type(messageBox('bob'), 'hello bob{Enter}')
+    act(() => fakeSocket.last('sendmessage').ack!({ ok: true, id: mid(1), timestamp: 1000 }))
+    await waitFor(() => expect(tick('hello bob')).toBe('sent'))
+
+    // Bob's device has it before the conversation — new to both — has been described.
+    receipt(at(1), null)
+    const first = said(1, 'alice', 'bob', 'hello bob')
+    serverSays('conversationUpdated', { conversation: conversation('alice', 'bob', { last: first }) })
+    await waitFor(() => expect(tick('hello bob')).toBe('delivered'))
   })
 
   it('never go backwards for a receipt that arrives late or twice', async () => {
@@ -314,6 +329,46 @@ describe('spacing out read reports', () => {
 })
 
 describe('a read report the server did not take', () => {
+  it('is sent again even if reading stopped and started again while it was on its way', async () => {
+    vi.useFakeTimers()
+    const reporter = createReadReporter(1000)
+    let attempts = 0
+    let answer: (taken: boolean) => void = () => {}
+    const send = () => new Promise<boolean>(resolve => {
+      attempts += 1
+      answer = resolve
+    })
+
+    reporter.offer('k', at(1), send)
+    expect(attempts).toBe(1)
+    // The window loses focus and gets it back before the server has answered.
+    reporter.cancel()
+    reporter.offer('k', at(1), send)
+    expect(attempts).toBe(1)
+
+    answer(false)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(attempts).toBe(2)
+    answer(true)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(attempts).toBe(2)
+  })
+
+  it('is not sent again once nobody is reading any more', async () => {
+    vi.useFakeTimers()
+    const reporter = createReadReporter(1000)
+    let attempts = 0
+    let answer: (taken: boolean) => void = () => {}
+    reporter.offer('k', at(1), () => new Promise<boolean>(resolve => {
+      attempts += 1
+      answer = resolve
+    }))
+    reporter.cancel()
+    answer(false)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(attempts).toBe(1)
+  })
+
   it('does not count as reported: it is sent again, with a growing pause, until it is taken', async () => {
     vi.useFakeTimers()
     const reporter = createReadReporter(1000, { maxRetryMs: 5000 })

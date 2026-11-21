@@ -7,7 +7,7 @@ import { isDatabaseReady, isDuplicateKey } from '../db.js'
 import { Conversation } from '../models/conversation.js'
 import { Identity } from '../models/identity.js'
 import { Message } from '../models/message.js'
-import { beforePosition, comparePositions, isPosition, positionOf } from '../positions.js'
+import { afterPosition, beforePosition, comparePositions, isPosition, laterPosition, positionOf } from '../positions.js'
 import {
     MAX_CONVERSATION_ID_LENGTH, NOT_LOGGED_IN, SLOW_DOWN, UNKNOWN_CONVERSATION, isNonEmptyString, isObject, withAck,
 } from './validation.js'
@@ -48,10 +48,27 @@ const messageView = (message, forUserId) => ({
 export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) => {
     const allowed = rateLimiter.perSocket(RATE_LIMITS)
 
-    /** Tells the other members, on every device they have connected, where `userId` now stands. */
-    const tellReceipt = (conversation, userId) => {
-        for (const other of conversation.members) {
-            if (other.userId === userId) continue
+    // Where a member stands is news only to whoever wrote what they have now received or
+    // read: nobody else's screen shows anything of it. In a group of twenty, telling
+    // everyone about everyone would be 380 events for a single message; this is 19.
+    //
+    // `since` is where the member stood, as far as others were told, before moving.
+    const tellReceipt = async (conversation, userId, since) => {
+        const member = memberOf(conversation, userId)
+        const upTo = laterPosition(member?.published?.deliveredUpTo ?? null, member?.published?.readUpTo ?? null)
+        if (upTo === null) return
+        const others = conversation.members.filter(other => other.userId !== userId)
+        // (Between two people there is nobody to leave out, and nothing to look up.)
+        const authors = conversation.kind === 'direct'
+            ? null
+            : new Set(await Message.distinct('from', {
+                conversationKey: conversation._id,
+                kind: { $ne: 'system' },
+                from: { $ne: userId },
+                $and: [afterPosition(since), { $nor: [afterPosition(upTo)] }],
+            }))
+        for (const other of others) {
+            if (authors !== null && !authors.has(other.userId)) continue
             const receipt = receiptOf(conversation, userId, other)
             if (receipt) presence.tell([other.userId], 'receipt', receipt)
         }
@@ -59,23 +76,15 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
 
     /**
      * Moves one member's delivered or read position forward and, if that changes what
-     * others may know, tells them. Reading something implies having received it.
-     * Resolves to whether the member's own (true) position moved.
+     * others may know, tells those it concerns. Resolves to `{ moved, conversation }`:
+     * whether the member's own (true) position moved, and the conversation as it then is
+     * (null if they are not in it).
      */
     const advance = async (conversationId, userId, field, position) => {
         // While a user is invisible, what others are told about their reading stands still.
-        const publish = presence.isShown(userId)
-        const fields = field === 'readUpTo' ? ['deliveredUpTo', 'readUpTo'] : ['deliveredUpTo']
-        const results = await Promise.all(
-            fields.map(each => advancePosition(conversationId, userId, each, position, { publish })),
-        )
-        // (The field asked for is the last of them.)
-        const moved = results.at(-1).moved
-        if (results.some(result => result.published)) {
-            const fresh = await Conversation.findById(conversationId).lean()
-            if (fresh) tellReceipt(fresh, userId)
-        }
-        return moved
+        const result = await advancePosition(conversationId, userId, field, position, { publish: presence.isShown(userId) })
+        if ('publishedFrom' in result) await tellReceipt(result.conversation, userId, result.publishedFrom)
+        return result
     }
 
     // A message goes to each device separately, with an acknowledgement of its own: that
@@ -373,7 +382,7 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
         })
 
         // "I have read this conversation up to here." Stored, so that unread counts are
-        // right at the next login; telling the other members is a later step.
+        // right at the next login, and told to whoever wrote what was read.
         socket.on('markRead', async (rawPayload, rawAck) => {
             const { payload, reply, fail } = withAck(rawPayload, rawAck)
 
@@ -398,7 +407,7 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
                 if (last === null) return reply({ ok: true })
                 const upTo = comparePositions(payload.upTo, last) > 0 ? last : { ts: payload.upTo.ts, id: payload.upTo.id }
 
-                const moved = await advance(conversation._id, reader.userId, 'readUpTo', upTo)
+                const { moved } = await advance(conversation._id, reader.userId, 'readUpTo', upTo)
                 if (moved) {
                     // The reader's other devices drop their unread badge too.
                     if (presence.socketsOf(reader.userId).some(id => id !== socket.id)) {
@@ -453,7 +462,9 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
 
     /** A user is visible again: what others are told about their reading catches up, once. */
     const visibleAgain = async userId => {
-        for (const conversation of await publishPositions(userId)) tellReceipt(conversation, userId)
+        for (const { conversation, publishedFrom } of await publishPositions(userId)) {
+            await tellReceipt(conversation, userId, publishedFrom)
+        }
     }
 
     return { registerOn, identityRemoved, listDelivered, visibleAgain, post, tellMembers }

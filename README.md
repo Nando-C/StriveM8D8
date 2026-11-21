@@ -19,7 +19,7 @@ A real-time, one-to-one chat application: a Node.js + Socket.IO server with Mong
 - **Guests and accounts.** Type a name and you are in, with that name kept for your browser; or create an account with a password and use it from several devices at once — with a list of those devices, remote sign-out, and a recovery code in place of an email address.
 - **Status that means something.** Online, away (also set by itself after five minutes without activity, and only when *every* one of your devices is idle), do not disturb, and invisible — plus a line of your own that can clear itself after a while. Invisible is real: to everyone else you are indistinguishable from someone who is not connected, yet you can read and write as usual.
 - **Group chats.** Up to twenty people, made in two clicks. Each message says who wrote it, the ticks say when *everyone* has it — press them to see who has seen it — and membership is handled the way people expect: anyone can add or leave, the creator can rename and remove, someone added later sees the conversation from that point on, and someone removed loses it at once.
-- **626 automated tests**, 30 of them driving real browsers against the built app, run on every push by GitHub Actions.
+- **631 automated tests**, 30 of them driving real browsers against the built app, run on every push by GitHub Actions.
 
 ## Tech stack
 
@@ -160,7 +160,7 @@ Three suites, each testing what the others cannot.
 
 | | Server | Client |
 |---|---|---|
-| Tests | 345, in 18 files | 251, in 13 files |
+| Tests | 347, in 18 files | 254, in 13 files |
 | Approach | Real Socket.IO clients against a fresh server per test, with an in-memory MongoDB | The real app rendered against a fake socket; each test plays the server |
 | Lint | oxlint | oxlint, including React hooks rules |
 | Types | — | TypeScript, checked on every build |
@@ -463,7 +463,7 @@ The recovery code is shown once and is the only way back into an account whose p
 | `presence` | Everyone else who is logged in | `{ userId, status, statusText }` | How a listed user is shown has changed: they chose another status or text, went idle on every device, or came back. |
 | `ownStatus` | Your other connections | `{ status, statusText, statusClearAt }` | Your own status was changed on another of your devices, or its text ran out. |
 | `message` | Every connection of every member, except the one it was sent from | a message, with an acknowledgement callback | A message in one of your conversations — including your own, sent from another of your devices. **Call the acknowledgement**: it is what records the message as delivered to you, and moves the sender's tick. Each connection is sent the message separately, so each acknowledgement belongs to one person. |
-| `receipt` | The other members, on every connection | `{ conversationId, userId, deliveredUpTo, readUpTo }` | Another member has received or read further. Positions only move forward. This is what the ticks on your own messages are worked out from. Someone who joined a group later is not sent a position from before they joined (it would name an earlier message); for them it is `null`, here and in `members`. |
+| `receipt` | Whoever wrote the messages it covers, on every connection | `{ conversationId, userId, deliveredUpTo, readUpTo }` | Another member has received or read further. Positions only move forward. This is what the ticks on your own messages are worked out from — so in a group it is sent only to the authors of what was just received or read, not to every member (one message to a group of 20 is 19 of these, not 380); everyone finds all positions in `members` at their next login. It can arrive before `conversationUpdated` describes a brand-new conversation: keep it and apply it then. Someone who joined a group later is not sent a position from before they joined (it would name an earlier message); for them it is `null`, here and in `members`. |
 | `conversationUpdated` | Each member, separately | `{ conversation }` | A conversation is new to you or something about it changed (it was just created; the other person is gone; another of your devices read it; a group's members, admin or name changed). Replaces what you had. After the first message of a one-to-one conversation it arrives *after* the `message`; for a change to a group, *before* the system message that records it. |
 | `conversationRemoved` | Every connection of someone who left a group or was removed from it | `{ id }` | You are no longer in that group: forget it. |
 | `history` | The requester only | `{ conversationId, messages, hasMore }` | Up to 100 messages, oldest first. `hasMore`: there are earlier ones; ask again with `before` set to the first message's position. |
@@ -489,7 +489,8 @@ The shapes used above:
 // a conversation, as you are shown it
 { id, kind, name?, admin?, members, lastMessage, unreadCount }
 //  kind: "direct" | "group"; a group also has its name and its admin's userId, and lists its members in the order they joined
-//  members: [{ userId, username, deliveredUpTo, readUpTo, joinedAfter?, gone? }]   (positions, or null)
+//  members: [{ userId, username, deliveredUpTo, readUpTo, joinedAfter?, gone?, bot? }]   (positions, or null;
+//            `bot: true` marks the demo bot, which a client leaves out of a group's "seen by everyone")
 //           your own entry holds your true positions; everyone else's hold what they let be known —
 //           the same thing, except that an invisible member's stand still until they are visible again
 //  lastMessage: { id, from, fromName, preview, timestamp, kind?, data? } | null

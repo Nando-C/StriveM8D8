@@ -47,6 +47,11 @@ export interface Thread {
    * position (`null`: before everything). `undefined`: there was nothing unread.
    */
   unreadFrom: Position | null | undefined
+  /**
+   * Receipts that arrived before the server had described the conversation — a first
+   * message can be received by the other person before that. Applied when it is described.
+   */
+  earlyReceipts?: ReceiptPayload[]
 }
 
 export type Phase =
@@ -232,10 +237,29 @@ const readNow = (state: ChatState, thread: Thread): Thread => {
 const withSummary = (state: ChatState, summary: ConversationSummary): ChatState =>
   withThreadBegun(state, summary.id, thread => ({
     ...thread,
-    summary,
+    // (Positions only move forward, so a receipt that came first still holds.)
+    summary: (thread.earlyReceipts ?? []).reduce(withReceipt, summary),
+    earlyReceipts: undefined,
     messages: sinceJoining(thread.messages, ownMember(summary, state.userId)?.joinedAfter),
     unread: isOnScreen(state, summary.id) ? 0 : summary.unreadCount,
   }))
+
+// Where a member stands, after a receipt. Positions only move forward: one that arrives
+// late or twice changes nothing.
+const withReceipt = (summary: ConversationSummary, { userId, deliveredUpTo, readUpTo }: ReceiptPayload): ConversationSummary => {
+  const later = (current: Position | null, next: Position | null) => (comparePositions(next, current) > 0 ? next : current)
+  return {
+    ...summary,
+    members: summary.members.map(member =>
+      member.userId === userId
+        ? { ...member, deliveredUpTo: later(member.deliveredUpTo, deliveredUpTo), readUpTo: later(member.readUpTo, readUpTo) }
+        : member,
+    ),
+  }
+}
+
+// A conversation holds at most this many receipts while it waits to be described.
+const MAX_EARLY_RECEIPTS = 40
 
 // Someone taken out of a group and put back in while this client was away starts afresh:
 // what it still holds from their first time there is no longer theirs to see.
@@ -464,21 +488,12 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
     }
 
     case 'receipt': {
-      const { conversationId, userId, deliveredUpTo, readUpTo } = action.payload
-      if (state.threads[conversationId]?.summary == null) return state
-      // Positions only move forward; an event that arrives late or twice changes nothing.
-      const later = (current: Position | null, next: Position | null) => (comparePositions(next, current) > 0 ? next : current)
-      return withThread(state, conversationId, thread => ({
-        ...thread,
-        summary: thread.summary && {
-          ...thread.summary,
-          members: thread.summary.members.map(member =>
-            member.userId === userId
-              ? { ...member, deliveredUpTo: later(member.deliveredUpTo, deliveredUpTo), readUpTo: later(member.readUpTo, readUpTo) }
-              : member,
-          ),
-        },
-      }))
+      return withThread(state, action.payload.conversationId, thread =>
+        thread.summary === null
+          // Not described yet: kept until it is.
+          ? { ...thread, earlyReceipts: [...(thread.earlyReceipts ?? []), action.payload].slice(-MAX_EARLY_RECEIPTS) }
+          : { ...thread, summary: withReceipt(thread.summary, action.payload) },
+      )
     }
 
     case 'readUpTo': {
