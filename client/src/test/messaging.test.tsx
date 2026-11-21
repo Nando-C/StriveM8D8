@@ -1,7 +1,7 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import {
-  chatButton, disconnect, dm, fakeSocket, idOf, loginAs, message, messageBox, messageRow, messages, personButton, renderApp,
+  chatButton, conversation, disconnect, dm, fakeSocket, idOf, loginAs, message, messageBox, messageRow, messages, personButton, renderApp,
   sendButton, serverSays, user,
 } from '@/test/harness'
 import type { Message, SendMessagePayload } from '@/types/protocol'
@@ -282,5 +282,56 @@ describe('a lost acknowledgement', () => {
     await new Promise(resolve => setTimeout(resolve, 100))
     expect(messageRow('are you there?')).not.toHaveTextContent('Not sent')
     expect(messages()).toEqual(['are you there?'])
+  })
+})
+
+describe('a message its author deleted', () => {
+  const said = (n: number, from: string, text: string, extra: Partial<Message> = {}) =>
+    message(from, from === 'alice' ? 'bob' : 'alice', text, { id: n.toString(16).padStart(24, '0'), timestamp: n * 1000, ...extra })
+
+  it('becomes a quiet line where it stood, live and from history, and is not what the chat last said', async () => {
+    renderApp()
+    const two = said(2, 'bob', 'delete me')
+    const events = await loginAs('alice', [user('bob')], [conversation('alice', 'bob', { last: two, unreadCount: 2 })])
+    expect(chatButton('bob')).toHaveTextContent('delete me')
+    await events.click(chatButton('bob'))
+    serverSays('history', { conversationId: BOB, messages: [said(1, 'bob', 'keep me'), two, { ...said(3, 'alice', ''), kind: 'deleted', text: null }], hasMore: false })
+    expect(messages()).toEqual(['keep me', 'delete me', 'You deleted a message'])
+
+    serverSays('messageDeleted', { conversationId: BOB, id: two.id })
+    await waitFor(() => expect(messages()).toEqual(['keep me', 'bob deleted a message', 'You deleted a message']))
+    expect(screen.queryByText('delete me')).not.toBeInTheDocument()
+    // One that is not held, or already gone, changes nothing.
+    serverSays('messageDeleted', { conversationId: BOB, id: two.id })
+    serverSays('messageDeleted', { conversationId: 'dm:nobody::nothing', id: two.id })
+    expect(messages()).toHaveLength(3)
+
+    // The server's word on the conversation follows: no words of the deleted message in the list.
+    const last = { id: two.id, from: idOf('bob'), fromName: 'bob', preview: '', timestamp: two.timestamp, kind: 'deleted' as const }
+    serverSays('conversationUpdated', { conversation: { ...conversation('alice', 'bob'), lastMessage: last } })
+    expect(chatButton('bob')).toHaveTextContent('Message deleted')
+    expect(chatButton('bob')).not.toHaveTextContent('delete me')
+  })
+})
+
+describe('a message with files', () => {
+  it('is named by its files where there are no words: in the list and, for now, in the conversation', async () => {
+    renderApp()
+    const file = { id: '3f0e6c1a-0000-4000-8000-000000000001', name: 'holiday.png', type: 'image/png', size: 2048 }
+    const sent = message('bob', 'alice', '', { id: '0'.repeat(23) + '1', timestamp: 1000, attachments: [file, { ...file, id: file.id.replace(/1$/, '2'), name: 'notes.pdf' }] })
+    const events = await loginAs('alice', [user('bob')], [{
+      ...conversation('alice', 'bob', { last: sent }),
+      lastMessage: { id: sent.id, from: sent.from, fromName: 'bob', preview: '', timestamp: 1000, attachments: 2 },
+    }])
+    expect(chatButton('bob')).toHaveTextContent('2 files')
+
+    await events.click(chatButton('bob'))
+    serverSays('history', { conversationId: BOB, messages: [sent], hasMore: false })
+    expect(screen.getByRole('log')).toHaveTextContent('holiday.png')
+    expect(screen.getByRole('log')).toHaveTextContent('notes.pdf')
+
+    // One that arrives live is counted, and previewed, the same way.
+    serverSays('message', message('bob', 'alice', '', { attachments: [file] }))
+    await waitFor(() => expect(chatButton('bob')).toHaveTextContent('1 file'))
   })
 })

@@ -8,7 +8,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { UserAvatar } from '@/components/UserAvatar'
 import type { Thread } from '@/lib/chatState'
 import { describeGroupEvent } from '@/lib/groupEvents'
-import type { LocalMessage } from '@/lib/messages'
+import { deletedLine, isSaid, type LocalMessage } from '@/lib/messages'
 import { comparePositions, positionOf } from '@/lib/positions'
 import { TICK_LABELS, receiptsOf, tickOf, type Tick } from '@/lib/ticks'
 import { formatDay, formatTime, isSameDay } from '@/lib/format'
@@ -159,6 +159,12 @@ const Message = memo(function Message({ message, tick, animateIn, sender, seenBy
       )}
     >
       {message.text}
+      {/* Until files have bubbles of their own, a file is at least named. */}
+      {message.attachments?.map(file => (
+        <span key={file.id} data-attachment="true" className="block">
+          📎 {file.name}
+        </span>
+      ))}
     </p>
   )
   return (
@@ -241,7 +247,7 @@ export function MessageList({
       ? undefined
       : messages.find(
           message =>
-            !message.own && message.kind !== 'system' && message.id !== null && comparePositions(positionOf({ id: message.id, timestamp: message.timestamp }), unreadFrom) > 0,
+            !message.own && isSaid(message) && message.id !== null && comparePositions(positionOf({ id: message.id, timestamp: message.timestamp }), unreadFrom) > 0,
         )?.key
 
   const viewport = () => root.current?.querySelector<HTMLElement>('[data-slot=scroll-area-viewport]') ?? null
@@ -292,9 +298,11 @@ export function MessageList({
       messages.map((message, index) => {
         const previous = messages[index - 1]
         const startsDay = previous === undefined || !isSameDay(previous.timestamp, message.timestamp)
-        const system = message.kind === 'system'
+        // A line across the middle rather than anybody's bubble: what happened to a
+        // group, and what is left of a message its author deleted.
+        const system = !isSaid(message)
         const sameSender =
-          !startsDay && previous !== undefined && previous.kind !== 'system' && previous.from === message.from
+          !startsDay && previous !== undefined && isSaid(previous) && previous.from === message.from
         const receipts =
           group && message.own && message.status === 'sent' && summary !== null && ownUserId !== null
             ? receiptsOf(message, summary, ownUserId)
@@ -303,7 +311,7 @@ export function MessageList({
           message,
           startsDay,
           tick: message.own ? tickOf(message, summary, ownUserId) : ('sent' as const),
-          line: system ? describeGroupEvent(message.data, ownUserId) : undefined,
+          line: message.kind === 'deleted' ? deletedLine(message) : system ? describeGroupEvent(message.data, ownUserId) : undefined,
           sender: !group || system || message.own ? undefined : sameSender ? ('continued' as const) : ('named' as const),
           seenBy: receipts?.seenBy.join(', '),
           deliveredTo: receipts?.deliveredTo.join(', '),

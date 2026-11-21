@@ -35,6 +35,10 @@ connectDB(process.env.MONGO_CONNECTION)
     })
     .catch(error => console.error(" 🚫 Could not apply message expiry:", error.name))
 
+if (settings.fileStorage) {
+    console.log(settings.fileStorage === 's3' ? " ✅  File sharing is on (S3-compatible storage)" : " ✅  File sharing is on (local folder — not for a hosted server)")
+}
+
 console.table(listEndpoints(app))
 
 server.listen(port, () => {

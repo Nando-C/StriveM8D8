@@ -63,7 +63,7 @@ const holdsReservation = (payload, guest) =>
     isSecret(payload.reservation) && sameString(fingerprint(payload.reservation), guest.secretHash)
 
 export const createSessionHandlers = ({
-    presence, settings, rateLimiter, onIdentityRemoved = async () => {}, onConversationsListed = async () => {},
+    presence, settings, rateLimiter, features = {}, onIdentityRemoved = async () => {}, onConversationsListed = async () => {},
 }) => {
     const hasher = createPasswordHasher({ params: settings.passwordParams })
     // Compared as every name is: without regard to case.
@@ -183,6 +183,7 @@ export const createSessionHandlers = ({
             // Every group they are in: a client that was away while they were taken out of
             // one finds out by its absence here.
             groupIds,
+            features,
             ...(members === undefined ? {} : { members }),
             ...extra,
         }, ...(onConfirmed === null ? [] : [onConfirmed]))

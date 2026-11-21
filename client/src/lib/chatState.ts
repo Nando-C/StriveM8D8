@@ -1,4 +1,4 @@
-import { UNCONFIRMED, fromServer, mergeConfirmed, previewOf, type LocalMessage } from '@/lib/messages'
+import { UNCONFIRMED, asDeleted, fromServer, isSaid, mergeConfirmed, previewOf, type LocalMessage } from '@/lib/messages'
 import { comparePositions, positionOf } from '@/lib/positions'
 import type {
   ConversationSummary,
@@ -113,6 +113,7 @@ export type ChatAction =
   | { type: 'conversationUpdated'; conversation: ConversationSummary }
   /** The user is no longer in this group. */
   | { type: 'conversationRemoved'; conversationId: string }
+  | { type: 'messageDeleted'; conversationId: string; id: string }
   /** `peer` is given when the conversation is opened from the people list. */
   | { type: 'conversationSelected'; conversationId: string; peer?: Peer }
   | { type: 'conversationClosed' }
@@ -298,6 +299,7 @@ const withLastMessage = (thread: Thread, message: LocalMessage): Thread => {
         fromName: message.fromName,
         preview: previewOf(message.text),
         timestamp: message.timestamp,
+        ...(message.attachments?.length ? { attachments: message.attachments.length } : {}),
       },
     },
   }
@@ -400,6 +402,14 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
     case 'conversationRemoved':
       return withoutThreads(state, new Set([action.conversationId]))
 
+    // (The server's word on the conversation — its preview, what is unread — follows.)
+    case 'messageDeleted':
+      return withThread(state, action.conversationId, thread =>
+        thread.messages.some(message => message.id === action.id && message.kind !== 'deleted')
+          ? { ...thread, messages: thread.messages.map(message => (message.id === action.id ? asDeleted(message) : message)) }
+          : thread,
+      )
+
     case 'conversationSelected': {
       const { conversationId, peer } = action
       const selected = withThreadBegun(state, conversationId, thread => {
@@ -473,7 +483,7 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
       const alreadyKnown = threadOf(state, conversationId).messages.some(candidate => candidate.id === id)
       // What happened to a group (someone was added, it was renamed) is shown in it, but
       // is not a message to read — and the server's own word on the group came just before it.
-      const system = message.kind === 'system'
+      const system = !isSaid(message)
       // The user's own message, sent from another of their devices, is not news to them.
       const counts = !message.own && !alreadyKnown && !system
       const next = withThreadBegun(state, conversationId, thread => {

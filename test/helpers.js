@@ -6,6 +6,7 @@ import { createApp } from '../src/app.js'
 import { directConversationId } from '../src/conversations.js'
 import { connectDB } from '../src/db.js'
 import { Conversation } from '../src/models/conversation.js'
+import { File } from '../src/models/file.js'
 import { Message } from '../src/models/message.js'
 import { Identity } from '../src/models/identity.js'
 import { Invitation } from '../src/models/invitation.js'
@@ -40,7 +41,8 @@ export const FAST_PASSWORD_PARAMS = { N: 2 ** 10, r: 8, p: 1 }
 // Everything is stored now, so each instance also starts from nothing: stopping it
 // removes every identity, conversation and message.
 export const startApp = async (options = {}) => {
-    const { server, io, runMaintenance, hasherStats } = createApp({ passwordParams: FAST_PASSWORD_PARAMS, ...options })
+    const { server, io, runMaintenance, sweepPendingUploads, sweepExpiredFiles, hasherStats } =
+        createApp({ passwordParams: FAST_PASSWORD_PARAMS, ...options })
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
     const url = `http://127.0.0.1:${server.address().port}`
     const clients = []
@@ -66,12 +68,12 @@ export const startApp = async (options = {}) => {
         if (mongoose.connection.readyState === 1) {
             await Promise.all([
                 Identity.deleteMany({}), Session.deleteMany({}), Invitation.deleteMany({}),
-                Conversation.deleteMany({}), Message.deleteMany({}),
+                Conversation.deleteMany({}), Message.deleteMany({}), File.deleteMany({}),
             ])
         }
     }
 
-    return { url, io, client, stop, runMaintenance, hasherStats }
+    return { url, io, client, stop, runMaintenance, sweepPendingUploads, sweepExpiredFiles, hasherStats }
 }
 
 // Resolves with the payload of the next `event`, or rejects if it does not arrive in time.

@@ -10,6 +10,10 @@ const MAX_LISTED_CONVERSATIONS = 50
 const MAX_UNREAD_SHOWN = 99
 const PREVIEW_LENGTH = 80
 
+// Kinds of message that are not something to read: what happened to a group, and what is
+// left of a message its author deleted.
+const NOT_TO_READ = ['system', 'deleted']
+
 const USER_ID = /^[A-Za-z0-9-]{1,64}$/
 
 export const isUserId = value => typeof value === 'string' && USER_ID.test(value)
@@ -66,7 +70,7 @@ const unreadCountFor = async (conversation, member) => {
     // Only the ones that might have something unread cost a query.
     if (comparePositions(lastPosition(conversation.lastMessage), from) <= 0) return 0
     const count = await Message.countDocuments(
-        { conversationKey: conversation._id, from: { $ne: member.userId }, kind: { $ne: 'system' }, ...afterPosition(from) },
+        { conversationKey: conversation._id, from: { $ne: member.userId }, kind: { $nin: NOT_TO_READ }, ...afterPosition(from) },
         { limit: MAX_UNREAD_SHOWN + 1 },
     )
     return Math.min(count, MAX_UNREAD_SHOWN)
@@ -139,6 +143,7 @@ export const conversationView = (conversation, userId, unreadCount = 0) => {
                 preview: conversation.lastMessage.preview,
                 timestamp: conversation.lastMessage.timestamp,
                 ...(conversation.lastMessage.kind ? { kind: conversation.lastMessage.kind, data: conversation.lastMessage.data } : {}),
+                ...(conversation.lastMessage.attachments ? { attachments: conversation.lastMessage.attachments } : {}),
             }
             : null,
         unreadCount,

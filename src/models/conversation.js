@@ -44,6 +44,8 @@ const conversationSchema = new mongoose.Schema({
         /** Only for a last message that is not text: its kind and structured content. */
         kind: String,
         data: mongoose.Schema.Types.Mixed,
+        /** How many files it carries, if any: a message of files alone has no text to preview. */
+        attachments: Number,
     }, { _id: false }),
     lastActivityAt: { type: Date, default: Date.now },
 })
