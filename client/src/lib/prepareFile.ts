@@ -65,65 +65,59 @@ const loaded = <Element extends HTMLImageElement | HTMLMediaElement>(element: El
     element.src = url
   })
 
-const prepareImage = async (file: File, type: string, original: boolean): Promise<Partial<PreparedFile>> => {
-  const url = URL.createObjectURL(file)
-  try {
-    const image = await loaded(new Image(), 'load', url)
-    const { naturalWidth: width, naturalHeight: height } = image
-    if (width === 0 || height === 0) return {}
-    const placeholder = placeholderOf(image, width, height)
-    if (original || width <= MAX_IMAGE_WIDTH || !RESIZABLE.has(type)) return { width, height, placeholder }
+// (Each of these reads the file from `url`, an address for it good on this page only.)
+const prepareImage = async (file: File, url: string, type: string, original: boolean): Promise<Partial<PreparedFile>> => {
+  const image = await loaded(new Image(), 'load', url)
+  const { naturalWidth: width, naturalHeight: height } = image
+  if (width === 0 || height === 0) return {}
+  const placeholder = placeholderOf(image, width, height)
+  if (original || width <= MAX_IMAGE_WIDTH || !RESIZABLE.has(type)) return { width, height, placeholder }
 
-    const smaller = canvasOf(MAX_IMAGE_WIDTH, Math.round((MAX_IMAGE_WIDTH * height) / width))
-    smaller.getContext('2d')?.drawImage(image, 0, 0, smaller.width, smaller.height)
-    const blob = await new Promise<Blob | null>(resolve => smaller.toBlob(resolve, type, 0.9))
-    // (Not worth it if the copy came out no smaller.)
-    if (blob === null || blob.type !== type || blob.size >= file.size) return { width, height, placeholder }
-    return { blob, size: blob.size, width: smaller.width, height: smaller.height, placeholder, resized: true }
-  } finally {
-    URL.revokeObjectURL(url)
-  }
+  const smaller = canvasOf(MAX_IMAGE_WIDTH, Math.round((MAX_IMAGE_WIDTH * height) / width))
+  smaller.getContext('2d')?.drawImage(image, 0, 0, smaller.width, smaller.height)
+  const shape = { width: smaller.width, height: smaller.height }
+  const blob = await new Promise<Blob | null>(resolve => smaller.toBlob(resolve, type, 0.9))
+  // (A canvas this size holds tens of megabytes: let go of at once, not whenever the browser gets to it.)
+  smaller.width = 0
+  smaller.height = 0
+  // (Not worth it if the copy came out no smaller.)
+  if (blob === null || blob.type !== type || blob.size >= file.size) return { width, height, placeholder }
+  return { blob, size: blob.size, ...shape, placeholder, resized: true }
 }
 
-const prepareVideo = async (file: File): Promise<Partial<PreparedFile>> => {
-  const url = URL.createObjectURL(file)
-  try {
-    const video = document.createElement('video')
-    video.muted = true
-    video.preload = 'auto'
-    await loaded(video, 'loadeddata', url)
-    const { videoWidth: width, videoHeight: height } = video
-    const durationMs = Number.isFinite(video.duration) ? Math.round(video.duration * 1000) : undefined
-    if (width === 0 || height === 0) return { durationMs }
-    return { width, height, durationMs, placeholder: placeholderOf(video, width, height) }
-  } finally {
-    URL.revokeObjectURL(url)
-  }
+const prepareVideo = async (url: string): Promise<Partial<PreparedFile>> => {
+  const video = document.createElement('video')
+  video.muted = true
+  video.preload = 'auto'
+  await loaded(video, 'loadeddata', url)
+  const { videoWidth: width, videoHeight: height } = video
+  const durationMs = Number.isFinite(video.duration) ? Math.round(video.duration * 1000) : undefined
+  if (width === 0 || height === 0) return { durationMs }
+  return { width, height, durationMs, placeholder: placeholderOf(video, width, height) }
 }
 
-const prepareAudio = async (file: File): Promise<Partial<PreparedFile>> => {
-  const url = URL.createObjectURL(file)
-  try {
-    const audio = await loaded(new Audio(), 'loadedmetadata', url)
-    return Number.isFinite(audio.duration) ? { durationMs: Math.round(audio.duration * 1000) } : {}
-  } finally {
-    URL.revokeObjectURL(url)
-  }
+const prepareAudio = async (url: string): Promise<Partial<PreparedFile>> => {
+  const audio = await loaded(new Audio(), 'loadedmetadata', url)
+  return Number.isFinite(audio.duration) ? { durationMs: Math.round(audio.duration * 1000) } : {}
 }
 
 /** Measures a file — and, unless `original`, makes a very large picture smaller. Never fails. */
 export const prepareFile = async (file: File, { original = false } = {}): Promise<PreparedFile> => {
   const type = typeOf(file)
   const plain: PreparedFile = { blob: file, name: file.name, type, size: file.size, resized: false }
+  const kind = kindOf(type)
+  if (kind !== 'image' && kind !== 'video' && kind !== 'audio') return plain
+  let url: string | undefined
   try {
-    const kind = kindOf(type)
+    url = URL.createObjectURL(file)
     const found =
-      kind === 'image' ? await prepareImage(file, type, original)
-        : kind === 'video' ? await prepareVideo(file)
-          : kind === 'audio' ? await prepareAudio(file)
-            : {}
+      kind === 'image' ? await prepareImage(file, url, type, original)
+        : kind === 'video' ? await prepareVideo(url)
+          : await prepareAudio(url)
     return { ...plain, ...found }
   } catch {
     return plain
+  } finally {
+    if (url !== undefined) URL.revokeObjectURL(url)
   }
 }

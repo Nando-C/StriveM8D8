@@ -46,12 +46,33 @@ interface Options {
   maxFileBytes: number | undefined
 }
 
+// What a chip needs besides what it shows: the file itself, a way to stop its upload,
+// and — once it is uploaded — the place it holds on the server.
+interface Held {
+  file: File
+  stop: AbortController
+  preview?: string
+  fileId?: string
+}
+
+const giveBack = (fileId: string) => void ask('cancelUpload', { fileId })
+
+/** Stops a chip's upload; what it has uploaded already is not going to be sent, and its place is given back. */
+const halt = (entry: Held) => {
+  entry.stop.abort()
+  if (entry.fileId !== undefined) giveBack(entry.fileId)
+  entry.fileId = undefined
+}
+
+const revoke = ({ preview }: Held) => {
+  if (preview !== undefined) URL.revokeObjectURL(preview)
+}
+
 export const useDraftFiles = ({ conversationId, maxFileBytes }: Options) => {
   const [drafts, setDrafts] = useState<DraftFile[]>([])
   /** Why some of the files just chosen were not taken. */
   const [notice, setNotice] = useState<string | null>(null)
-  // What a chip needs besides what it shows: the file itself, and a way to stop its upload.
-  const held = useRef(new Map<string, { file: File; stop: AbortController; preview?: string }>())
+  const held = useRef(new Map<string, Held>())
 
   const update = useCallback((key: string, change: Partial<DraftFile>) => {
     setDrafts(current => current.map(draft => (draft.key === key ? { ...draft, ...change } : draft)))
@@ -76,7 +97,7 @@ export const useDraftFiles = ({ conversationId, maxFileBytes }: Options) => {
     const { blob, resized: _resized, ...described } = prepared
     const reserved = await ask('requestUpload', { conversationId, ...described })
     if (!stillWanted()) {
-      if (reserved.ok) void ask('cancelUpload', { fileId: reserved.fileId })
+      if (reserved.ok) giveBack(reserved.fileId)
       return
     }
     if (!reserved.ok) {
@@ -84,16 +105,24 @@ export const useDraftFiles = ({ conversationId, maxFileBytes }: Options) => {
       return
     }
     update(key, { status: 'uploading' })
+    // (Shown in whole percents: told only when that changes.)
+    let shown = 0
     const stored = await putFile(reserved.uploadUrl, reserved.headers, blob, {
       signal: stop.signal,
-      onProgress: progress => stillWanted() && update(key, { progress }),
+      onProgress: progress => {
+        const percent = Math.round(progress * 100)
+        if (percent === shown || !stillWanted()) return
+        shown = percent
+        update(key, { progress })
+      },
     })
     if (!stillWanted() || !stored) {
       // Its place is given back, whether it was stopped or it failed.
-      void ask('cancelUpload', { fileId: reserved.fileId })
+      giveBack(reserved.fileId)
       if (stillWanted()) update(key, { status: 'failed', error: 'The upload did not finish' })
       return
     }
+    entry.fileId = reserved.fileId
     const { name, type, size, width, height, durationMs, placeholder } = prepared
     update(key, {
       status: 'ready',
@@ -123,38 +152,27 @@ export const useDraftFiles = ({ conversationId, maxFileBytes }: Options) => {
     for (const draft of added) void start(draft.key, false)
   }, [start])
 
-  const forget = (key: string, uploaded: Attachment | undefined) => {
-    const entry = held.current.get(key)
-    entry?.stop.abort()
-    if (entry?.preview !== undefined) URL.revokeObjectURL(entry.preview)
-    held.current.delete(key)
-    // Uploaded already and not going to be sent: its place is given back.
-    if (uploaded !== undefined) void ask('cancelUpload', { fileId: uploaded.id })
-  }
-
-  // (Read where something is done about a chip, rather than inside a state update.)
-  const latest = useRef(drafts)
-  useEffect(() => {
-    latest.current = drafts
-  }, [drafts])
-
   const remove = useCallback((key: string) => {
-    forget(key, latest.current.find(draft => draft.key === key)?.attachment)
+    const entry = held.current.get(key)
+    if (entry !== undefined) {
+      halt(entry)
+      revoke(entry)
+      held.current.delete(key)
+    }
     setDrafts(current => current.filter(draft => draft.key !== key))
     setNotice(null)
   }, [])
 
   /** Uploads a file again: after a failure, or to send the original instead of the smaller copy (or back). */
   const restart = useCallback((key: string, original: boolean) => {
-    const uploaded = latest.current.find(draft => draft.key === key)?.attachment
-    held.current.get(key)?.stop.abort()
-    if (uploaded !== undefined) void ask('cancelUpload', { fileId: uploaded.id })
+    const entry = held.current.get(key)
+    if (entry !== undefined) halt(entry)
     void start(key, original)
   }, [start])
 
   /** The message went: its files are the message's now, and the chips are done with. */
   const sent = useCallback(() => {
-    for (const { preview } of held.current.values()) if (preview !== undefined) URL.revokeObjectURL(preview)
+    for (const entry of held.current.values()) revoke(entry)
     held.current.clear()
     setDrafts([])
     setNotice(null)
@@ -164,14 +182,11 @@ export const useDraftFiles = ({ conversationId, maxFileBytes }: Options) => {
   useEffect(() => {
     const entries = held.current
     return () => {
-      for (const { stop, preview } of entries.values()) {
-        stop.abort()
-        if (preview !== undefined) URL.revokeObjectURL(preview)
+      for (const entry of entries.values()) {
+        halt(entry)
+        revoke(entry)
       }
     }
-  }, [])
-  useEffect(() => () => {
-    for (const draft of latest.current) if (draft.attachment !== undefined) void ask('cancelUpload', { fileId: draft.attachment.id })
   }, [])
 
   const ready = drafts.every(draft => draft.status === 'ready')

@@ -55,6 +55,9 @@ fileSchema.index({ address: 1, createdAt: 1 })
 fileSchema.index({ state: 1, createdAt: 1 })
 fileSchema.index({ expiresAt: 1 }, { sparse: true })
 fileSchema.index({ conversationId: 1 })
+// The files of one message; how many uploads someone has waiting.
+fileSchema.index({ messageId: 1 }, { sparse: true })
+fileSchema.index({ uploader: 1, state: 1 })
 fileSchema.index({ uploadKey: 1 }, { sparse: true })
 fileSchema.index({ copyKey: 1 }, { sparse: true })
 

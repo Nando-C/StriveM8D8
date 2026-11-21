@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { ChevronLeft, ChevronRight, Download } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
-import { formatBytes, kindOf, type FileKind } from '@/lib/files'
+import { formatBytes, kindOf } from '@/lib/files'
 import { saveFile, useFileUrl, useMediaUrl } from '@/lib/fileUrls'
 import type { Attachment } from '@/types/protocol'
 
@@ -26,13 +26,12 @@ function ShownVideo({ file }: { file: Attachment }) {
   return <video src={url} controls autoPlay playsInline aria-label={file.name} {...media} className="max-h-full max-w-full" />
 }
 
-/** One file, as large as there is room for. */
-function Shown({ file, kind }: { file: Attachment; kind: FileKind }) {
-  const { url, broken, failed } = useFileUrl(file.id, kind !== 'video')
-  if (kind === 'video') return <ShownVideo file={file} />
+/** A picture or a PDF, as large as there is room for. */
+function Shown({ file, image }: { file: Attachment; image: boolean }) {
+  const { url, broken, failed } = useFileUrl(file.id, true)
   if (broken) return CANNOT
   if (url === null) return LOADING
-  return kind === 'image'
+  return image
     ? <img src={url} alt={file.name} onError={failed} className="max-h-full max-w-full object-contain" />
     : <iframe src={url} title={file.name} className="size-full bg-white" />
 }
@@ -81,7 +80,7 @@ export function MediaViewer({ file, gallery, onShow, onClose }: MediaViewerProps
         </div>
         <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-lg bg-black/90" data-viewer={kind}>
           {/* (Keyed: nothing learnt about one file's address is carried over to the next.) */}
-          <Shown key={file.id} file={file} kind={kind} />
+          {kind === 'video' ? <ShownVideo key={file.id} file={file} /> : <Shown key={file.id} file={file} image={kind === 'image'} />}
           {previous !== undefined && (
             <Button variant="secondary" size="icon" className="absolute top-1/2 left-2 -translate-y-1/2 rounded-full" onClick={() => onShow(previous.id)}>
               <ChevronLeft aria-hidden="true" />

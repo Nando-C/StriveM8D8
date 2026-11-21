@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { createLocalStorage } from './local.js'
 import { createS3Storage } from './s3.js'
 
@@ -20,8 +21,12 @@ import { createS3Storage } from './s3.js'
 export const UPLOAD_URL_SECONDS = 15 * 60
 export const DOWNLOAD_URL_SECONDS = 5 * 60
 
+/** A key nothing is stored under yet. (The local driver accepts keys of this form only.) */
+export const newKey = () => `files/${randomUUID()}`
+
 // Shown in the page only if it cannot do anything there: no scripts, no markup.
 // Everything else — SVG and HTML above all — is only ever offered as a download.
+// (What the client shows rather than offers is its own list, in client/src/lib/files.ts: keep them in step.)
 const INLINE_TYPES = new Set([
     'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif',
     'video/mp4', 'video/webm', 'video/quicktime',

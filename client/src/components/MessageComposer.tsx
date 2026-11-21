@@ -3,22 +3,13 @@ import { Paperclip, SendHorizontal } from 'lucide-react'
 import { DraftFiles } from '@/components/files/DraftFiles'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import type { DraftFile } from '@/hooks/useDraftFiles'
+import type { useDraftFiles } from '@/hooks/useDraftFiles'
 import type { Attachment } from '@/types/protocol'
 
 /** The files being attached to the message, and what can be done with them (see useDraftFiles). */
-export interface ComposerFiles {
+export type ComposerFiles = ReturnType<typeof useDraftFiles> & {
   /** Why files cannot be attached by this user, if they cannot: shown on the button. `null`: they can. */
   unavailable: string | null
-  drafts: DraftFile[]
-  notice: string | null
-  ready: boolean
-  full: boolean
-  attachments: Attachment[]
-  add: (files: File[]) => void
-  remove: (key: string) => void
-  restart: (key: string, original: boolean) => void
-  sent: () => void
 }
 
 interface MessageComposerProps {
