@@ -83,7 +83,9 @@ const uploads = path.join(here, '.build', `uploads-${name}`)
 
 try {
     await rm(uploads, { recursive: true, force: true })
-    mongo = await MongoMemoryServer.create()
+    // Given a minute to start rather than the default ten seconds: two of these start
+    // side by side (one per profile), and on a busy CI machine ten is not always enough.
+    mongo = await MongoMemoryServer.create({ instance: { launchTimeout: 60_000 } })
     log('database started')
 
     start('server', process.execPath, ['src/index.js'], {
