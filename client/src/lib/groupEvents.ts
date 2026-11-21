@@ -8,7 +8,7 @@ const isNamed = (value: unknown): value is NamedUser =>
   typeof (value as NamedUser).userId === 'string' && typeof (value as NamedUser).username === 'string'
 
 /** The data of a system message, if it is an event this client knows how to word. */
-export const asGroupEvent = (data: unknown): GroupEvent | null => {
+const asGroupEvent = (data: unknown): GroupEvent | null => {
   if (typeof data !== 'object' || data === null) return null
   const event = data as Partial<Record<'event' | 'actor' | 'target' | 'targets' | 'name', unknown>>
   if (!isNamed(event.actor)) return null

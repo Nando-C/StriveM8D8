@@ -1,4 +1,4 @@
-import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { Check, CheckCheck, CircleAlert, LoaderCircle } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -13,7 +13,7 @@ import { comparePositions, positionOf } from '@/lib/positions'
 import { TICK_LABELS, receiptsOf, tickOf, type Tick } from '@/lib/ticks'
 import { formatDay, formatTime, isSameDay } from '@/lib/format'
 import { fade, messageIn } from '@/lib/motion'
-import { cn } from '@/lib/utils'
+import { SCROLL_AREA_ROWS, cn } from '@/lib/utils'
 
 interface MessageListProps {
   /** What the conversation is called: the other person, or the group. */
@@ -283,10 +283,37 @@ export function MessageList({
     seen.current = { newest, oldest, count: messages.length, height: scroller?.scrollHeight ?? 0 }
   }, [newest, oldest, messages.length])
 
+  // What each row is given, worked out when the messages or the members' positions
+  // change — not each time something else in the app does (someone's presence, a message
+  // in another conversation).
+  const { summary } = thread
+  const rows = useMemo(
+    () =>
+      messages.map((message, index) => {
+        const previous = messages[index - 1]
+        const startsDay = previous === undefined || !isSameDay(previous.timestamp, message.timestamp)
+        const system = message.kind === 'system'
+        const sameSender =
+          !startsDay && previous !== undefined && previous.kind !== 'system' && previous.from === message.from
+        const receipts =
+          group && message.own && message.status === 'sent' && summary !== null && ownUserId !== null
+            ? receiptsOf(message, summary, ownUserId)
+            : null
+        return {
+          message,
+          startsDay,
+          tick: message.own ? tickOf(message, summary, ownUserId) : ('sent' as const),
+          line: system ? describeGroupEvent(message.data, ownUserId) : undefined,
+          sender: !group || system || message.own ? undefined : sameSender ? ('continued' as const) : ('named' as const),
+          seenBy: receipts?.seenBy.join(', '),
+          deliveredTo: receipts?.deliveredTo.join(', '),
+        }
+      }),
+    [messages, summary, ownUserId, group],
+  )
+
   return (
-    // The scroll area's inner wrapper is laid out as a table, which grows to fit its
-    // widest content; forcing it to a block keeps everything within the viewport width.
-    <ScrollArea ref={root} className="min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:!block">
+    <ScrollArea ref={root} className={cn('min-h-0 flex-1', SCROLL_AREA_ROWS)}>
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 p-4">
         {hasMore && (
           <Button variant="ghost" size="sm" className="self-center" onClick={onLoadEarlier} disabled={loadingEarlier}>
@@ -317,16 +344,7 @@ export function MessageList({
         )}
         {/* role="log" makes screen readers announce messages as they are added. */}
         <ul role="log" aria-label={`Conversation with ${title}`} className="flex flex-col gap-3">
-          {messages.map((message, index) => {
-            const previous = messages[index - 1]
-            const startsDay = previous === undefined || !isSameDay(previous.timestamp, message.timestamp)
-            const system = message.kind === 'system'
-            const sameSender =
-              !startsDay && previous !== undefined && previous.kind !== 'system' && previous.from === message.from
-            const receipts =
-              group && message.own && message.status === 'sent' && thread.summary !== null && ownUserId !== null
-                ? receiptsOf(message, thread.summary, ownUserId)
-                : null
+          {rows.map(({ message, startsDay, tick, line, sender, seenBy, deliveredTo }) => {
             return (
               <Fragment key={message.key}>
                 {startsDay && (
@@ -346,12 +364,12 @@ export function MessageList({
                 )}
                 <Message
                   message={message}
-                  tick={message.own ? tickOf(message, thread.summary, ownUserId) : 'sent'}
+                  tick={tick}
                   animateIn={message.arrivedAt !== null && message.arrivedAt >= openedAt}
-                  line={system ? describeGroupEvent(message.data, ownUserId) : undefined}
-                  sender={!group || system || message.own ? undefined : sameSender ? 'continued' : 'named'}
-                  seenBy={receipts?.seenBy.join(', ')}
-                  deliveredTo={receipts?.deliveredTo.join(', ')}
+                  line={line}
+                  sender={sender}
+                  seenBy={seenBy}
+                  deliveredTo={deliveredTo}
                 />
               </Fragment>
             )

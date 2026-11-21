@@ -110,7 +110,8 @@ export const createSessionHandlers = ({
 
     /**
      * Removes an identity and everything that belongs to it, and disconnects it. The one
-     * routine used by account deletion and by guest expiry, so both tidy up the same way.
+     * routine for an account deleted, a guest name that lapsed and a first login that was
+     * never confirmed, so all of them tidy up the same way.
      * `onlyIf` is an extra condition checked in the same database operation as the delete.
      */
     const removeIdentity = async (userId, { reason, onlyIf = {}, keepSocketId = null } = {}) => {
@@ -233,12 +234,13 @@ export const createSessionHandlers = ({
             if (reservation === null) return
             // If the connection is somehow still there, it is told and closed: it must not
             // carry on as a user who is about to stop existing.
+            const reason = 'The login could not be completed — try again'
             const attached = presence.bySocket.get(socket.id)
-            if (attached?.userId === identity.userId) presence.revoke(attached, { reason: 'The login could not be completed — try again' })
+            if (attached?.userId === identity.userId) presence.revoke(attached, { reason })
             // Announced for a moment, they may already have been written to or put in a
             // group: they go the way anyone who stops existing goes.
             await removeIdentity(identity.userId, {
-                reason: 'The login could not be completed — try again',
+                reason,
                 onlyIf: { kind: 'guest', secretHash: identity.secretHash },
             }).catch(error => console.error("failed to undo a reservation:", error?.name))
         }

@@ -15,7 +15,7 @@ import { useChat } from '@/hooks/useChat'
 import type { Candidate, OpenGroup } from '@/lib/chatSelectors'
 import { fade } from '@/lib/motion'
 import { useServerConfig, type ServerConfig } from '@/lib/serverConfig'
-import { KIND_LABELS, presenceLine } from '@/lib/status'
+import { presenceLineOf } from '@/lib/status'
 import { cn } from '@/lib/utils'
 
 function App() {
@@ -187,7 +187,7 @@ function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat
                   <UserAvatar username={open.title} presence={open.presence ?? undefined} className="size-9" />
                 ) : (
                   <GroupAvatar
-                    names={open.group.members.filter(member => !member.own || open.group?.members.length === 1).map(member => member.username)}
+                    names={open.group.memberNames}
                     className="size-9"
                   />
                 )}
@@ -202,11 +202,7 @@ function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat
                         ? ''
                         : open.presence === 'offline'
                           ? 'Offline — they will see your messages when they are back'
-                          : presenceLine(
-                              open.kind === null ? undefined : KIND_LABELS[open.kind],
-                              open.presence,
-                              open.statusText,
-                            )}
+                          : presenceLineOf({ kind: open.kind, presence: open.presence, statusText: open.statusText })}
                   </p>
                 </div>
                 {open.group !== null && (

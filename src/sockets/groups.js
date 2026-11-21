@@ -1,12 +1,15 @@
 import { randomUUID } from 'node:crypto'
 import mongoose from 'mongoose'
-import { BOT } from '../bot.js'
+import { BOT, BOT_MEMBER } from '../bot.js'
 import { isUserId, memberOf } from '../conversations.js'
 import { isDatabaseReady } from '../db.js'
 import { Conversation } from '../models/conversation.js'
 import { Identity } from '../models/identity.js'
 import { Message } from '../models/message.js'
-import { NOT_LOGGED_IN, Refusal, SLOW_DOWN, isObject, refuse, withAck } from './validation.js'
+import {
+    MAX_CONVERSATION_ID_LENGTH, NOT_LOGGED_IN, Refusal, SLOW_DOWN, UNKNOWN_CONVERSATION, isNonEmptyString, isObject, refuse,
+    withAck,
+} from './validation.js'
 
 // Group conversations: making one, and changing who is in it or what it is called.
 // Sending, reading and receipts are the same as in any conversation (messages.js) — a
@@ -19,14 +22,12 @@ import { NOT_LOGGED_IN, Refusal, SLOW_DOWN, isObject, refuse, withAck } from './
 // `members` is kept in the order people joined, which is what decides who takes over
 // when the admin goes.
 
-export const MAX_GROUP_NAME_LENGTH = 50
+const MAX_GROUP_NAME_LENGTH = 50
 export const MAX_GROUP_MEMBERS = 20
 /** Groups one user may have created and still be in. */
 export const MAX_GROUPS_CREATED = 20
 /** Groups one user may be in. */
 export const MAX_GROUP_MEMBERSHIPS = 200
-
-const MAX_CONVERSATION_ID_LENGTH = 200
 
 // Per socket.
 const RATE_LIMITS = {
@@ -35,7 +36,6 @@ const RATE_LIMITS = {
     addMembers: { limit: 5, windowMs: 10_000 },
 }
 
-const UNKNOWN_CONVERSATION = 'Unknown conversation'
 const NOT_SAVED = 'Could not be saved'
 const INVALID_NAME = `A group name must be 1 to ${MAX_GROUP_NAME_LENGTH} characters`
 const INVALID_MEMBERS = 'Choose at least one other person'
@@ -72,7 +72,7 @@ export const createGroupHandlers = ({ presence, settings, rateLimiter, messages 
     const peopleNamed = async userIds => {
         const identities = await Identity.find({ userId: { $in: userIds } }, { userId: 1, username: 1 }).lean()
         const byId = new Map(identities.map(identity => [identity.userId, identity]))
-        if (settings.demoBot) byId.set(BOT.id, { userId: BOT.id, username: BOT.username })
+        if (settings.demoBot) byId.set(BOT.id, BOT_MEMBER)
         if (!userIds.every(userId => byId.has(userId))) refuse(UNKNOWN_USER)
         return userIds.map(userId => named(byId.get(userId)))
     }
@@ -94,18 +94,18 @@ export const createGroupHandlers = ({ presence, settings, rateLimiter, messages 
     // found to exist and being put in a group — after their groups were gone through, so
     // nothing would ever take them out of this one. Whoever is not there any more leaves.
     const withoutTheVanished = async (conversation, people) => {
-        const userIds = people.map(person => person.userId).filter(userId => userId !== BOT.id)
-        const existing = new Set((await Identity.find({ userId: { $in: userIds } }, { userId: 1 }).lean()).map(identity => identity.userId))
-        for (const person of people) {
-            if (person.userId === BOT.id || existing.has(person.userId)) continue
-            await depart(conversation, person, person, { event: 'left', actor: person })
+        const real = people.filter(person => person.userId !== BOT.id)
+        const found = await Identity.find({ userId: { $in: real.map(person => person.userId) } }, { userId: 1 }).lean()
+        const existing = new Set(found.map(identity => identity.userId))
+        for (const person of real) {
+            if (!existing.has(person.userId)) await leave(conversation, person)
         }
     }
 
     /** The group a request names, if the asker is in it. One answer for "no such group" and "not yours". */
     const groupOf = async (payload, user) => {
         const id = payload.conversationId
-        if (typeof id !== 'string' || id.length > MAX_CONVERSATION_ID_LENGTH) refuse(UNKNOWN_CONVERSATION)
+        if (!isNonEmptyString(id, MAX_CONVERSATION_ID_LENGTH)) refuse(UNKNOWN_CONVERSATION)
         const conversation = await Conversation.findOne({ _id: id, kind: 'group' }).lean()
         if (!memberOf(conversation, user.userId)) refuse(UNKNOWN_CONVERSATION)
         return conversation
@@ -169,6 +169,9 @@ export const createGroupHandlers = ({ presence, settings, rateLimiter, messages 
         return group
     }
 
+    /** Somebody goes of their own accord, or because they are no more. */
+    const leave = (conversation, person) => depart(conversation, person, person, { event: 'left', actor: person })
+
     // ---------- the events
 
     const createGroup = async ({ user, payload }) => {
@@ -228,7 +231,8 @@ export const createGroupHandlers = ({ presence, settings, rateLimiter, messages 
             { returnDocument: 'after' },
         ).lean()
         if (!updated) refuse(CHANGED)
-        await record(updated, named(user), { event: 'added', actor: named(user), targets: added }, at)
+        const actor = named(user)
+        await record(updated, actor, { event: 'added', actor, targets: added }, at)
         await withoutTheVanished(updated, added)
         return {}
     }
@@ -250,9 +254,8 @@ export const createGroupHandlers = ({ presence, settings, rateLimiter, messages 
 
     const leaveGroup = async ({ user, payload }) => {
         const conversation = await groupOf(payload, user)
-        const actor = named(user)
         // (Gone already — from another device, a moment ago — is what was asked for.)
-        await depart(conversation, actor, actor, { event: 'left', actor })
+        await leave(conversation, named(user))
         return {}
     }
 
@@ -266,7 +269,8 @@ export const createGroupHandlers = ({ presence, settings, rateLimiter, messages 
             { _id: conversation._id, kind: 'group', admin: user.userId }, { $set: { name } }, { returnDocument: 'after' },
         ).lean()
         if (!updated) refuse(CHANGED)
-        await record(updated, named(user), { event: 'renamed', actor: named(user), name })
+        const actor = named(user)
+        await record(updated, actor, { event: 'renamed', actor, name })
         return {}
     }
 
@@ -301,11 +305,9 @@ export const createGroupHandlers = ({ presence, settings, rateLimiter, messages 
 
     /** An identity is gone (an account deleted, a guest lapsed): it leaves every group it was in. */
     const identityRemoved = async userId => {
-        const groups = await Conversation.find({ kind: 'group', 'members.userId': userId }).lean()
-        for (const group of groups) {
-            const actor = named(memberOf(group, userId))
-            await depart(group, actor, actor, { event: 'left', actor })
-        }
+        // (Of each group, only which it is and what they were called in it.)
+        const groups = await Conversation.find({ kind: 'group', 'members.userId': userId }, { 'members.$': 1 }).lean()
+        for (const group of groups) await leave(group, named(memberOf(group, userId)))
     }
 
     return { registerOn, identityRemoved }

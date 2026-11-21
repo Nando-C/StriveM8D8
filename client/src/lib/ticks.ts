@@ -52,7 +52,8 @@ export const tickOf = (message: LocalMessage, summary: ConversationSummary | nul
 /** Who has seen a message and who has only received it — for a group's "seen by" list. */
 export const receiptsOf = (message: LocalMessage, summary: ConversationSummary, ownUserId: string) => {
   const audience = audienceOf(message, summary, ownUserId)
-  const seenBy = audience.filter(member => reached(member, 'readUpTo', message))
-  const deliveredTo = audience.filter(member => !seenBy.includes(member) && hasReceived(member, message))
+  const seen = (member: ConversationMember) => reached(member, 'readUpTo', message)
+  const seenBy = audience.filter(seen)
+  const deliveredTo = audience.filter(member => !seen(member) && hasReceived(member, message))
   return { seenBy: seenBy.map(member => member.username), deliveredTo: deliveredTo.map(member => member.username) }
 }

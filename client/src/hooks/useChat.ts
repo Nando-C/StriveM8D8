@@ -235,20 +235,20 @@ export const useChat = () => {
     dispatch({ type: 'conversationClosed' })
   }, [])
 
-  const open = openConversation(state)
   // The two lists depend on a few parts of the state only: worked out again when one of
   // those changes, and otherwise the same arrays, so the sidebar is not drawn again for
   // every message that arrives in the open conversation.
-  const { threads, onlineUsers, directory, userId, username } = state
+  const { threads, onlineUsers, directory, userId, username, selected } = state
+  const open = useMemo(
+    () => openConversation({ selected, threads, onlineUsers, directory, userId }),
+    [selected, threads, onlineUsers, directory, userId],
+  )
   const chats = useMemo(() => chatList({ threads, onlineUsers, userId }), [threads, onlineUsers, userId])
   const people = useMemo(
     () => peopleList({ directory, onlineUsers, userId, username }),
     [directory, onlineUsers, userId, username],
   )
-  const candidates = useMemo(
-    () => groupCandidates({ directory, onlineUsers, userId, username, threads }),
-    [directory, onlineUsers, userId, username, threads],
-  )
+  const candidates = useMemo(() => groupCandidates({ userId, threads }, people), [userId, threads, people])
   // The other person does not have to be online: the message waits for them.
   const canSend = connected && state.phase === 'loggedIn' && open !== null && open.counterpart?.gone !== true
 

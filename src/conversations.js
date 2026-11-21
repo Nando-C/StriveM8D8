@@ -83,15 +83,16 @@ const sinceJoining = (viewer, position) => {
  * for anyone else only what has been published. An invisible member's reading must not
  * show — not live, and not in what a reload fetches either.
  */
-const positionsShownTo = (member, viewer) => {
-    if (member.userId === viewer?.userId) {
-        return { deliveredUpTo: plainPosition(member.deliveredUpTo), readUpTo: plainPosition(member.readUpTo) }
-    }
-    return {
-        deliveredUpTo: sinceJoining(viewer, member.published?.deliveredUpTo),
-        readUpTo: sinceJoining(viewer, member.published?.readUpTo),
-    }
-}
+const positionsShownTo = (member, viewer) =>
+    member.userId === viewer?.userId
+        ? { deliveredUpTo: plainPosition(member.deliveredUpTo), readUpTo: plainPosition(member.readUpTo) }
+        : publishedTo(member, viewer)
+
+/** What anyone else may know of where a member stands. */
+const publishedTo = (member, viewer) => ({
+    deliveredUpTo: sinceJoining(viewer, member?.published?.deliveredUpTo),
+    readUpTo: sinceJoining(viewer, member?.published?.readUpTo),
+})
 
 /**
  * What another member (`viewer`) is told when one member's positions move: only ever the
@@ -99,9 +100,7 @@ const positionsShownTo = (member, viewer) => {
  * nothing to tell.
  */
 export const receiptOf = (conversation, userId, viewer) => {
-    const published = memberOf(conversation, userId)?.published
-    const deliveredUpTo = sinceJoining(viewer, published?.deliveredUpTo)
-    const readUpTo = sinceJoining(viewer, published?.readUpTo)
+    const { deliveredUpTo, readUpTo } = publishedTo(memberOf(conversation, userId), viewer)
     if (deliveredUpTo === null && readUpTo === null) return null
     return { conversationId: conversation._id, userId, deliveredUpTo, readUpTo }
 }
