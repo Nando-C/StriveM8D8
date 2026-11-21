@@ -1,7 +1,9 @@
 import { CircleAlert, LoaderCircle, RotateCw, X } from 'lucide-react'
 import type { DraftFile } from '@/hooks/useDraftFiles'
-import { formatBytes } from '@/lib/files'
+import { formatBytes, kindOf } from '@/lib/files'
 import { cn } from '@/lib/utils'
+
+const THUMBNAIL = 'size-10 shrink-0 rounded-md bg-muted object-cover'
 
 interface DraftFilesProps {
   drafts: DraftFile[]
@@ -21,10 +23,19 @@ export function DraftFiles({ drafts, onRemove, onRestart }: DraftFilesProps) {
             key={draft.key}
             data-status={draft.status}
             className={cn(
-              'relative flex max-w-full items-center gap-2 overflow-hidden rounded-lg border py-1.5 pr-1.5 pl-2.5 text-xs',
+              'relative flex max-w-full items-center gap-2 overflow-hidden rounded-lg border py-1.5 pr-1.5 text-xs',
+              draft.preview === undefined ? 'pl-2.5' : 'pl-1.5',
               draft.status === 'failed' && 'border-destructive/50 text-destructive',
             )}
           >
+            {draft.preview !== undefined && (
+              kindOf(draft.type) === 'video' ? (
+                // Its first frame, as a still. (Without a time to show, some browsers show nothing.)
+                <video src={`${draft.preview}#t=0.1`} muted playsInline preload="metadata" aria-hidden="true" className={THUMBNAIL} />
+              ) : (
+                <img src={draft.preview} alt="" className={THUMBNAIL} />
+              )
+            )}
             {working && <LoaderCircle aria-hidden="true" className="size-3.5 shrink-0 animate-spin motion-reduce:animate-none" />}
             {draft.status === 'failed' && <CircleAlert aria-hidden="true" className="size-3.5 shrink-0" />}
             <span className="flex min-w-0 flex-col">

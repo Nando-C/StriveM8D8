@@ -447,6 +447,7 @@ describe('fetching a file', () => {
         expect(await disposition(photo({ name: 'x.html', type: 'text/html', size: 30 }))).toEqual(['text/html', 'attachment'])
         expect(await disposition(photo({ name: 'x.zip', type: 'application/zip', size: 30 }))).toEqual(['application/zip', 'attachment'])
         expect(await disposition(photo({ name: 'x.mp4', type: 'video/mp4', size: 30 }))).toEqual(['video/mp4', 'inline'])
+        expect(await disposition(photo({ name: 'x.mov', type: 'video/quicktime', size: 30 }))).toEqual(['video/quicktime', 'inline'])
         expect(await disposition(photo({ name: 'x.pdf', type: 'application/pdf', size: 30 }))).toEqual(['application/pdf', 'inline'])
 
         // Asked for to be saved, even a picture comes as a download.
