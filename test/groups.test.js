@@ -657,6 +657,38 @@ describe('at the same moment', () => {
         expect(heard.slice(heard.indexOf('conversationRemoved') + 1)).toEqual([])
     }
 
+    it('someone who goes while the group is being described to its members is not described it', async () => {
+        const [alice, bob, carol] = await people('alice', 'bob', 'carol')
+        const id = await group(alice, [bob, carol])
+        // Something unread for bob, so that describing the group to him costs a count…
+        await send(alice.socket, messageTo(id, 'not read by bob'))
+        await settle()
+        const heard = heardOf(bob.socket, id)
+        // …and that count takes long enough for him to leave meanwhile.
+        const count = Message.countDocuments.bind(Message)
+        let slowed = false
+        const slow = vi.spyOn(Message, 'countDocuments').mockImplementation((...args) => {
+            const query = count(...args)
+            if (slowed || args[0]?.from?.$ne !== bob.userId) return query
+            slowed = true
+            const exec = query.exec.bind(query)
+            query.exec = async () => {
+                await ask(bob.socket, 'leaveGroup', { conversationId: id })
+                return exec()
+            }
+            return query
+        })
+        try {
+            expect(await ask(alice.socket, 'renameGroup', { conversationId: id, name: 'Renamed' })).toEqual({ ok: true })
+            await settle()
+        } finally {
+            slow.mockRestore()
+        }
+        expect(slowed).toBe(true)
+        nothingAfterRemoval(heard)
+        bob.socket.offAny()
+    })
+
     it('a message sent as someone is removed does not reach them afterwards', async () => {
         const [alice, bob, carol] = await people('alice', 'bob', 'carol')
         for (let round = 0; round < ROUNDS; round += 1) {

@@ -115,8 +115,13 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter, att
         const connected = conversation.members.filter(member => presence.socketsOf(member.userId).length > 0)
         // The counts are asked for together, and the views sent in the members' order.
         const views = await Promise.allSettled(connected.map(member => conversationViewFor(conversation, member.userId)))
+        // Counting took a moment, and someone may have gone in it (two people leaving a
+        // group together): who is in the conversation is asked once more, and nothing
+        // is awaited between that answer and the sending. Nobody is described a
+        // conversation they have just been told they are out of.
+        const now = await Conversation.findById(conversation._id, { 'members.userId': 1 }).lean()
         views.forEach((view, index) => {
-            if (view.status === 'fulfilled') {
+            if (view.status === 'fulfilled' && memberOf(now, connected[index].userId)) {
                 presence.tell([connected[index].userId], 'conversationUpdated', { conversation: view.value })
             }
         })

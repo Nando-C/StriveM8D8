@@ -20,7 +20,7 @@ A real-time, one-to-one chat application: a Node.js + Socket.IO server with Mong
 - **Status that means something.** Online, away (also set by itself after five minutes without activity, and only when *every* one of your devices is idle), do not disturb, and invisible — plus a line of your own that can clear itself after a while. Invisible is real: to everyone else you are indistinguishable from someone who is not connected, yet you can read and write as usual.
 - **Group chats.** Up to twenty people, made in two clicks. Each message says who wrote it, the ticks say when *everyone* has it — press them to see who has seen it — and membership is handled the way people expect: anyone can add or leave, the creator can rename and remove, someone added later sees the conversation from that point on, and someone removed loses it at once.
 - **File sharing.** Attach, drop or paste files into a message: they upload straight from the browser to private storage with a progress bar, and arrive as a picture grid, a video or audio player, or a download card. Pictures open full size with the arrow keys stepping through the conversation's media; a message, and its files, can be deleted by whoever sent it.
-- **694 automated tests**, 32 of them driving real browsers against the built app, run on every push by GitHub Actions.
+- **695 automated tests**, 32 of them driving real browsers against the built app, run on every push by GitHub Actions.
 
 ## Tech stack
 
@@ -164,7 +164,7 @@ Three suites, each testing what the others cannot.
 
 | | Server | Client |
 |---|---|---|
-| Tests | 384, in 19 files | 278, in 14 files |
+| Tests | 385, in 19 files | 278, in 14 files |
 | Approach | Real Socket.IO clients against a fresh server per test, with an in-memory MongoDB | The real app rendered against a fake socket; each test plays the server |
 | Lint | oxlint | oxlint, including React hooks rules |
 | Types | — | TypeScript, checked on every build |
