@@ -23,7 +23,7 @@ export const DOWNLOAD_URL_SECONDS = 5 * 60
 // Everything else — SVG and HTML above all — is only ever offered as a download.
 const INLINE_TYPES = new Set([
     'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif',
-    'video/mp4', 'video/webm',
+    'video/mp4', 'video/webm', 'video/quicktime',
     'audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/ogg', 'audio/wav', 'audio/webm', 'audio/flac',
     'application/pdf',
 ])

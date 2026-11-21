@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { MAX_FILES_AT_ONCE, formatBytes } from '@/lib/files'
+import { MAX_FILES_AT_ONCE, formatBytes, kindOf, typeOf } from '@/lib/files'
 import { prepareFile } from '@/lib/prepareFile'
 import { putFile } from '@/lib/putFile'
 import { ask } from '@/lib/request'
@@ -25,6 +25,19 @@ export interface DraftFile {
   original: boolean
   /** Once uploaded: the file as the message will carry it. */
   attachment?: Attachment
+  /** A picture or a video: an address, good on this page only, to show it from before it is sent. */
+  preview?: string
+}
+
+// The file as chosen, shown straight from the device: nothing is fetched for it.
+const previewOf = (file: File): string | undefined => {
+  const kind = kindOf(typeOf(file))
+  if (kind !== 'image' && kind !== 'video') return undefined
+  try {
+    return URL.createObjectURL(file)
+  } catch {
+    return undefined
+  }
 }
 
 interface Options {
@@ -38,7 +51,7 @@ export const useDraftFiles = ({ conversationId, maxFileBytes }: Options) => {
   /** Why some of the files just chosen were not taken. */
   const [notice, setNotice] = useState<string | null>(null)
   // What a chip needs besides what it shows: the file itself, and a way to stop its upload.
-  const held = useRef(new Map<string, { file: File; stop: AbortController }>())
+  const held = useRef(new Map<string, { file: File; stop: AbortController; preview?: string }>())
 
   const update = useCallback((key: string, change: Partial<DraftFile>) => {
     setDrafts(current => current.map(draft => (draft.key === key ? { ...draft, ...change } : draft)))
@@ -102,15 +115,18 @@ export const useDraftFiles = ({ conversationId, maxFileBytes }: Options) => {
     setNotice(taken.length < files.length ? `A message can carry ${MAX_FILES_AT_ONCE} files: the rest were left out` : null)
     const added = taken.map(file => {
       const key = crypto.randomUUID()
-      held.current.set(key, { file, stop: new AbortController() })
-      return { key, name: file.name, type: file.type, size: file.size, status: 'preparing' as const, progress: 0, resized: false, original: false }
+      const preview = previewOf(file)
+      held.current.set(key, { file, stop: new AbortController(), preview })
+      return { key, name: file.name, type: typeOf(file), size: file.size, status: 'preparing' as const, progress: 0, resized: false, original: false, preview }
     })
     setDrafts(current => [...current, ...added])
     for (const draft of added) void start(draft.key, false)
   }, [start])
 
   const forget = (key: string, uploaded: Attachment | undefined) => {
-    held.current.get(key)?.stop.abort()
+    const entry = held.current.get(key)
+    entry?.stop.abort()
+    if (entry?.preview !== undefined) URL.revokeObjectURL(entry.preview)
     held.current.delete(key)
     // Uploaded already and not going to be sent: its place is given back.
     if (uploaded !== undefined) void ask('cancelUpload', { fileId: uploaded.id })
@@ -138,6 +154,7 @@ export const useDraftFiles = ({ conversationId, maxFileBytes }: Options) => {
 
   /** The message went: its files are the message's now, and the chips are done with. */
   const sent = useCallback(() => {
+    for (const { preview } of held.current.values()) if (preview !== undefined) URL.revokeObjectURL(preview)
     held.current.clear()
     setDrafts([])
     setNotice(null)
@@ -147,7 +164,10 @@ export const useDraftFiles = ({ conversationId, maxFileBytes }: Options) => {
   useEffect(() => {
     const entries = held.current
     return () => {
-      for (const { stop } of entries.values()) stop.abort()
+      for (const { stop, preview } of entries.values()) {
+        stop.abort()
+        if (preview !== undefined) URL.revokeObjectURL(preview)
+      }
     }
   }, [])
   useEffect(() => () => {

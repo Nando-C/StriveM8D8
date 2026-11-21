@@ -1,13 +1,14 @@
 import type { Attachment } from '@/types/protocol'
 
 // What a file is, as far as showing it goes. Decided by its declared type — and only for
-// types every current browser can show: anything else (HEIC from a phone, say) is a file
-// to download, never a broken picture.
+// types browsers can show: anything else (HEIC from a phone, say) is a file to download,
+// never a broken picture. (QuickTime is what phones and screen recordings produce; most
+// browsers play it, and one that cannot falls back to offering the download.)
 
 export type FileKind = 'image' | 'video' | 'audio' | 'pdf' | 'file'
 
 const IMAGES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif'])
-const VIDEOS = new Set(['video/mp4', 'video/webm'])
+const VIDEOS = new Set(['video/mp4', 'video/webm', 'video/quicktime'])
 const AUDIO = new Set(['audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/ogg', 'audio/wav', 'audio/webm', 'audio/flac'])
 
 export const kindOf = (type: string): FileKind =>

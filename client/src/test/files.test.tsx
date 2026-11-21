@@ -81,6 +81,29 @@ describe('attaching files', () => {
     expect(screen.getByRole('button', { name: 'Create an account to send files' })).toBeDisabled()
   })
 
+  it('shows a chosen picture in its chip before it is sent, straight from the device', async () => {
+    const create = vi.fn(() => 'blob:preview-1')
+    const revoke = vi.fn()
+    const original = { create: URL.createObjectURL, revoke: URL.revokeObjectURL }
+    Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke })
+    try {
+      const events = await open()
+      stored.put.mockImplementationOnce(() => new Promise(() => {}))
+      choose(png())
+      await waitFor(() => expect(chips()).toHaveLength(1))
+      expect(chips()[0].querySelector('img')).toHaveAttribute('src', 'blob:preview-1')
+      // Nothing was asked of the server for it.
+      expect(fakeSocket.sent('getFileUrl')).toHaveLength(0)
+
+      // Taken out again: the address is given back.
+      await events.click(within(chips()[0]).getByRole('button', { name: /^Remove / }))
+      await waitFor(() => expect(screen.queryByRole('list', { name: 'Files to send' })).not.toBeInTheDocument())
+      expect(revoke).toHaveBeenCalledWith('blob:preview-1')
+    } finally {
+      Object.assign(URL, { createObjectURL: original.create, revokeObjectURL: original.revoke })
+    }
+  })
+
   it('uploads a chosen file straight away, and sends it with the message', async () => {
     const events = await open()
     stored.prepare.mockResolvedValueOnce({ blob: png(), name: 'holiday.png', type: 'image/png', size: 2048, width: 640, height: 480, placeholder: 'data:image/webp;base64,AAAA', resized: false })
@@ -434,6 +457,6 @@ describe('saying what a file is', () => {
       .toEqual(['0 B', '999 B', '1.0 kB', '1.5 kB', '332 kB', '3.0 MB', '25 MB', '1.5 GB'])
     expect([9000, 65_000, 3_723_000].map(formatDuration)).toEqual(['0:09', '1:05', '1:02:03'])
     expect(['image/png', 'image/heic', 'image/svg+xml', 'video/webm', 'video/quicktime', 'audio/mpeg', 'application/pdf', 'text/html'].map(kindOf))
-      .toEqual(['image', 'file', 'file', 'video', 'file', 'audio', 'pdf', 'file'])
+      .toEqual(['image', 'file', 'file', 'video', 'video', 'audio', 'pdf', 'file'])
   })
 })

@@ -27,6 +27,8 @@ test('a picture, a video and a PDF: sent from one browser, previewed in the othe
 
     // A picture with a few words.
     await attach(ana, pngFile('holiday.png', 320, 200))
+    // Shown in its chip before it is sent, straight from her own device.
+    await expect.poll(() => draftFiles(ana).locator('img').evaluate(image => image.complete && image.naturalWidth)).toBe(320)
     await ana.getByRole('textbox', { name: /^Message / }).fill('from the trip')
     await sendButton(ana).click()
     await expect(draftFiles(ana)).toHaveCount(0)
