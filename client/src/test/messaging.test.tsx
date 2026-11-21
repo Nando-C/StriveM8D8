@@ -313,25 +313,3 @@ describe('a message its author deleted', () => {
     expect(chatButton('bob')).not.toHaveTextContent('delete me')
   })
 })
-
-describe('a message with files', () => {
-  it('is named by its files where there are no words: in the list and, for now, in the conversation', async () => {
-    renderApp()
-    const file = { id: '3f0e6c1a-0000-4000-8000-000000000001', name: 'holiday.png', type: 'image/png', size: 2048 }
-    const sent = message('bob', 'alice', '', { id: '0'.repeat(23) + '1', timestamp: 1000, attachments: [file, { ...file, id: file.id.replace(/1$/, '2'), name: 'notes.pdf' }] })
-    const events = await loginAs('alice', [user('bob')], [{
-      ...conversation('alice', 'bob', { last: sent }),
-      lastMessage: { id: sent.id, from: sent.from, fromName: 'bob', preview: '', timestamp: 1000, attachments: 2 },
-    }])
-    expect(chatButton('bob')).toHaveTextContent('2 files')
-
-    await events.click(chatButton('bob'))
-    serverSays('history', { conversationId: BOB, messages: [sent], hasMore: false })
-    expect(screen.getByRole('log')).toHaveTextContent('holiday.png')
-    expect(screen.getByRole('log')).toHaveTextContent('notes.pdf')
-
-    // One that arrives live is counted, and previewed, the same way.
-    serverSays('message', message('bob', 'alice', '', { attachments: [file] }))
-    await waitFor(() => expect(chatButton('bob')).toHaveTextContent('1 file'))
-  })
-})

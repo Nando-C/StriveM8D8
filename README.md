@@ -19,7 +19,8 @@ A real-time, one-to-one chat application: a Node.js + Socket.IO server with Mong
 - **Guests and accounts.** Type a name and you are in, with that name kept for your browser; or create an account with a password and use it from several devices at once — with a list of those devices, remote sign-out, and a recovery code in place of an email address.
 - **Status that means something.** Online, away (also set by itself after five minutes without activity, and only when *every* one of your devices is idle), do not disturb, and invisible — plus a line of your own that can clear itself after a while. Invisible is real: to everyone else you are indistinguishable from someone who is not connected, yet you can read and write as usual.
 - **Group chats.** Up to twenty people, made in two clicks. Each message says who wrote it, the ticks say when *everyone* has it — press them to see who has seen it — and membership is handled the way people expect: anyone can add or leave, the creator can rename and remove, someone added later sees the conversation from that point on, and someone removed loses it at once.
-- **669 automated tests**, 30 of them driving real browsers against the built app, run on every push by GitHub Actions.
+- **File sharing.** Attach, drop or paste files into a message: they upload straight from the browser to private storage with a progress bar, and arrive as a picture grid, a video or audio player, or a download card. Pictures open full size with the arrow keys stepping through the conversation's media; a message, and its files, can be deleted by whoever sent it.
+- **694 automated tests**, 32 of them driving real browsers against the built app, run on every push by GitHub Actions.
 
 ## Tech stack
 
@@ -106,12 +107,13 @@ test/                       Server integration tests (real socket clients, in-me
 client/                     CLIENT
 └── src/
     ├── App.tsx             Entry screen or chat shell
-    ├── components/         EntryScreen, account/ (menu and dialogs), groups/ (new group, details, people picker), Sidebar, MessageList, MessageComposer, ConnectionBanner, …
+    ├── components/         EntryScreen, account/ (menu and dialogs), groups/ (new group, details, people picker), files/ (attachments in a message, the full-size viewer, upload chips), Sidebar, MessageList, MessageComposer, ConnectionBanner, …
     │   └── ui/             shadcn/ui components (source files, see below)
     ├── hooks/useChat.ts    Connects the chat to the socket: presence, messages, read reports
     ├── hooks/useSessionLogin.ts  Who this tab is: logging in, back in after a reconnect, and out
+    ├── hooks/useDraftFiles.ts    The files chosen for the message being written: measured, uploaded, cancelled
     ├── lib/chatState.ts    Every state change, as a pure reducer (with chatSelectors.ts, messages.ts)
-    ├── lib/                socket, requests, stored sessions, server config, motion timings, formatting
+    ├── lib/                socket, requests, stored sessions, server config, motion timings, formatting; files: what kind a file is, measuring and shrinking it before upload, the upload itself, short-lived download addresses
     ├── types/protocol.ts   The wire protocol as TypeScript types
     └── test/               Client tests (the real app against a fake socket)
 
@@ -162,7 +164,7 @@ Three suites, each testing what the others cannot.
 
 | | Server | Client |
 |---|---|---|
-| Tests | 383, in 19 files | 256, in 13 files |
+| Tests | 384, in 19 files | 278, in 14 files |
 | Approach | Real Socket.IO clients against a fresh server per test, with an in-memory MongoDB | The real app rendered against a fake socket; each test plays the server |
 | Lint | oxlint | oxlint, including React hooks rules |
 | Types | — | TypeScript, checked on every build |
@@ -177,6 +179,7 @@ Three suites, each testing what the others cannot.
   - someone leaving and vanishing from the list promptly;
   - a conversation arriving exactly once on both sides;
   - a message waiting for someone who is away, and the "New messages" line when they return;
+  - a picture, a video and a PDF sent from one browser and previewed in another from real storage, a wide photo sent smaller, opening full size, downloading, deleting, and the size limit;
   - reload restoring everything;
   - a third person seeing nothing;
   - the bot;
@@ -393,7 +396,8 @@ People are identified by a permanent `userId`; usernames are labels. No event ca
 | `markRead` | `{ conversationId, upTo }` + acknowledgement callback | `{ ok: true }` or `{ ok: false, message }` |
 | `deleteMessage` | `{ id }` + acknowledgement callback | `{ ok: true }` or `{ ok: false, message }` — your own messages only |
 | `requestUpload` | `{ conversationId, name, type, size, width?, height?, durationMs?, placeholder? }` + acknowledgement callback | `{ ok: true, fileId, uploadUrl, headers, expiresInSeconds }` or `{ ok: false, message }` — accounts only |
-| `getFileUrl` | `{ fileId }` + acknowledgement callback | `{ ok: true, url, expiresInSeconds }` or `{ ok: false, message }` |
+| `cancelUpload` | `{ fileId }` + acknowledgement callback | `{ ok: true }` or `{ ok: false, message }` — your own upload, before it is sent |
+| `getFileUrl` | `{ fileId, download? }` + acknowledgement callback | `{ ok: true, url, expiresInSeconds }` or `{ ok: false, message }` |
 | `getStorageUsage` | `{}` + acknowledgement callback | `{ ok: true, usedBytes, maxBytes, files }` — administrators only |
 | `setStatus` | `{ status?, text?, clearAfterMinutes? }` + acknowledgement callback | `{ ok: true, status, statusText, statusClearAt }` or `{ ok: false, message }` |
 | `setIdle` | `{ idle }` + acknowledgement callback | `{ ok: true }` or `{ ok: false, message }` |
@@ -527,7 +531,7 @@ Off unless `FILE_STORAGE` is set; `loggedin.features.files` says which. A file's
 1. **`requestUpload`** — an account says what it wants to send (`name`, `type`, `size` in bytes; for pictures and video also `width`, `height`, `durationMs` and a `placeholder`, a tiny blurred preview as a data URL of at most 1000 characters). The server checks that the sender may write in the conversation and has room in its allowances, and answers with a `fileId` and an `uploadUrl`.
 2. **The browser `PUT`s the file** to `uploadUrl` with exactly the `headers` it was given. The address accepts that type and that many bytes and nothing else, for 15 minutes.
 3. **`sendmessage`** with `attachments: [fileId, …]` (at most 10, each your own, uploaded for this conversation, not used before). The server checks that each object really arrived at its declared size before saving the message. `text` may be empty.
-4. **`getFileUrl`** — anyone who could read the message (including guests, and never someone who joined a group after it was sent) gets an address good for 5 minutes. Pictures, video, audio and PDF are served to be shown in the page; **everything else — SVG and HTML included — only ever as a download**.
+4. **`getFileUrl`** — anyone who could read the message (including guests, and never someone who joined a group after it was sent) gets an address good for 5 minutes. Pictures, video, audio and PDF are served to be shown in the page; **everything else — SVG and HTML included — only ever as a download**. With `download: true` anything is served as a download.
 
 - **Allowances.** Uploading is for accounts; guests can receive files. Each request is charged at once, by its declared size, to the account's day, to its client address's day, and to the total stored. An account may have 5 uploads waiting to be sent.
 - **Uploads that are never sent.** After 15 minutes: if nothing was uploaded, the reservation is undone and costs nothing; if something was, it is deleted and still counts against that day's allowances.
@@ -561,15 +565,15 @@ Clients do not need `/online-users` — presence arrives over the socket, and th
 ## Known limitations
 
 - **A forgotten password and a lost recovery code cannot be recovered.** There is no email address on an account, by design.
-- **A group has one admin and no roles beyond that.** Messages cannot be edited; their author can delete them.
-- **Files are not scanned for malware**, and the server supports sending them before the interface does: attaching, previewing and deleting from the screen are the next step. On a public deployment accounts are free to create, so the total-storage ceiling is the real limit: when it is reached, uploads stop for everyone until files expire. The demo bot answers in a group only when mentioned.
+- **A group has one admin and no roles beyond that.** Messages cannot be edited; their author can delete them. The demo bot answers in a group only when mentioned.
+- **Files are not scanned for malware.** On a public deployment accounts are free to create, so the total-storage ceiling is the real limit: when it is reached, uploads stop for everyone until files expire. A message carries at most five files from this client (the server allows an account five uploads waiting to be sent). Pictures in formats browsers cannot show (HEIC, for instance) arrive as a download rather than a preview.
 - **At login a user is sent their 50 most recently active conversations.** Older ones still exist and receive messages, but are not listed until something happens in them.
 - **Single instance.** The list of who is online lives in the server's memory, so the server cannot be scaled to several instances as it stands.
 - **On the live demo:** messages are deleted automatically a day after they are sent, and because the server sleeps when idle on free hosting, the first visitor after a quiet spell waits for it to wake. The client says so while it waits.
 
 ### What would come next
 
-- **The screens for file attachments, then one-to-one video calls.**
+- **One-to-one video calls.**
 - **Horizontal scaling**, moving presence into Redis and using Socket.IO's Redis adapter.
 - **More browsers.** The end-to-end suite runs in Chromium only; Firefox and WebKit would be a configuration change and a longer run.
 

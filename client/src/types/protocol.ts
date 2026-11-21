@@ -461,7 +461,10 @@ export interface ClientToServerEvents {
   /** One's own messages only. */
   deleteMessage: (payload: { id: string }, ack: (response: Ack) => void) => void
   requestUpload: (payload: RequestUploadPayload, ack: (response: RequestUploadAck) => void) => void
-  getFileUrl: (payload: { fileId: string }, ack: (response: FileUrlAck) => void) => void
+  /** Takes back an upload that has not been sent with a message. */
+  cancelUpload: (payload: { fileId: string }, ack: (response: Ack) => void) => void
+  /** `download`: an address that saves the file rather than showing it. */
+  getFileUrl: (payload: { fileId: string; download?: boolean }, ack: (response: FileUrlAck) => void) => void
   getStorageUsage: (payload: Record<string, never>, ack: (response: StorageUsageAck) => void) => void
   createGroup: (payload: CreateGroupPayload, ack: (response: Ack<{ conversationId: string }>) => void) => void
   addMembers: (payload: AddMembersPayload, ack: (response: Ack) => void) => void

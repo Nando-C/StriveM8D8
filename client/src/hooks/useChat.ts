@@ -15,6 +15,7 @@ import { startingSession } from '@/lib/session'
 import { socket } from '@/lib/socket'
 import { useSocketConnected } from '@/lib/useSocketConnected'
 import type {
+  Attachment,
   ConversationRemovedPayload,
   MessageDeletedPayload,
   ConversationUpdatedPayload,
@@ -256,18 +257,22 @@ export const useChat = () => {
   // The other person does not have to be online: the message waits for them.
   const canSend = connected && state.phase === 'loggedIn' && open !== null && open.counterpart?.gone !== true
 
-  const sendMessage = (text: string) => {
+  /** `attachments`: files already uploaded for this conversation, as the message will carry them. */
+  const sendMessage = (text: string, attachments: Attachment[] = []) => {
     const conversationId = state.selected
     if (!canSend || conversationId === null) return
 
     const clientId = crypto.randomUUID()
-    dispatch({ type: 'sendStarted', conversationId, clientId, text, timestamp: Date.now() })
+    dispatch({ type: 'sendStarted', conversationId, clientId, text, attachments, timestamp: Date.now() })
 
     // Without a timeout the callback is never called if the connection drops first,
     // and the message would stay "pending" forever.
     socket
       .timeout(ACK_TIMEOUT_MS)
-      .emit('sendmessage', { conversationId, text, clientId }, (error, response) => {
+      .emit('sendmessage', {
+        conversationId, text, clientId,
+        ...(attachments.length > 0 ? { attachments: attachments.map(file => file.id) } : {}),
+      }, (error, response) => {
         if (error) {
           dispatch({ type: 'sendFailed', conversationId, clientId, reason: UNCONFIRMED })
         } else if (response.ok) {
@@ -305,6 +310,7 @@ export const useChat = () => {
     username: state.username,
     kind: state.kind,
     admin: state.admin,
+    features: state.features,
     ownStatus: state.ownStatus,
     loginError: state.loginError,
     chats,

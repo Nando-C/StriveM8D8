@@ -174,6 +174,17 @@ export const createAttachments = ({ storage, settings }) => {
         { $set: { state: 'pending' }, $unset: { messageId: 1, attachedAt: 1, expiresAt: 1 } },
     )
 
+    /**
+     * The uploader thinks better of a file before sending it. As with one that is never
+     * sent: free if nothing was uploaded, and otherwise deleted but still charged to the day.
+     */
+    const cancel = async ({ fileId, userId }) => {
+        const file = await File.findOne({ _id: fileId, uploader: userId, state: 'pending' }).lean()
+        if (!file) refuse(UNKNOWN_FILE)
+        if (await storage.head(file.key) === null) await File.deleteOne({ _id: file._id, state: 'pending' })
+        else await destroy(file, { keepCharge: true })
+    }
+
     /** The files of a message that is being deleted: gone from storage, still counted against today. */
     const discardOfMessage = async messageId =>
         destroyAll(await File.find({ messageId, state: 'attached' }).lean(), { keepCharge: true })
@@ -189,13 +200,14 @@ export const createAttachments = ({ storage, settings }) => {
      * conversation and could read the message it is attached to — someone who joined a
      * group later cannot fetch what was sent before, any more than they can read it.
      */
-    const downloadUrl = async ({ fileId, userId, baseUrl }) => {
+    const downloadUrl = async ({ fileId, userId, baseUrl, download = false }) => {
         const file = await File.findOne({ _id: fileId, state: 'attached' }).lean()
         if (!file) refuse(UNKNOWN_FILE)
         const member = memberOf(await Conversation.findById(file.conversationId).lean(), userId)
         if (!member || !joinedBefore(member, file.attachedAt)) refuse(UNKNOWN_FILE)
         const url = await storage.presignDownload({
-            key: file.key, name: file.name, type: file.type, inline: isInlineType(file.type), baseUrl,
+            // `download`: to be saved rather than shown, whatever it is.
+            key: file.key, name: file.name, type: file.type, inline: !download && isInlineType(file.type), baseUrl,
         })
         return { url, expiresInSeconds: DOWNLOAD_URL_SECONDS }
     }
@@ -251,7 +263,7 @@ export const createAttachments = ({ storage, settings }) => {
     }
 
     return {
-        enabled, limits, reserve, claim, release, discardOfMessage, conversationDeleted, downloadUrl, usage,
+        enabled, limits, reserve, cancel, claim, release, discardOfMessage, conversationDeleted, downloadUrl, usage,
         sweepPending, sweepExpired,
     }
 }
@@ -310,7 +322,15 @@ export const createFileHandlers = ({ presence, settings, rateLimiter, attachment
 
     const getFileUrl = async ({ socket, user, payload }) => {
         if (!isFileId(payload.fileId)) refuse(UNKNOWN_FILE)
-        return attachments.downloadUrl({ fileId: payload.fileId, userId: user.userId, baseUrl: baseUrlOf(socket) })
+        return attachments.downloadUrl({
+            fileId: payload.fileId, userId: user.userId, baseUrl: baseUrlOf(socket), download: payload.download === true,
+        })
+    }
+
+    const cancelUpload = async ({ user, payload }) => {
+        if (!isFileId(payload.fileId)) refuse(UNKNOWN_FILE)
+        await attachments.cancel({ fileId: payload.fileId, userId: user.userId })
+        return {}
     }
 
     // How full storage is: for whoever runs the deployment, who is the one to act on it.
@@ -341,6 +361,7 @@ export const createFileHandlers = ({ presence, settings, rateLimiter, attachment
         }
 
         on('requestUpload', 'requestUpload', requestUpload)
+        on('cancelUpload', 'requestUpload', cancelUpload)
         on('getFileUrl', 'getFileUrl', getFileUrl)
         on('getStorageUsage', 'usage', getStorageUsage)
     }

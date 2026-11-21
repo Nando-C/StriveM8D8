@@ -1,7 +1,9 @@
 import { UNCONFIRMED, asDeleted, fromServer, isSaid, mergeConfirmed, previewOf, type LocalMessage } from '@/lib/messages'
 import { comparePositions, positionOf } from '@/lib/positions'
 import type {
+  Attachment,
   ConversationSummary,
+  Features,
   HistoryErrorPayload,
   HistoryPayload,
   IdentityKind,
@@ -72,6 +74,8 @@ export interface ChatState {
   /** Guest or account; `null` until the server has said. */
   kind: IdentityKind | null
   admin: boolean
+  /** What this deployment offers (file sharing, and its limits). */
+  features: Features
   /** What the user has chosen to show; `null` until the server has said. */
   ownStatus: OwnStatus | null
   loginError: string | null
@@ -127,9 +131,12 @@ export type ChatAction =
   | { type: 'receipt'; payload: ReceiptPayload }
   /** This client told the server how far it has read. */
   | { type: 'readUpTo'; conversationId: string; position: Position }
-  | { type: 'sendStarted'; conversationId: string; clientId: string; text: string; timestamp: number }
+  | { type: 'sendStarted'; conversationId: string; clientId: string; text: string; attachments?: Attachment[]; timestamp: number }
   | { type: 'sendConfirmed'; conversationId: string; clientId: string; id: string; timestamp: number }
   | { type: 'sendFailed'; conversationId: string; clientId: string; reason: string }
+
+/** A server that says nothing about what it offers offers no files. */
+const NO_FEATURES: Features = { files: false }
 
 export const CONNECTION_LOST = 'The connection dropped before you were signed in. Please try again.'
 
@@ -150,6 +157,7 @@ export const initialChatState = (storedUsername: string | null): ChatState => ({
   username: storedUsername,
   kind: null,
   admin: false,
+  features: NO_FEATURES,
   ownStatus: null,
   loginError: null,
   loginCount: 0,
@@ -333,6 +341,7 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
         username: payload.username,
         kind: payload.kind,
         admin: payload.admin,
+        features: payload.features ?? NO_FEATURES,
         ownStatus: payload.ownStatus,
         loginError: null,
         loginCount: state.loginCount + 1,
@@ -534,6 +543,7 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
         fromName: state.username,
         kind: 'text',
         text: action.text,
+        ...(action.attachments?.length ? { attachments: action.attachments } : {}),
         timestamp: action.timestamp,
         own: true,
         status: 'pending',

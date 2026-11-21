@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import {
-  ChevronsUpDown, KeyRound, LogOut, MessageSquareText, MonitorSmartphone, Trash2, UserPlus, UserRoundPlus,
+  ChevronsUpDown, HardDrive, KeyRound, LogOut, MessageSquareText, MonitorSmartphone, Trash2, UserPlus, UserRoundPlus,
 } from 'lucide-react'
 import {
   ChangePasswordDialog, CreateAccountDialog, DeleteAccountDialog, DevicesDialog, InvitationsDialog,
@@ -11,6 +11,8 @@ import {
   DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { UserAvatar } from '@/components/UserAvatar'
+import { formatBytes } from '@/lib/files'
+import { ask } from '@/lib/request'
 import type { ServerConfig } from '@/lib/serverConfig'
 import { STATUS_CHOICES, STATUS_HINTS, STATUS_LABELS, type Presence } from '@/lib/status'
 import type { Ack, IdentityKind, OwnStatus, SetStatusPayload, Status } from '@/types/protocol'
@@ -20,6 +22,8 @@ export interface AccountMenuProps {
   /** `null` until the server has said (while signing back in). */
   kind: IdentityKind | null
   admin: boolean
+  /** Whether this deployment stores files — an administrator is then shown how full storage is. */
+  files?: boolean
   config: ServerConfig
   /** Requests need a logged-in connection: without one, only signing out is offered. */
   online: boolean
@@ -37,10 +41,19 @@ const KIND_LABEL: Record<IdentityKind, string> = { guest: 'Guest', account: 'Acc
 
 /** The signed-in user's entry at the top of the sidebar, and everything they can do about themselves. */
 export function AccountMenu({
-  username, kind, admin, config, online, ownStatus, onSetStatus, onBecameAccount, onLogout, onDeleted,
+  username, kind, admin, files = false, config, online, ownStatus, onSetStatus, onBecameAccount, onLogout, onDeleted,
 }: AccountMenuProps) {
   const [open, setOpen] = useState<Open>(null)
   const close = () => setOpen(null)
+  // How full storage is: asked for each time the menu opens, by whoever can act on it.
+  const [usage, setUsage] = useState<string | null>(null)
+  const showsUsage = admin && files
+  const loadUsage = async () => {
+    const answer = await ask('getStorageUsage', {})
+    setUsage(answer.ok
+      ? `${formatBytes(answer.usedBytes)} of ${formatBytes(answer.maxBytes)} used · ${answer.files} ${answer.files === 1 ? 'file' : 'files'}`
+      : null)
+  }
   const account = kind === 'account'
   // The user's own mark shows what they chose — which, invisible, is what others see: nothing.
   const ownPresence: Presence | undefined =
@@ -48,7 +61,7 @@ export function AccountMenu({
 
   return (
     <>
-      <DropdownMenu>
+      <DropdownMenu onOpenChange={opened => opened && showsUsage && online && void loadUsage()}>
         <DropdownMenuTrigger
           aria-label={`Account menu for ${username}`}
           className="flex w-full items-center gap-3 rounded-lg p-2 text-left outline-none transition-colors hover:bg-sidebar-accent/60 focus-visible:ring-3 focus-visible:ring-ring/50 aria-expanded:bg-sidebar-accent/60"
@@ -114,6 +127,12 @@ export function AccountMenu({
                 </DropdownMenuItem>
               )}
             </>
+          )}
+          {showsUsage && usage !== null && (
+            <p className="px-2 py-1.5 text-xs text-muted-foreground">
+              <HardDrive aria-hidden="true" className="mr-2 inline size-3.5" />
+              Storage: {usage}
+            </p>
           )}
           <DropdownMenuItem onSelect={onLogout}>
             <LogOut aria-hidden="true" /> {account ? 'Sign out' : 'Leave'}

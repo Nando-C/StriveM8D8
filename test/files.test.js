@@ -223,6 +223,32 @@ describe('asking to upload', () => {
         expect((await sendWith(alice, id, [first])).ok).toBe(true)
         expect((await reserve(alice, id)).ok).toBe(true)
     })
+
+    it('can be taken back before sending: free if nothing was uploaded, otherwise deleted and still charged', async () => {
+        await app.stop()
+        await start({ uploadMaxUserMbPerDay: 0.01 })
+        const alice = await account('alice')
+        const bob = await account('bob')
+        const id = dm(alice, bob)
+        const cancel = (person, fileId) => ask(person.socket, 'cancelUpload', { fileId })
+
+        const empty = (await reserve(alice, id, photo({ size: 6000 }))).fileId
+        // Only one's own, and only while it waits.
+        expect(await cancel(bob, empty)).toEqual({ ok: false, message: UNKNOWN_FILE })
+        expect(await cancel(alice, empty)).toEqual({ ok: true })
+        expect(await cancel(alice, empty)).toEqual({ ok: false, message: UNKNOWN_FILE })
+        expect(await File.countDocuments()).toBe(0)
+
+        const uploaded = await upload(alice, id, photo({ size: 6000 }))
+        expect(await cancel(alice, uploaded)).toEqual({ ok: true })
+        expect(await stored()).toEqual([])
+        expect(await sendWith(alice, id, [uploaded])).toEqual({ ok: false, message: NOT_AVAILABLE })
+        expect(await reserve(alice, id, photo({ size: 6000 }))).toEqual({ ok: false, message: 'You have reached your upload limit for today' })
+
+        const sent = await upload(bob, id)
+        await sendWith(bob, id, [sent])
+        expect(await cancel(bob, sent)).toEqual({ ok: false, message: UNKNOWN_FILE })
+    })
 })
 
 describe('allowances', () => {
@@ -422,6 +448,12 @@ describe('fetching a file', () => {
         expect(await disposition(photo({ name: 'x.zip', type: 'application/zip', size: 30 }))).toEqual(['application/zip', 'attachment'])
         expect(await disposition(photo({ name: 'x.mp4', type: 'video/mp4', size: 30 }))).toEqual(['video/mp4', 'inline'])
         expect(await disposition(photo({ name: 'x.pdf', type: 'application/pdf', size: 30 }))).toEqual(['application/pdf', 'inline'])
+
+        // Asked for to be saved, even a picture comes as a download.
+        const fileId = await upload(alice, id)
+        await sendWith(alice, id, [fileId])
+        const saved = await fetch((await ask(bob.socket, 'getFileUrl', { fileId, download: true })).url)
+        expect(saved.headers.get('content-disposition')).toMatch(/^attachment; filename="holiday\.png"/)
     })
 
     it('can be asked for in part, which is what lets a video be sought', async () => {
