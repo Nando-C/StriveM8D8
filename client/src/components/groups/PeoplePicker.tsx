@@ -5,7 +5,8 @@ import { Label } from '@/components/ui/label'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { UserAvatar } from '@/components/UserAvatar'
 import type { Candidate } from '@/lib/chatSelectors'
-import { KIND_LABELS, presenceLine } from '@/lib/status'
+import { presenceLineOf } from '@/lib/status'
+import { SCROLL_AREA_ROWS, cn } from '@/lib/utils'
 
 interface PeoplePickerProps {
   /** Distinguishes the fields of two pickers that could be on the page together. */
@@ -41,7 +42,7 @@ export function PeoplePicker({ id, candidates, selected, onToggle, max, disabled
         // Enter here is part of searching: it must not submit a form the picker is in.
         onKeyDown={event => event.key === 'Enter' && event.preventDefault()}
       />
-      <ScrollArea className="max-h-56 rounded-lg border [&_[data-slot=scroll-area-viewport]]:max-h-56 [&_[data-slot=scroll-area-viewport]>div]:!block">
+      <ScrollArea className={cn('max-h-56 rounded-lg border [&_[data-slot=scroll-area-viewport]]:max-h-56', SCROLL_AREA_ROWS)}>
         {matching.length === 0 ? (
           <p className="p-3 text-sm text-muted-foreground">Nobody matches “{search.trim()}”.</p>
         ) : (
@@ -66,7 +67,7 @@ export function PeoplePicker({ id, candidates, selected, onToggle, max, disabled
                     <span className="flex min-w-0 flex-col">
                       <span className="truncate">{candidate.username}</span>
                       <span className="truncate text-xs text-muted-foreground">
-                        {presenceLine(candidate.kind === null ? undefined : KIND_LABELS[candidate.kind], candidate.presence, candidate.statusText)}
+                        {presenceLineOf(candidate)}
                       </span>
                     </span>
                   </label>

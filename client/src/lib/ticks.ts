@@ -10,9 +10,6 @@ export type Tick = 'sent' | 'delivered' | 'seen'
 
 export const TICK_LABELS: Record<Tick, string> = { sent: 'Sent', delivered: 'Delivered', seen: 'Seen' }
 
-// In a group the bot reads only what mentions it; counting it would hold every message at one tick.
-const BOT_ID = 'demo-bot'
-
 /**
  * Who a message was for: the other members who were already in the conversation when it
  * was sent. Someone added later never had the message in front of them, and must not
@@ -24,7 +21,8 @@ export const audienceOf = (message: LocalMessage, summary: ConversationSummary, 
   return summary.members.filter(
     member =>
       member.userId !== ownUserId &&
-      !(summary.kind === 'group' && member.userId === BOT_ID) &&
+      // In a group the bot reads only what mentions it: counting it would hold every message at one tick.
+      !(summary.kind === 'group' && member.bot === true) &&
       comparePositions(member.joinedAfter ?? null, position) < 0,
   )
 }
@@ -52,7 +50,8 @@ export const tickOf = (message: LocalMessage, summary: ConversationSummary | nul
 /** Who has seen a message and who has only received it — for a group's "seen by" list. */
 export const receiptsOf = (message: LocalMessage, summary: ConversationSummary, ownUserId: string) => {
   const audience = audienceOf(message, summary, ownUserId)
-  const seenBy = audience.filter(member => reached(member, 'readUpTo', message))
-  const deliveredTo = audience.filter(member => !seenBy.includes(member) && hasReceived(member, message))
+  const seen = (member: ConversationMember) => reached(member, 'readUpTo', message)
+  const seenBy = audience.filter(seen)
+  const deliveredTo = audience.filter(member => !seen(member) && hasReceived(member, message))
   return { seenBy: seenBy.map(member => member.username), deliveredTo: deliveredTo.map(member => member.username) }
 }

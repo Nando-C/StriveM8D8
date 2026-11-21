@@ -1,4 +1,4 @@
-import { BOT, BOT_REPLY_DELAY_MS, botReply, mentionsBot, withoutBotMention } from '../bot.js'
+import { BOT, BOT_MEMBER, BOT_REPLY_DELAY_MS, botReply, mentionsBot, withoutBotMention } from '../bot.js'
 import {
     advancePosition, conversationViewFor, directConversationId, joinedBefore, lastPosition, memberOf, parseDirectId,
     previewOf, publishPositions, receiptOf, visibleTo,
@@ -7,8 +7,10 @@ import { isDatabaseReady, isDuplicateKey } from '../db.js'
 import { Conversation } from '../models/conversation.js'
 import { Identity } from '../models/identity.js'
 import { Message } from '../models/message.js'
-import { beforePosition, comparePositions, isPosition, positionOf } from '../positions.js'
-import { NOT_LOGGED_IN, SLOW_DOWN, isNonEmptyString, isObject, withAck } from './validation.js'
+import { afterPosition, beforePosition, comparePositions, isPosition, laterPosition, positionOf } from '../positions.js'
+import {
+    MAX_CONVERSATION_ID_LENGTH, NOT_LOGGED_IN, SLOW_DOWN, UNKNOWN_CONVERSATION, isNonEmptyString, isObject, withAck,
+} from './validation.js'
 
 // Messages and the conversations they belong to. A message is addressed to a
 // conversation, never to a person or a connection: whoever is in the conversation's
@@ -17,7 +19,6 @@ import { NOT_LOGGED_IN, SLOW_DOWN, isNonEmptyString, isObject, withAck } from '.
 
 const CLIENT_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/
 const MAX_TEXT_LENGTH = 2000
-const MAX_CONVERSATION_ID_LENGTH = 200
 const HISTORY_PAGE = 100
 
 // Per socket.
@@ -27,9 +28,6 @@ const RATE_LIMITS = {
     markRead: { limit: 30, windowMs: 10_000 },
 }
 
-// One answer for "no such conversation" and "not yours": which of the two it is says
-// something about other people's conversations.
-const UNKNOWN_CONVERSATION = 'Unknown conversation'
 const NOT_SAVED = 'Message could not be saved'
 const NOT_LOADED = 'History could not be loaded'
 
@@ -50,10 +48,27 @@ const messageView = (message, forUserId) => ({
 export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) => {
     const allowed = rateLimiter.perSocket(RATE_LIMITS)
 
-    /** Tells the other members, on every device they have connected, where `userId` now stands. */
-    const tellReceipt = (conversation, userId) => {
-        for (const other of conversation.members) {
-            if (other.userId === userId) continue
+    // Where a member stands is news only to whoever wrote what they have now received or
+    // read: nobody else's screen shows anything of it. In a group of twenty, telling
+    // everyone about everyone would be 380 events for a single message; this is 19.
+    //
+    // `since` is where the member stood, as far as others were told, before moving.
+    const tellReceipt = async (conversation, userId, since) => {
+        const member = memberOf(conversation, userId)
+        const upTo = laterPosition(member?.published?.deliveredUpTo ?? null, member?.published?.readUpTo ?? null)
+        if (upTo === null) return
+        const others = conversation.members.filter(other => other.userId !== userId)
+        // (Between two people there is nobody to leave out, and nothing to look up.)
+        const authors = conversation.kind === 'direct'
+            ? null
+            : new Set(await Message.distinct('from', {
+                conversationKey: conversation._id,
+                kind: { $ne: 'system' },
+                from: { $ne: userId },
+                $and: [afterPosition(since), { $nor: [afterPosition(upTo)] }],
+            }))
+        for (const other of others) {
+            if (authors !== null && !authors.has(other.userId)) continue
             const receipt = receiptOf(conversation, userId, other)
             if (receipt) presence.tell([other.userId], 'receipt', receipt)
         }
@@ -61,23 +76,15 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
 
     /**
      * Moves one member's delivered or read position forward and, if that changes what
-     * others may know, tells them. Reading something implies having received it.
-     * Resolves to whether the member's own (true) position moved.
+     * others may know, tells those it concerns. Resolves to `{ moved, conversation }`:
+     * whether the member's own (true) position moved, and the conversation as it then is
+     * (null if they are not in it).
      */
     const advance = async (conversationId, userId, field, position) => {
         // While a user is invisible, what others are told about their reading stands still.
-        const publish = presence.isShown(userId)
-        const fields = field === 'readUpTo' ? ['deliveredUpTo', 'readUpTo'] : ['deliveredUpTo']
-        const results = await Promise.all(
-            fields.map(each => advancePosition(conversationId, userId, each, position, { publish })),
-        )
-        // (The field asked for is the last of them.)
-        const moved = results.at(-1).moved
-        if (results.some(result => result.published)) {
-            const fresh = await Conversation.findById(conversationId).lean()
-            if (fresh) tellReceipt(fresh, userId)
-        }
-        return moved
+        const result = await advancePosition(conversationId, userId, field, position, { publish: presence.isShown(userId) })
+        if ('publishedFrom' in result) await tellReceipt(result.conversation, userId, result.publishedFrom)
+        return result
     }
 
     // A message goes to each device separately, with an acknowledgement of its own: that
@@ -96,13 +103,17 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
 
     /** Sends each connected member their own view of the conversation. */
     const tellMembers = async conversation => {
-        for (const member of conversation.members) {
-            // (A view costs an unread count: not worked out for somebody who is not there.)
-            if (presence.socketsOf(member.userId).length === 0) continue
-            presence.tell([member.userId], 'conversationUpdated', {
-                conversation: await conversationViewFor(conversation, member.userId),
-            })
-        }
+        // (A view costs an unread count: not worked out for somebody who is not there.)
+        const connected = conversation.members.filter(member => presence.socketsOf(member.userId).length > 0)
+        // The counts are asked for together, and the views sent in the members' order.
+        const views = await Promise.allSettled(connected.map(member => conversationViewFor(conversation, member.userId)))
+        views.forEach((view, index) => {
+            if (view.status === 'fulfilled') {
+                presence.tell([connected[index].userId], 'conversationUpdated', { conversation: view.value })
+            }
+        })
+        const failed = views.find(view => view.status === 'rejected')
+        if (failed) throw failed.reason
     }
 
     /**
@@ -118,7 +129,7 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
         const otherId = pair.find(userId => userId !== sender.userId)
 
         const other = otherId === BOT.id
-            ? (settings.demoBot ? { userId: BOT.id, username: BOT.username } : null)
+            ? (settings.demoBot ? BOT_MEMBER : null)
             : await Identity.findOne({ userId: otherId }, { userId: 1, username: 1 }).lean()
         if (!other) return { refusal: UNKNOWN_CONVERSATION }
 
@@ -212,15 +223,16 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
                 return updated ?? conversation
             }
         }
-        const tellEveryone = async () => {
+        const tellEveryone = async stored => {
             try {
-                const current = await asStored()
-                if (current) await tellMembers(current)
+                if (stored) await tellMembers(stored)
             } catch (error) {
                 console.error("failed to describe a conversation:", error.name)
             }
         }
-        if (describe === 'before') await tellEveryone()
+        // (For a change to a group nothing has been awaited since `updated` was read: it
+        // is the conversation as stored.)
+        if (describe === 'before') await tellEveryone(updated ?? await asStored())
 
         const current = await asStored()
         if (current === null) {
@@ -246,7 +258,8 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
         // A conversation nobody has seen before is then described to each member in full
         // (who is in it, and their own unread count). It follows the message on purpose:
         // whatever a client worked out from the message alone, this replaces.
-        if (describe === 'after') await tellEveryone()
+        // (Nothing has been awaited since `current` was read.)
+        if (describe === 'after') await tellEveryone(current)
         return saved
     }
 
@@ -260,7 +273,7 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
                 // As the conversation is by then: a group may have lost a member, or the bot, or be gone.
                 const current = await Conversation.findById(conversation._id).lean()
                 if (!memberOf(current, BOT.id)) return
-                await post(current, { userId: BOT.id, username: BOT.username }, { text: botReply(text, turn) })
+                await post(current, BOT_MEMBER, { text: botReply(text, turn) })
             } catch (error) {
                 console.error("demo bot failed to reply:", error.name)
             }
@@ -369,7 +382,7 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
         })
 
         // "I have read this conversation up to here." Stored, so that unread counts are
-        // right at the next login; telling the other members is a later step.
+        // right at the next login, and told to whoever wrote what was read.
         socket.on('markRead', async (rawPayload, rawAck) => {
             const { payload, reply, fail } = withAck(rawPayload, rawAck)
 
@@ -394,7 +407,7 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
                 if (last === null) return reply({ ok: true })
                 const upTo = comparePositions(payload.upTo, last) > 0 ? last : { ts: payload.upTo.ts, id: payload.upTo.id }
 
-                const moved = await advance(conversation._id, reader.userId, 'readUpTo', upTo)
+                const { moved } = await advance(conversation._id, reader.userId, 'readUpTo', upTo)
                 if (moved) {
                     // The reader's other devices drop their unread badge too.
                     if (presence.socketsOf(reader.userId).some(id => id !== socket.id)) {
@@ -449,7 +462,9 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter }) =
 
     /** A user is visible again: what others are told about their reading catches up, once. */
     const visibleAgain = async userId => {
-        for (const conversation of await publishPositions(userId)) tellReceipt(conversation, userId)
+        for (const { conversation, publishedFrom } of await publishPositions(userId)) {
+            await tellReceipt(conversation, userId, publishedFrom)
+        }
     }
 
     return { registerOn, identityRemoved, listDelivered, visibleAgain, post, tellMembers }

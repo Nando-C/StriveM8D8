@@ -10,7 +10,9 @@ import { UserAvatar } from '@/components/UserAvatar'
 import type { Candidate, OpenGroup } from '@/lib/chatSelectors'
 import { MAX_GROUP_MEMBERS, MAX_GROUP_NAME_LENGTH } from '@/lib/groupEvents'
 import { ask } from '@/lib/request'
-import { KIND_LABELS, presenceLine } from '@/lib/status'
+import { oneLine } from '@/lib/messages'
+import { presenceLineOf } from '@/lib/status'
+import { SCROLL_AREA_ROWS, cn } from '@/lib/utils'
 import { useChosen } from '@/lib/useChosen'
 import { useRequest } from '@/lib/useRequest'
 
@@ -45,12 +47,13 @@ export function GroupDetails({ conversationId, group, candidates, online, onClos
   const { chosen, toggle, clear } = useChosen(addable)
   const room = MAX_GROUP_MEMBERS - group.members.length
   // (As the server will store it.)
-  const newName = name.trim().replace(/\s+/g, ' ')
+  const newName = oneLine(name)
+  const renamable = newName !== '' && newName !== group.name
   const blocked = busy || !online
 
   const rename = (event: FormEvent) => {
     event.preventDefault()
-    if (newName === '' || newName === group.name) return
+    if (!renamable) return
     void run(() => ask('renameGroup', { conversationId, name: newName }), () => setDraft(null))
   }
   const remove = (userId: string) => void run(() => ask('removeMember', { conversationId, userId }), () => {})
@@ -72,7 +75,7 @@ export function GroupDetails({ conversationId, group, candidates, online, onClos
             {group.isAdmin ? ' · You are the admin' : admin === undefined ? '' : ` · ${admin.username} is the admin`}
           </SheetDescription>
         </SheetHeader>
-        <ScrollArea className="min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:!block">
+        <ScrollArea className={cn('min-h-0 flex-1', SCROLL_AREA_ROWS)}>
           <div className="flex flex-col gap-5 px-4 pb-4">
             {!online && <p className="text-sm text-muted-foreground">Changes can be made again once you are connected.</p>}
             <FormError message={error} />
@@ -119,7 +122,7 @@ export function GroupDetails({ conversationId, group, candidates, online, onClos
                         disabled={busy}
                       />
                     </div>
-                    <Button type="submit" variant="outline" disabled={blocked || newName === '' || newName === group.name}>
+                    <Button type="submit" variant="outline" disabled={blocked || !renamable}>
                       Rename
                     </Button>
                   </form>
@@ -138,7 +141,7 @@ export function GroupDetails({ conversationId, group, candidates, online, onClos
                           </span>
                           {!member.own && (
                             <span className="truncate text-xs text-muted-foreground">
-                              {presenceLine(member.kind === null ? undefined : KIND_LABELS[member.kind], member.presence, member.statusText)}
+                              {presenceLineOf(member)}
                             </span>
                           )}
                         </span>

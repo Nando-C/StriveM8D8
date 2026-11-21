@@ -17,6 +17,8 @@ export const createReadReporter = (intervalMs: number, { maxRetryMs = 30_000 } =
   // Changes whenever what is wanted changes, so that the answer to an old report can tell
   // it is no longer the current one.
   let generation = 0
+  // The report on its way for each conversation, and the generation it answers to.
+  const inFlight = new Map<string, { wanted: number }>()
 
   /** Drops the report that is waiting, if any: it is no longer wanted. */
   const cancel = () => {
@@ -42,18 +44,27 @@ export const createReadReporter = (intervalMs: number, { maxRetryMs = 30_000 } =
    */
   const offer = (key: string, position: Position, send: () => Promise<boolean>) => {
     cancel()
-    if (comparePositions(position, reported.get(key)) <= 0) return
-    const wanted = generation
+    if (comparePositions(position, reported.get(key)) <= 0) {
+      // Already sent — but perhaps not yet answered. If so it now answers to this offer:
+      // should it fail, it is this one that still wants it sent again. (Reading stopped
+      // and started again while it was on its way.)
+      const flying = inFlight.get(key)
+      if (flying !== undefined) flying.wanted = generation
+      return
+    }
+    const claim = { wanted: generation }
 
     const sendNow = (retryIn: number) => {
       waiting = null
       reported.set(key, position)
       sentAt.set(key, Date.now())
+      inFlight.set(key, claim)
       void send().then(taken => {
+        if (inFlight.get(key) === claim) inFlight.delete(key)
         if (taken || reported.get(key) !== position) return
         reported.delete(key)
         // Asked for something else since, or no longer reading: that will be offered afresh.
-        if (generation !== wanted) return
+        if (generation !== claim.wanted) return
         const again = () => sendNow(Math.min(retryIn * 2, maxRetryMs))
         waiting = { timer: setTimeout(again, retryIn), send: again }
       })

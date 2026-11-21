@@ -587,11 +587,54 @@ describe('someone who joined later', () => {
         expect(forAlice).toContainEqual(expect.objectContaining({ userId: bob.userId, readUpTo: positionOf(before) }))
         expect(JSON.stringify(receipts)).not.toContain(before.id)
 
-        // What happens from then on, she is told like anyone else.
-        const after = await send(alice.socket, messageTo(id, 'welcome'))
-        await markRead(bob.socket, id, positionOf(after))
+        // What happens to her own messages from then on, she is told like anyone else.
+        const hers = await send(carol.socket, messageTo(id, 'hello, I am new'))
+        await markRead(bob.socket, id, positionOf(hers))
         await settle()
-        expect(receipts.at(-1)).toMatchObject({ userId: bob.userId, readUpTo: positionOf(after) })
+        expect(receipts).toContainEqual(expect.objectContaining({ userId: bob.userId, readUpTo: positionOf(hers) }))
+    })
+})
+
+describe('receipts in a group', () => {
+    it('go to whoever wrote what was received or read, and to nobody else', async () => {
+        const [alice, bob, carol, dave] = await people('alice', 'bob', 'carol', 'dave')
+        const id = await group(alice, [bob, carol, dave])
+        await settle()
+        const heard = Object.fromEntries([alice, bob, carol, dave].map(person => [person.username, record(person.socket, 'receipt')]))
+
+        // One message: each of the three others receives it, and only its author hears so.
+        const first = await send(alice.socket, messageTo(id, 'from alice'))
+        await settle()
+        expect(heard.alice.map(receipt => receipt.userId).sort()).toEqual(ids(bob, carol, dave).sort())
+        expect(heard.alice.every(receipt => receipt.deliveredUpTo.id === first.id)).toBe(true)
+        expect([heard.bob, heard.carol, heard.dave]).toEqual([[], [], []])
+
+        // Dave reads up to a later message of bob's: news for both authors, not for carol.
+        const second = await send(bob.socket, messageTo(id, 'from bob'))
+        await settle()
+        for (const list of Object.values(heard)) list.length = 0
+        expect(await markRead(dave.socket, id, positionOf(second))).toEqual({ ok: true })
+        await settle()
+        expect(heard.alice).toEqual([expect.objectContaining({ userId: dave.userId, readUpTo: positionOf(second) })])
+        expect(heard.bob).toEqual([expect.objectContaining({ userId: dave.userId, readUpTo: positionOf(second) })])
+        expect(heard.carol).toEqual([])
+
+        // Whoever was not told live finds everyone's positions in the group as described at login.
+        carol.socket.close()
+        const session = await login(await app.client(), { username: 'carol', reservation: carol.reservation })
+        const view = session.conversations.find(conversation => conversation.id === id)
+        expect(memberIn(view, dave).readUpTo).toEqual(positionOf(second))
+    })
+
+    it('marks the bot among the members, so that nobody waits for it to have seen something', async () => {
+        await app.stop()
+        app = await startApp({ demoBot: true })
+        const [alice, bob] = await people('alice', 'bob')
+        const forAlice = nextEvent(alice.socket, 'conversationUpdated')
+        await ask(alice.socket, 'createGroup', { name: 'With the bot', userIds: [BOT.id, bob.userId] })
+        const view = (await forAlice).conversation
+        expect(memberIn(view, { userId: BOT.id })).toMatchObject({ bot: true })
+        expect(memberIn(view, bob)).not.toHaveProperty('bot')
     })
 })
 

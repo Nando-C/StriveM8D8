@@ -10,7 +10,7 @@
     "stack": "node stack.js"
   },
   "engines": {
-    "node": "^22.22.2 || ^24"
+    "node": "24.x"
   },
   "packageManager": "pnpm@12.18.0",
   "devDependencies": {

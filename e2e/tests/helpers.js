@@ -57,14 +57,8 @@ export const joinAsGuest = async (page, username) => {
 
 /** Two guests, each in their own browser, both signed in. */
 export const twoGuests = async browser => {
-    const [anaName, benName] = [unique('ana'), unique('ben')]
-    const ana = await openApp(browser)
-    await joinAsGuest(ana, anaName)
-    const ben = await openApp(browser)
-    await joinAsGuest(ben, benName)
-    await signedInAs(ana, anaName)
-    await signedInAs(ben, benName)
-    return { ana, ben, anaName, benName }
+    const [ana, ben] = await guests(browser, 'ana', 'ben')
+    return { ana: ana.page, ben: ben.page, anaName: ana.name, benName: ben.name }
 }
 
 /** Fills in the sign-up form that is on screen and submits it. */

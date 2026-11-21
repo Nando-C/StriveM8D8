@@ -4,6 +4,9 @@
 
 export const BOT = Object.freeze({ username: 'demo-bot', id: 'demo-bot' })
 
+/** The bot as a member of a conversation, or as the author of a message. */
+export const BOT_MEMBER = Object.freeze({ userId: BOT.id, username: BOT.username })
+
 /** Long enough to read as a reply rather than an echo. */
 export const BOT_REPLY_DELAY_MS = 600
 

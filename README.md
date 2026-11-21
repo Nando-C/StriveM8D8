@@ -19,7 +19,7 @@ A real-time, one-to-one chat application: a Node.js + Socket.IO server with Mong
 - **Guests and accounts.** Type a name and you are in, with that name kept for your browser; or create an account with a password and use it from several devices at once — with a list of those devices, remote sign-out, and a recovery code in place of an email address.
 - **Status that means something.** Online, away (also set by itself after five minutes without activity, and only when *every* one of your devices is idle), do not disturb, and invisible — plus a line of your own that can clear itself after a while. Invisible is real: to everyone else you are indistinguishable from someone who is not connected, yet you can read and write as usual.
 - **Group chats.** Up to twenty people, made in two clicks. Each message says who wrote it, the ticks say when *everyone* has it — press them to see who has seen it — and membership is handled the way people expect: anyone can add or leave, the creator can rename and remove, someone added later sees the conversation from that point on, and someone removed loses it at once.
-- **626 automated tests**, 30 of them driving real browsers against the built app, run on every push by GitHub Actions on two Node.js versions.
+- **631 automated tests**, 30 of them driving real browsers against the built app, run on every push by GitHub Actions.
 
 ## Tech stack
 
@@ -160,12 +160,12 @@ Three suites, each testing what the others cannot.
 
 | | Server | Client |
 |---|---|---|
-| Tests | 345, in 18 files | 251, in 13 files |
+| Tests | 347, in 18 files | 254, in 13 files |
 | Approach | Real Socket.IO clients against a fresh server per test, with an in-memory MongoDB | The real app rendered against a fake socket; each test plays the server |
 | Lint | oxlint | oxlint, including React hooks rules |
 | Types | — | TypeScript, checked on every build |
 
-- **CI** runs lint, both unit suites and the client build on every push and pull request, on Node 22 and Node 24, and the browser suite on Node 24 (`.github/workflows/ci.yml`). When a browser test fails, its trace — every step, with the page as it was — is kept as an artifact.
+- **CI** runs lint, both unit suites and the client build on every push and pull request, and the browser suite with them, all on Node 24 (`.github/workflows/ci.yml`). When a browser test fails, its trace — every step, with the page as it was — is kept as an artifact.
 - **The tests were themselves tested.** For each suite the code was broken on purpose — a check removed, a message broadcast instead of targeted, the token comparison skipped — to confirm that a test fails each time. That exercise exposed, and led to fixing, a test helper that was passing without proving anything.
 - **Server tests cover** login and username rules, guest names and their expiry, accounts (sign-up, sign-in, several devices, revoking a device, password change, recovery, deletion, turning a guest into an account), invitations and administrator names, guessing limits, that no secret reaches another client or a log, session takeover, presence, targeted delivery, every send-failure path, malformed payloads, the origin allowlist, rate limits and the payload cap, the demo bot, message expiry, history ordering and its 100-message cap, and behaviour when the database is down, has never connected, or comes back.
 - **Client tests cover** logging in and being refused, the people list through arrivals, reconnects and departures, exactly-once merging of live messages and history, unread counts, both kinds of acknowledgement, lost acknowledgements, the three ways in and which of them a deployment offers, sign-in and sign-up with the recovery code shown once, a forgotten password, the account menu (devices, password change, invitations, signing out, deletion, a guest becoming an account), re-login with the name's reservation or the device session, the stored session, waiting for a server that is not ready, being signed out by the server, and being signed in from another tab. Elements are found by role and label, the way assistive technology finds them.
@@ -197,7 +197,7 @@ Neither suite needs anything running. The server suite downloads a MongoDB binar
 
 You need:
 
-- **Node.js 22 (22.22 or newer) or 24** — the two versions CI runs on
+- **Node.js 24** — the version CI and both hosts run
 - **[pnpm](https://pnpm.io)** — the version is pinned in each `package.json`; `corepack enable pnpm` sets it up
 - **A MongoDB database** — a local `mongod` or a hosted cluster
 
@@ -342,7 +342,7 @@ This is the combination the live demo runs on, all on free tiers. The notes belo
 | Health check path (under Advanced) | `/health` |
 | Environment variables | `MONGO_CONNECTION`, `DEMO_BOT=true`, `MESSAGE_TTL_HOURS=24`; `FRONTEND_URL` after step 3 |
 
-- **Node version.** Render picks it from `engines` in `package.json`, which here allows 22 and 24, so it runs the newest Node 24. (An open-ended range would resolve to whatever Node is newest, which this project is not tested on.)
+- **Node version.** Render picks it from `engines` in `package.json`, which here allows only 24, so it runs the newest Node 24. (An open-ended range would resolve to whatever Node is newest, which this project is not tested on.)
 - **Database access.** A Render service calls out from a shared range of addresses for its region, listed under the service's **Connect → Outbound** tab. Add those ranges to the Atlas project's IP access list instead of allowing every address.
 - **Sleeping.** A free web service is stopped after 15 minutes without inbound traffic and takes about a minute to start again on the next request. An open chat tab keeps it awake; the client's "Waking the server…" notice covers the wait for the first visitor. Free services share a monthly allowance of instance hours per workspace.
 - **Optional:** under **Build Filters**, ignore `client/**`, `docs/**` and `README.md`, so that a change to the client alone does not restart the server and disconnect everyone.
@@ -463,7 +463,7 @@ The recovery code is shown once and is the only way back into an account whose p
 | `presence` | Everyone else who is logged in | `{ userId, status, statusText }` | How a listed user is shown has changed: they chose another status or text, went idle on every device, or came back. |
 | `ownStatus` | Your other connections | `{ status, statusText, statusClearAt }` | Your own status was changed on another of your devices, or its text ran out. |
 | `message` | Every connection of every member, except the one it was sent from | a message, with an acknowledgement callback | A message in one of your conversations — including your own, sent from another of your devices. **Call the acknowledgement**: it is what records the message as delivered to you, and moves the sender's tick. Each connection is sent the message separately, so each acknowledgement belongs to one person. |
-| `receipt` | The other members, on every connection | `{ conversationId, userId, deliveredUpTo, readUpTo }` | Another member has received or read further. Positions only move forward. This is what the ticks on your own messages are worked out from. Someone who joined a group later is not sent a position from before they joined (it would name an earlier message); for them it is `null`, here and in `members`. |
+| `receipt` | Whoever wrote the messages it covers, on every connection | `{ conversationId, userId, deliveredUpTo, readUpTo }` | Another member has received or read further. Positions only move forward. This is what the ticks on your own messages are worked out from — so in a group it is sent only to the authors of what was just received or read, not to every member (one message to a group of 20 is 19 of these, not 380); everyone finds all positions in `members` at their next login. It can arrive before `conversationUpdated` describes a brand-new conversation: keep it and apply it then. Someone who joined a group later is not sent a position from before they joined (it would name an earlier message); for them it is `null`, here and in `members`. |
 | `conversationUpdated` | Each member, separately | `{ conversation }` | A conversation is new to you or something about it changed (it was just created; the other person is gone; another of your devices read it; a group's members, admin or name changed). Replaces what you had. After the first message of a one-to-one conversation it arrives *after* the `message`; for a change to a group, *before* the system message that records it. |
 | `conversationRemoved` | Every connection of someone who left a group or was removed from it | `{ id }` | You are no longer in that group: forget it. |
 | `history` | The requester only | `{ conversationId, messages, hasMore }` | Up to 100 messages, oldest first. `hasMore`: there are earlier ones; ask again with `before` set to the first message's position. |
@@ -489,7 +489,8 @@ The shapes used above:
 // a conversation, as you are shown it
 { id, kind, name?, admin?, members, lastMessage, unreadCount }
 //  kind: "direct" | "group"; a group also has its name and its admin's userId, and lists its members in the order they joined
-//  members: [{ userId, username, deliveredUpTo, readUpTo, joinedAfter?, gone? }]   (positions, or null)
+//  members: [{ userId, username, deliveredUpTo, readUpTo, joinedAfter?, gone?, bot? }]   (positions, or null;
+//            `bot: true` marks the demo bot, which a client leaves out of a group's "seen by everyone")
 //           your own entry holds your true positions; everyone else's hold what they let be known —
 //           the same thing, except that an invisible member's stand still until they are visible again
 //  lastMessage: { id, from, fromName, preview, timestamp, kind?, data? } | null

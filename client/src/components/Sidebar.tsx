@@ -10,7 +10,7 @@ import { UserAvatar } from '@/components/UserAvatar'
 import { unreadLabel, type ChatEntry, type PersonEntry } from '@/lib/chatSelectors'
 import { listItem, pop, transition } from '@/lib/motion'
 import { KIND_LABELS, presenceLine } from '@/lib/status'
-import { cn } from '@/lib/utils'
+import { SCROLL_AREA_ROWS, cn } from '@/lib/utils'
 
 interface SidebarProps {
   username: string
@@ -134,7 +134,7 @@ export function Sidebar({
           </p>
         )}
       </div>
-      <ScrollArea className="min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:!block">
+      <ScrollArea className={cn('min-h-0 flex-1', SCROLL_AREA_ROWS)}>
         {chats.length > 0 && (
           <nav aria-label="Chats">
             <SectionHeading count={chats.length}>Chats</SectionHeading>

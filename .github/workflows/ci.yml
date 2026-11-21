@@ -15,16 +15,12 @@ permissions:
 
 # The server (repository root) and the client (client/) are independent packages, each
 # with its own package.json and pnpm-lock.yaml, so each job installs only its own.
-# Both run on the two supported Node lines: the oldest (22) and the current LTS (24).
+# Everything runs on Node 24: the one line the project supports, and the one both hosts run.
 jobs:
   server:
-    name: Server — lint and test (Node ${{ matrix.node }})
+    name: Server — lint and test
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        node: [22, 24]
     steps:
       - uses: actions/checkout@v7
 
@@ -36,7 +32,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 24
 
       # The tests run against an in-memory MongoDB, whose binary is downloaded on first use.
       - name: Cache the MongoDB test binary
@@ -50,13 +46,9 @@ jobs:
       - run: pnpm test
 
   client:
-    name: Client — lint, test and build (Node ${{ matrix.node }})
+    name: Client — lint, test and build
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        node: [22, 24]
     defaults:
       run:
         working-directory: client
@@ -71,7 +63,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 24
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
@@ -81,8 +73,7 @@ jobs:
 
   # Real browsers against the built client, the real server and a real MongoDB (in
   # memory). It needs all three packages installed: the suite starts the server from the
-  # repository root and builds the client itself. One Node version is enough here — the
-  # two jobs above already cover both; this one is about the browser.
+  # repository root and builds the client itself.
   e2e:
     name: End-to-end — browser tests
     runs-on: ubuntu-latest

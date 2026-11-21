@@ -208,6 +208,8 @@ export interface ConversationMember {
   readUpTo: Position | null
   /** Direct chats: this person's identity was removed. Nothing more can be sent. */
   gone?: true
+  /** The demo bot: it has no device, and in a group reads only what is addressed to it. */
+  bot?: true
 }
 
 export interface LastMessage {

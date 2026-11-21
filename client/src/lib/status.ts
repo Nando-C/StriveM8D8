@@ -62,3 +62,7 @@ export const presenceLine = (kindLabel: string | undefined, presence: Presence, 
   const line = [kindLabel, STATUS_LABELS[presence]].filter(part => part !== undefined).join(' · ')
   return statusText === '' ? line : `${line} — ${statusText}`
 }
+
+/** The same, for a person whose kind may not be known. */
+export const presenceLineOf = (person: { kind: UserKind | null; presence: Presence; statusText: string }) =>
+  presenceLine(person.kind === null ? undefined : KIND_LABELS[person.kind], person.presence, person.statusText)
