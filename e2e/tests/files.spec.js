@@ -46,7 +46,8 @@ test('a picture, a video and a PDF: sent from one browser, previewed in the othe
     await attach(ana, await webmFile(ana, 'clip.webm'))
     await sendButton(ana).click()
     const video = log(ben).locator('video')
-    await expect.poll(() => video.evaluate(element => element.readyState >= 1 && element.videoWidth)).toBe(64)
+    // …and its first frame is there to see before anyone plays it.
+    await expect.poll(() => video.evaluate(element => element.readyState >= 2 && element.paused && element.videoWidth)).toBe(64)
 
     // A PDF is a card: it opens over the conversation, and can be downloaded.
     await attach(ana, pdfFile('notes.pdf'))

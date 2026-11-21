@@ -266,7 +266,8 @@ describe('files in a conversation', () => {
 
     await waitFor(() => expect(within(log).getByRole('img', { name: 'photo-1.png' })).toHaveAttribute('src', `https://storage.test/get/${fileId(1)}`))
     const video = log.querySelector('video')
-    expect(video).toHaveAttribute('src', `https://storage.test/get/${fileId(2)}`)
+    // (With a moment asked for, so that its first frame is shown before it is played.)
+    expect(video).toHaveAttribute('src', `https://storage.test/get/${fileId(2)}#t=0.001`)
     expect(video).toHaveAttribute('preload', 'metadata')
     expect(log.querySelector('audio')).toHaveAttribute('preload', 'metadata')
     expect(log).toHaveTextContent('voice.mp3 · 0:09')

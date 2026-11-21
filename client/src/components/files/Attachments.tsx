@@ -23,6 +23,10 @@ interface TileProps {
   saved: boolean
 }
 
+// Asking for a moment of a video makes a browser show that frame as a still; given none,
+// several (Safari above all) show nothing until it is played. Never sent to the server.
+const FIRST_FRAME = '#t=0.001'
+
 const shapeOf = (file: Attachment) =>
   file.width !== undefined && file.height !== undefined ? Math.min(Math.max(file.width / file.height, 0.6), 2.4) : 4 / 3
 
@@ -86,7 +90,7 @@ function VideoPlayer({ file, own: _own, onOpen, onBroken, saved }: PlayerProps &
     >
       {url !== null && (
         // eslint-disable-next-line jsx-a11y/media-has-caption -- a file someone sent: there are no captions to offer
-        <video controls playsInline preload="metadata" src={url} aria-label={file.name} onError={failed} className="absolute inset-0 size-full" />
+        <video controls playsInline preload="metadata" src={`${url}${FIRST_FRAME}`} aria-label={file.name} onError={failed} className="absolute inset-0 size-full" />
       )}
       <button
         type="button"
