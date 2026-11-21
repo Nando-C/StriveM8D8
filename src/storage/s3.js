@@ -6,6 +6,8 @@ import { DOWNLOAD_URL_SECONDS, UPLOAD_URL_SECONDS, contentDisposition } from './
 // private: nothing in it can be reached without a URL signed here, and each URL allows
 // one kind of request on one object for a few minutes. (An upload URL can be used more
 // than once while it lasts: see `claim` in sockets/files.js for why that does no harm.)
+const isMissing = error => error?.name === 'NotFound' || error?.$metadata?.httpStatusCode === 404
+
 export const createS3Storage = ({ endpoint, region = 'auto', bucket, accessKeyId, secretAccessKey }) => {
     const client = new S3Client({
         region,
@@ -47,7 +49,7 @@ export const createS3Storage = ({ endpoint, region = 'auto', bucket, accessKeyId
                 const found = await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }))
                 return { size: found.ContentLength }
             } catch (error) {
-                if (error?.name === 'NotFound' || error?.$metadata?.httpStatusCode === 404) return null
+                if (isMissing(error)) return null
                 throw error
             }
         },
@@ -61,7 +63,7 @@ export const createS3Storage = ({ endpoint, region = 'auto', bucket, accessKeyId
                 // Nothing there to copy — under whichever name the service says so. (A bucket
                 // that is not there is something else: a fault to be logged, not a missing upload.)
                 if (error?.name === 'NoSuchBucket') throw error
-                if (error?.name === 'NoSuchKey' || error?.name === 'NotFound' || error?.$metadata?.httpStatusCode === 404) return false
+                if (error?.name === 'NoSuchKey' || isMissing(error)) return false
                 throw error
             }
         },

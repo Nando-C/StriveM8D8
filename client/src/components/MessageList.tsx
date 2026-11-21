@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { Check, CheckCheck, CircleAlert, LoaderCircle, Trash2 } from 'lucide-react'
 import { Attachments } from '@/components/files/Attachments'
@@ -9,8 +9,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { UserAvatar } from '@/components/UserAvatar'
 import type { Thread } from '@/lib/chatState'
-import { isMedia, kindOf } from '@/lib/files'
-import { fileUrl, saveFile } from '@/lib/fileUrls'
+import { isMedia } from '@/lib/files'
 import { describeGroupEvent } from '@/lib/groupEvents'
 import { deletedLine, isSaid, type LocalMessage } from '@/lib/messages'
 import { comparePositions, positionOf } from '@/lib/positions'
@@ -344,24 +343,6 @@ export function MessageList({
   const everyFile = useMemo(() => messages.flatMap(message => message.attachments ?? []), [messages])
   const gallery = useMemo(() => everyFile.filter(isMedia), [everyFile])
   const viewed = viewing === null ? undefined : everyFile.find(file => file.id === viewing)
-  // (Read when a file is opened, so that the function every row is given never changes.)
-  const files = useRef(everyFile)
-  useEffect(() => {
-    files.current = everyFile
-  }, [everyFile])
-  const openFile = useCallback((fileId: string) => {
-    const file = files.current.find(candidate => candidate.id === fileId)
-    // A PDF inside a page is unreliable on phones: there it opens in a tab of its own.
-    if (file !== undefined && kindOf(file.type) === 'pdf' && window.matchMedia?.('(max-width: 767px)').matches) {
-      const tab = window.open('about:blank', '_blank')
-      void fileUrl(fileId).then(url => {
-        if (tab === null || url === null) void saveFile(fileId)
-        else tab.location.href = url
-      })
-      return
-    }
-    setViewing(fileId)
-  }, [])
 
   // What each row is given, worked out when the messages or the members' positions
   // change — not each time something else in the app does (someone's presence, a message
@@ -452,8 +433,9 @@ export function MessageList({
                   sender={sender}
                   seenBy={seenBy}
                   deliveredTo={deliveredTo}
-                  onOpenFile={openFile}
-                  canDelete={canDelete}
+                  onOpenFile={setViewing}
+                  // (Only where it is used: nobody else's row is drawn again when the connection comes and goes.)
+                  canDelete={canDelete && message.own && message.status === 'sent'}
                 />
               </Fragment>
             )

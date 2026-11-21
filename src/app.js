@@ -3,6 +3,7 @@ import cors from 'cors'
 import createError from 'http-errors'
 import { createServer } from 'http'
 import { Server } from 'socket.io'
+import { SWEEP_EXPIRED_EVERY_MS, SWEEP_PENDING_EVERY_MS } from './sockets/files.js'
 import { registerSocketHandlers } from './sockets/index.js'
 import { PROTOCOL_VERSION, createRouter } from './routes.js'
 import { resolveSettings } from './settings.js'
@@ -93,15 +94,15 @@ export const createApp = (options = {}) => {
     const housekeeping = setInterval(() => {
         runMaintenance().catch(error => console.error("housekeeping failed:", error.name))
         sweepExpiredFiles().catch(error => console.error("sweeping files failed:", error.name))
-    }, 60 * 60_000)
+    }, SWEEP_EXPIRED_EVERY_MS)
     housekeeping.unref()
     server.on('close', () => clearInterval(housekeeping))
 
-    // Uploads that were reserved and never sent are let go of every five minutes.
+    // Uploads that were reserved and never sent are let go of.
     if (storage) {
         const sweeping = setInterval(() => {
             sweepPendingUploads().catch(error => console.error("sweeping uploads failed:", error.name))
-        }, 5 * 60_000)
+        }, SWEEP_PENDING_EVERY_MS)
         sweeping.unref()
         server.on('close', () => clearInterval(sweeping))
     }

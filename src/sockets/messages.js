@@ -1,19 +1,18 @@
 import { BOT, BOT_MEMBER, BOT_REPLY_DELAY_MS, botReply, mentionsBot, withoutBotMention } from '../bot.js'
 import {
-    NOT_TO_READ, advancePosition, conversationViewFor, directConversationId, joinedBefore, lastPosition, memberOf, parseDirectId,
-    previewOf, publishPositions, receiptOf, visibleTo,
+    NOT_TO_READ, advancePosition, conversationViewFor, directConversationId, joinedBefore, lastPosition, memberOf, newPosition,
+    parseDirectId, previewOf, publishPositions, receiptOf, visibleTo,
 } from '../conversations.js'
-import mongoose from 'mongoose'
 import { isDatabaseReady, isDuplicateKey } from '../db.js'
 import { Conversation } from '../models/conversation.js'
 import { Identity } from '../models/identity.js'
 import { Message } from '../models/message.js'
 import { afterPosition, beforePosition, comparePositions, isPosition, laterPosition, positionOf } from '../positions.js'
 import {
-    MAX_CONVERSATION_ID_LENGTH, NOT_LOGGED_IN, Refusal, SLOW_DOWN, UNKNOWN_CONVERSATION, isDocumentId, isNonEmptyString,
-    isObject, withAck,
+    COULD_NOT_BE_SAVED, MAX_CONVERSATION_ID_LENGTH, NOT_LOGGED_IN, Refusal, SLOW_DOWN, UNKNOWN_CONVERSATION, isDocumentId,
+    isNonEmptyString, isObject, withAck,
 } from './validation.js'
-import { MAX_ATTACHMENTS_PER_MESSAGE, isFileId } from './files.js'
+import { FILES_OFF, MAX_ATTACHMENTS_PER_MESSAGE, isFileId } from './files.js'
 
 // Messages and the conversations they belong to. A message is addressed to a
 // conversation, never to a person or a connection: whoever is in the conversation's
@@ -151,12 +150,14 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter, att
      */
     const refusalToWrite = async (id, sender) => {
         const conversation = await Conversation.findById(id).lean()
-        if (conversation) {
-            // Who may write here is decided by the stored members and nothing else.
-            if (!memberOf(conversation, sender.userId)) return UNKNOWN_CONVERSATION
-            return conversation.kind === 'direct' && conversation.members.some(member => member.gone) ? NO_LONGER_HERE : null
-        }
+        if (conversation) return refusalIn(conversation, sender)
         return await directCounterpart(id, sender) ? null : UNKNOWN_CONVERSATION
+    }
+    /** The same, of a conversation that exists. */
+    const refusalIn = (conversation, sender) => {
+        // Who may write here is decided by the stored members and nothing else.
+        if (!memberOf(conversation, sender.userId)) return UNKNOWN_CONVERSATION
+        return conversation.kind === 'direct' && conversation.members.some(member => member.gone) ? NO_LONGER_HERE : null
     }
 
     /**
@@ -344,7 +345,7 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter, att
             const { conversationId, clientId } = payload
             // (Files alone: no text at all, rather than the spaces that were typed.)
             const text = payload.text.trim() === '' ? '' : payload.text
-            if (fileIds.length > 0 && !attachments.enabled) return fail('File sharing is not available here')
+            if (fileIds.length > 0 && !attachments.enabled) return fail(FILES_OFF)
 
             // The sender's identity comes from the server's own state, never from the client.
             const sender = presence.bySocket.get(socket.id)
@@ -354,18 +355,14 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter, att
             // With files, the message's position is decided before it is saved: it is what
             // each file is attached at — and what decides, later, who may download it.
             // (Decided by `claim`, as late as it can be.)
-            const position = () => ({ ts: Date.now(), id: new mongoose.Types.ObjectId().toString() })
-            let at = null
-            let files = []
-            let claimed = false
-            // Clears away what attaching the files left in storage. After the message, never before.
-            let done = async () => {}
+            let claim = null
+            let saved = null
             try {
-                const refusal = await refusalToWrite(conversationId, sender)
-                if (refusal) return fail(refusal)
                 if (fileIds.length > 0) {
-                    ;({ attachments: files, at, done } = await attachments.claim({ fileIds, sender, conversationId, position }))
-                    claimed = true
+                    // Before any work in storage. (Without files, the same is asked just below.)
+                    const refusal = await refusalToWrite(conversationId, sender)
+                    if (refusal) return fail(refusal)
+                    claim = await attachments.claim({ fileIds, sender, conversationId, position: newPosition })
                 }
 
                 let conversation = await Conversation.findById(conversationId).lean()
@@ -376,14 +373,13 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter, att
                     ;({ conversation, created } = opened)
                 }
                 // (Asked again of the conversation as it is now: the first answer is a moment old.)
-                if (!memberOf(conversation, sender.userId)) throw new Refusal(UNKNOWN_CONVERSATION)
-                if (conversation.kind === 'direct' && conversation.members.some(member => member.gone)) throw new Refusal(NO_LONGER_HERE)
+                const refusal = refusalIn(conversation, sender)
+                if (refusal) throw new Refusal(refusal)
 
-                const saved = await post(
-                    conversation, sender, { text, clientId, attachments: files, at },
+                saved = await post(
+                    conversation, sender, { text, clientId, attachments: claim?.attachments ?? [], at: claim?.at ?? null },
                     { exceptSocketId: socket.id, describe: created ? 'after' : null },
                 )
-                claimed = false
                 // The bot answers words, not files.
                 if (memberOf(conversation, BOT.id) && settings.demoBot && text !== '') {
                     // In its own chats the bot answers everything; in a group, only what is addressed to it.
@@ -391,18 +387,18 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter, att
                     else if (mentionsBot(text)) answerAsBot(conversation, sender, withoutBotMention(text))
                 }
                 reply({ ok: true, id: saved._id.toString(), timestamp: saved.createdAt.getTime() })
-                // (After the answer: nobody waits for storage to be tidied.)
-                await done()
             } catch (error) {
                 // A message that was not saved has no files: they can be sent again.
-                if (claimed) await attachments.release(at.id).catch(() => {})
+                if (saved === null) await claim?.abandon()
                 if (error instanceof Refusal) fail(error.message)
                 else {
                     console.error("failed to save message:", error.name)
                     fail(NOT_SAVED)
                 }
-                await done()
             }
+            // Clearing away what attaching the files left in storage: after the answer,
+            // never before — nobody waits for storage to be tidied.
+            await claim?.done()
         })
 
         socket.on('getHistory', async payload => {
@@ -467,7 +463,7 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter, att
             }
             const reader = presence.bySocket.get(socket.id)
             if (!reader) return fail(NOT_LOGGED_IN)
-            if (!isDatabaseReady()) return fail('Could not be saved')
+            if (!isDatabaseReady()) return fail(COULD_NOT_BE_SAVED)
 
             try {
                 const conversation = await Conversation.findById(payload.conversationId).lean()
@@ -495,7 +491,7 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter, att
                 reply({ ok: true })
             } catch (error) {
                 console.error("failed to save a read position:", error.name)
-                fail('Could not be saved')
+                fail(COULD_NOT_BE_SAVED)
             }
         })
 
@@ -509,7 +505,7 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter, att
             if (!isObject(payload) || !isDocumentId(payload.id)) return fail(UNKNOWN_MESSAGE)
             const author = presence.bySocket.get(socket.id)
             if (!author) return fail(NOT_LOGGED_IN)
-            if (!isDatabaseReady()) return fail('Could not be saved')
+            if (!isDatabaseReady()) return fail(COULD_NOT_BE_SAVED)
 
             try {
                 // One's own, and something that was said: not a line about a group, not already deleted.
@@ -524,7 +520,7 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter, att
                     own, { $set: { kind: 'deleted' }, $unset: { text: 1, attachments: 1, clientId: 1 } },
                 ).lean()
                 if (!deleted) return fail(UNKNOWN_MESSAGE)
-                if (attachments.enabled) await attachments.discardOfMessage(payload.id)
+                if (deleted.attachments?.length > 0) await attachments.discardOfMessage(payload.id)
 
                 // If it was the last thing said, its words must not stay under the
                 // conversation's name in everyone's list.
@@ -544,7 +540,7 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter, att
                 reply({ ok: true })
             } catch (error) {
                 console.error("failed to delete a message:", error.name)
-                fail('Could not be saved')
+                fail(COULD_NOT_BE_SAVED)
             }
         })
     }

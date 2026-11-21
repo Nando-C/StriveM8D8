@@ -1,3 +1,4 @@
+import mongoose from 'mongoose'
 import { Conversation } from './models/conversation.js'
 import { Message } from './models/message.js'
 import { BOT } from './bot.js'
@@ -37,6 +38,9 @@ export const parseDirectId = id => {
     const [a, b] = parts
     return a < b ? [a, b] : null
 }
+
+/** A position for something about to be saved: now, under an id of its own. */
+export const newPosition = () => ({ ts: Date.now(), id: new mongoose.Types.ObjectId().toString() })
 
 export const memberOf = (conversation, userId) =>
     conversation?.members.find(member => member.userId === userId) ?? null

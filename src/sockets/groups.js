@@ -1,15 +1,10 @@
 import { randomUUID } from 'node:crypto'
-import mongoose from 'mongoose'
 import { BOT, BOT_MEMBER } from '../bot.js'
-import { isUserId, memberOf } from '../conversations.js'
-import { isDatabaseReady } from '../db.js'
+import { isUserId, memberOf, newPosition } from '../conversations.js'
 import { Conversation } from '../models/conversation.js'
 import { Identity } from '../models/identity.js'
 import { Message } from '../models/message.js'
-import {
-    MAX_CONVERSATION_ID_LENGTH, NOT_LOGGED_IN, Refusal, SLOW_DOWN, UNKNOWN_CONVERSATION, isNonEmptyString, isObject, refuse,
-    withAck,
-} from './validation.js'
+import { MAX_CONVERSATION_ID_LENGTH, UNKNOWN_CONVERSATION, answering, isNonEmptyString, refuse } from './validation.js'
 
 // Group conversations: making one, and changing who is in it or what it is called.
 // Sending, reading and receipts are the same as in any conversation (messages.js) — a
@@ -36,7 +31,6 @@ const RATE_LIMITS = {
     addMembers: { limit: 5, windowMs: 10_000 },
 }
 
-const NOT_SAVED = 'Could not be saved'
 const INVALID_NAME = `A group name must be 1 to ${MAX_GROUP_NAME_LENGTH} characters`
 const INVALID_MEMBERS = 'Choose at least one other person'
 // One answer whoever it is that does not exist.
@@ -218,7 +212,7 @@ export const createGroupHandlers = ({ presence, settings, rateLimiter, messages,
         // The position of the line that says they were added is decided first, because it
         // is also where each of them starts: they see, and count as unread, only what
         // comes after it.
-        const at = { ts: Date.now(), id: new mongoose.Types.ObjectId().toString() }
+        const at = newPosition()
         const entry = person => ({
             ...person, joinedAfter: at, deliveredUpTo: at, readUpTo: at, published: { deliveredUpTo: at, readUpTo: at },
         })
@@ -279,25 +273,10 @@ export const createGroupHandlers = ({ presence, settings, rateLimiter, messages,
 
     // ---------- wiring
 
-    const registerOn = socket => {
-        const on = (event, limit, handler) => {
-            socket.on(event, async (rawPayload, rawAck) => {
-                const { payload, reply, fail } = withAck(rawPayload, rawAck)
+    const answer = answering({ presence, allowed })
 
-                if (!allowed(socket, limit)) return fail(SLOW_DOWN)
-                const user = presence.bySocket.get(socket.id)
-                if (!user) return fail(NOT_LOGGED_IN)
-                if (!isDatabaseReady()) return fail(NOT_SAVED)
-                try {
-                    const result = await handler({ user, payload: isObject(payload) ? payload : {} })
-                    reply({ ok: true, ...result })
-                } catch (error) {
-                    if (error instanceof Refusal) return fail(error.message)
-                    console.error(`${event} failed:`, error?.name)
-                    fail(NOT_SAVED)
-                }
-            })
-        }
+    const registerOn = socket => {
+        const on = answer(socket)
 
         on('createGroup', 'group', createGroup)
         on('addMembers', 'addMembers', addMembers)

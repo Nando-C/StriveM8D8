@@ -1,8 +1,11 @@
+import { isDatabaseReady } from '../db.js'
+
 // Usernames are restricted because two of them are joined with "::" to key a conversation.
 export const USERNAME_PATTERN = /^[A-Za-z0-9_-]{1,30}$/
 
 export const SLOW_DOWN = 'Too many requests, slow down'
 export const NOT_LOGGED_IN = 'Not logged in'
+export const COULD_NOT_BE_SAVED = 'Could not be saved'
 // One answer for "no such conversation" and "not yours": which of the two it is says
 // something about other people's conversations.
 export const UNKNOWN_CONVERSATION = 'Unknown conversation'
@@ -36,4 +39,31 @@ export class Refusal extends Error {
 }
 export const refuse = (message, extra) => {
     throw new Refusal(message, extra)
+}
+
+/**
+ * For a module's events that are asked by someone logged in and answered by an
+ * acknowledgement: `answering(…)(socket)` is `on(event, limit, handler)`. The handler is
+ * given `{ socket, user, payload }` (the payload always an object) and resolves to what
+ * the answer carries, or refuses. `unavailable()` may give a reason nothing can be asked at all.
+ */
+export const answering = ({ presence, allowed, unavailable = () => null }) => socket => (event, limit, handler) => {
+    socket.on(event, async (rawPayload, rawAck) => {
+        const { payload, reply, fail } = withAck(rawPayload, rawAck)
+
+        if (!allowed(socket, limit)) return fail(SLOW_DOWN)
+        const user = presence.bySocket.get(socket.id)
+        if (!user) return fail(NOT_LOGGED_IN)
+        const off = unavailable()
+        if (off) return fail(off)
+        if (!isDatabaseReady()) return fail(COULD_NOT_BE_SAVED)
+        try {
+            const result = await handler({ socket, user, payload: isObject(payload) ? payload : {} })
+            reply({ ok: true, ...result })
+        } catch (error) {
+            if (error instanceof Refusal) return fail(error.message)
+            console.error(`${event} failed:`, error?.name)
+            fail(COULD_NOT_BE_SAVED)
+        }
+    })
 }

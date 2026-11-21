@@ -4,10 +4,8 @@ import { joinedBefore, memberOf } from '../conversations.js'
 import { isDatabaseReady } from '../db.js'
 import { Conversation } from '../models/conversation.js'
 import { File } from '../models/file.js'
-import { DOWNLOAD_URL_SECONDS, UPLOAD_URL_SECONDS, isInlineType } from '../storage/index.js'
-import {
-    MAX_CONVERSATION_ID_LENGTH, NOT_LOGGED_IN, Refusal, SLOW_DOWN, isNonEmptyString, isObject, refuse, withAck,
-} from './validation.js'
+import { DOWNLOAD_URL_SECONDS, UPLOAD_URL_SECONDS, isInlineType, newKey } from '../storage/index.js'
+import { MAX_CONVERSATION_ID_LENGTH, answering, isNonEmptyString, refuse } from './validation.js'
 
 // File attachments. The bytes never pass through this server: a client asks to upload
 // (`requestUpload`), is given a short-lived address that accepts exactly that file, and
@@ -18,6 +16,7 @@ import {
 // it counts against, who may download it, and when its object must be deleted.
 
 export const MAX_ATTACHMENTS_PER_MESSAGE = 10
+// (The client stops at as many chips: `MAX_FILES_AT_ONCE` in client/src/lib/files.ts.)
 export const MAX_PENDING_UPLOADS = 5
 
 const MB = 1024 * 1024
@@ -26,6 +25,7 @@ const HOUR = 60 * 60_000
 const MAX_NAME_LENGTH = 255
 const MAX_TYPE_LENGTH = 100
 const MAX_DIMENSION = 20_000
+// (As in client/src/lib/prepareFile.ts, which makes them.)
 const MAX_PLACEHOLDER_LENGTH = 1000
 const FILE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // A media type as a browser reports one: "type/subtype", nothing after it.
@@ -39,27 +39,27 @@ const RATE_LIMITS = {
     usage: { limit: 10, windowMs: 10_000 },
 }
 
-const OFF = 'File sharing is not available here'
+export const FILES_OFF = 'File sharing is not available here'
 const ACCOUNTS_ONLY = 'Create an account to send files'
 const INVALID_FILE = 'Invalid file'
 // One answer whatever is wrong with a file somebody names: not theirs, not there, not for them.
+// (The client knows it by these words: client/src/lib/giveBack.ts.)
 const UNKNOWN_FILE = 'Unknown file'
 const NOT_AVAILABLE = 'An attachment is not available — upload it again'
 const NOT_UPLOADED = 'An attachment was not uploaded completely'
-const NOT_SAVED = 'Could not be saved'
 
 export const isFileId = value => typeof value === 'string' && FILE_ID.test(value)
 
-/** A file as it travels inside a message: what a client needs to show it, never where it is stored. */
-const attachmentView = file => ({
-    id: file._id,
-    name: file.name,
-    type: file.type,
-    size: file.size,
-    ...(file.width && file.height ? { width: file.width, height: file.height } : {}),
-    ...(file.durationMs === undefined || file.durationMs === null ? {} : { durationMs: file.durationMs }),
-    ...(file.placeholder ? { placeholder: file.placeholder } : {}),
+// What the uploading client measured, as far as it did.
+const measured = ({ width, height, durationMs, placeholder }) => ({
+    // (A shape is both numbers or neither.)
+    ...(width && height ? { width, height } : {}),
+    ...(durationMs === undefined || durationMs === null ? {} : { durationMs }),
+    ...(placeholder ? { placeholder } : {}),
 })
+
+/** A file as it travels inside a message: what a client needs to show it, never where it is stored. */
+const attachmentView = file => ({ id: file._id, name: file.name, type: file.type, size: file.size, ...measured(file) })
 
 /** (For `$unset`.) */
 const NOT_COPYING = { copyKey: 1, copyingSince: 1 }
@@ -73,8 +73,14 @@ const sumOfSizes = async filter => {
 // itself lapses after half of that, but an upload begun just before may still be
 // arriving: whatever is at the upload key after this long is deleted, unseen.
 const UPLOAD_KEY_GONE_MS = 2 * UPLOAD_URL_SECONDS * 1000
-// A copy noted this long ago and still not the file's own was left behind: by a crash, or a failure that could not be tidied.
+// An upload reserved this long ago and not sent can no longer be begun.
+const PENDING_STALE_MS = UPLOAD_URL_SECONDS * 1000
+// A copy noted this long ago and still not the file's own was left behind: by a crash, or a
+// failure that could not be tidied. (It must stay longer than attaching a message's files can take.)
 const COPY_ABANDONED_MS = 5 * 60_000
+/** How often each sweep is to be run. */
+export const SWEEP_PENDING_EVERY_MS = 5 * 60_000
+export const SWEEP_EXPIRED_EVERY_MS = 60 * 60_000
 // What takes up room in storage: everything whose object exists or may exist — including
 // one that is being deleted, until it really is gone, and one that was given up before
 // anything arrived, for as long as its upload URL might still be used.
@@ -110,11 +116,17 @@ export const createAttachments = ({ storage, settings }) => {
     }
     const removeQuietly = key =>
         storage.remove(key).catch(error => console.error("failed to delete a stored object:", error?.name))
-    const destroyAll = async (files, options) => {
+    // One after the other, and one that fails does not stop the rest.
+    const eachQuietly = async (files, failure, step) => {
         for (const file of files) {
-            await destroy(file, options).catch(error => console.error("failed to delete a stored file:", error?.name))
+            try {
+                await step(file)
+            } catch (error) {
+                console.error(`${failure}:`, error?.name)
+            }
         }
     }
+    const destroyAll = (files, options) => eachQuietly(files, 'failed to delete a stored file', file => destroy(file, options))
 
     /**
      * Reserves an upload. Charged at once, by its declared size, to the uploader's day,
@@ -122,12 +134,10 @@ export const createAttachments = ({ storage, settings }) => {
      * happens next. Resolves to `{ fileId, uploadUrl, headers }`.
      */
     const reserve = async ({ user, address, conversationId, file, baseUrl }) => {
-        const now = Date.now()
-        const created = await File.create({
-            _id: randomUUID(), conversationId, uploader: user.userId, address, ...file, uploadKey: file.key,
-        })
-        const reserved = created.toObject()
-        const today = { createdAt: { $gt: new Date(now - DAY) } }
+        const fileId = randomUUID()
+        const key = newKey()
+        await File.create({ _id: fileId, conversationId, uploader: user.userId, address, ...file, key, uploadKey: key })
+        const today = { createdAt: { $gt: new Date(Date.now() - DAY) } }
         // Counted with this one in it: of several asked for at the same moment, each is
         // counted with the others, and all of them may be turned down.
         const [pending, byUser, byAddress, stored] = await Promise.all([
@@ -143,11 +153,11 @@ export const createAttachments = ({ storage, settings }) => {
             : stored > limits.totalBytes ? 'Storage is full — no more files can be uploaded for now'
             : null
         if (refusal) {
-            await File.deleteOne({ _id: reserved._id })
+            await File.deleteOne({ _id: fileId })
             refuse(refusal)
         }
-        const { url, headers } = await storage.presignUpload({ key: reserved.key, type: reserved.type, size: reserved.size, baseUrl })
-        return { fileId: reserved._id, uploadUrl: url, headers, expiresInSeconds: UPLOAD_URL_SECONDS }
+        const { url, headers } = await storage.presignUpload({ key, type: file.type, size: file.size, baseUrl })
+        return { fileId, uploadUrl: url, headers, expiresInSeconds: UPLOAD_URL_SECONDS }
     }
 
     /**
@@ -160,9 +170,10 @@ export const createAttachments = ({ storage, settings }) => {
      *
      * `position()` gives the message its position, and is asked only once the slow part
      * (storage) is over — a message must not be dated before others that were delivered
-     * while its files were being checked. Resolves to `{ attachments, at, done }`;
-     * `done()` is to be called once the message is saved (or is not going to be): it
-     * deletes the objects no longer needed, which takes time the message must not wait for.
+     * while its files were being checked. Resolves to `{ attachments, at, abandon, done }`:
+     * `abandon()` undoes it for a message that was not saved after all, and `done()` is to
+     * be called once the message is saved (or is not going to be) — it deletes the objects
+     * no longer needed, which takes time the message must not wait for.
      */
     const claim = async ({ fileIds, sender, conversationId, position }) => {
         const found = await File.find({ _id: { $in: fileIds } }).lean()
@@ -171,7 +182,7 @@ export const createAttachments = ({ storage, settings }) => {
         if (files.some(file => !file || file.uploader !== sender.userId || file.state !== 'pending' || file.conversationId !== conversationId)) {
             refuse(NOT_AVAILABLE)
         }
-        const kept = files.map(() => `files/${randomUUID()}`)
+        const kept = files.map(newKey)
         // Whether any record may point at a copy yet.
         let written = false
         // Whichever of the two objects each file ends up not using is deleted — however this ends.
@@ -231,7 +242,7 @@ export const createAttachments = ({ storage, settings }) => {
                 await release(at.id)
                 refuse(NOT_AVAILABLE)
             }
-            return { attachments: files.map(attachmentView), at, done: tidy }
+            return { attachments: files.map(attachmentView), at, abandon: () => release(at.id).catch(() => {}), done: tidy }
         } catch (error) {
             await tidy()
             throw error
@@ -266,8 +277,10 @@ export const createAttachments = ({ storage, settings }) => {
     }
 
     /** The files of a message that is being deleted: gone from storage, still counted against today. */
-    const discardOfMessage = async messageId =>
-        destroyAll(await File.find({ messageId, state: 'attached' }).lean(), { keepCharge: true })
+    const discardOfMessage = async messageId => {
+        if (!enabled) return
+        await destroyAll(await File.find({ messageId, state: 'attached' }).lean(), { keepCharge: true })
+    }
 
     /** A conversation was deleted with everything in it. */
     const conversationDeleted = async conversationId => {
@@ -283,7 +296,9 @@ export const createAttachments = ({ storage, settings }) => {
     const downloadUrl = async ({ fileId, userId, baseUrl, download = false }) => {
         const file = await File.findOne({ _id: fileId, state: 'attached' }).lean()
         if (!file) refuse(UNKNOWN_FILE)
-        const member = memberOf(await Conversation.findById(file.conversationId).lean(), userId)
+        // (Only what the rule reads.)
+        const members = { 'members.userId': 1, 'members.joinedAfter': 1 }
+        const member = memberOf(await Conversation.findById(file.conversationId, members).lean(), userId)
         if (!member || !joinedBefore(member, file.attachedAt)) refuse(UNKNOWN_FILE)
         const url = await storage.presignDownload({
             // `download`: to be saved rather than shown, whatever it is.
@@ -292,11 +307,10 @@ export const createAttachments = ({ storage, settings }) => {
         return { url, expiresInSeconds: DOWNLOAD_URL_SECONDS }
     }
 
-    const usage = async () => ({
-        usedBytes: await sumOfSizes(STORED),
-        maxBytes: limits.totalBytes,
-        files: await File.countDocuments({ state: 'attached' }),
-    })
+    const usage = async () => {
+        const [usedBytes, files] = await Promise.all([sumOfSizes(STORED), File.countDocuments({ state: 'attached' })])
+        return { usedBytes, maxBytes: limits.totalBytes, files }
+    }
 
     /**
      * Every five minutes: uploads reserved more than fifteen minutes ago and still not
@@ -308,20 +322,16 @@ export const createAttachments = ({ storage, settings }) => {
     const sweepPending = async ({ now = Date.now() } = {}) => {
         const result = { refunded: 0, discarded: 0 }
         if (!enabled || !isDatabaseReady()) return result
-        const stale = await File.find({ state: 'pending', createdAt: { $lt: new Date(now - UPLOAD_URL_SECONDS * 1000) } }).limit(500).lean()
-        for (const file of stale) {
-            try {
-                if (await storage.head(file.key) === null) {
-                    // (Unless it was sent a moment ago after all.)
-                    const gone = await giveUp(file)
-                    result.refunded += gone.modifiedCount
-                } else if (await destroy(file, { keepCharge: true })) {
-                    result.discarded += 1
-                }
-            } catch (error) {
-                console.error("failed to sweep a pending upload:", error?.name)
+        const stale = await File.find({ state: 'pending', createdAt: { $lt: new Date(now - PENDING_STALE_MS) } }).limit(500).lean()
+        await eachQuietly(stale, 'failed to sweep a pending upload', async file => {
+            if (await storage.head(file.key) === null) {
+                // (Unless it was sent a moment ago after all.)
+                const gone = await giveUp(file)
+                result.refunded += gone.modifiedCount
+            } else if (await destroy(file, { keepCharge: true })) {
+                result.discarded += 1
             }
-        }
+        })
         await sweepUploadKeys(now)
         await sweepCopies(now)
         return result
@@ -332,35 +342,27 @@ export const createAttachments = ({ storage, settings }) => {
     // (the message has a copy of its own). Nothing that is still in use is ever there.
     const sweepUploadKeys = async now => {
         const old = await File.find({ uploadKey: { $exists: true }, createdAt: { $lt: new Date(now - UPLOAD_KEY_GONE_MS) } }).limit(500).lean()
-        for (const file of old) {
-            try {
-                // (Still the object itself: an upload not yet sent, which the sweep above deals with.)
-                if (file.uploadKey === file.key && (file.state === 'pending' || file.state === 'attached' || file.state === 'removing')) continue
-                if (file.state === 'unused') {
-                    // Given up — and then uploaded all the same? Deleted, and charged after all.
-                    if (await storage.head(file.uploadKey) !== null) await destroy(file, { keepCharge: true })
-                    else await File.deleteOne({ _id: file._id, state: 'unused' })
-                    continue
-                }
-                await storage.remove(file.uploadKey)
-                await File.updateOne({ _id: file._id }, { $unset: { uploadKey: 1 } })
-            } catch (error) {
-                console.error("failed to clear an upload key:", error?.name)
+        await eachQuietly(old, 'failed to clear an upload key', async file => {
+            // (Still the object itself: an upload not yet sent, which the sweep above deals with.)
+            if (file.uploadKey === file.key && (file.state === 'pending' || file.state === 'attached' || file.state === 'removing')) return
+            if (file.state === 'unused') {
+                // Given up — and then uploaded all the same? Deleted, and charged after all.
+                if (await storage.head(file.uploadKey) !== null) await destroy(file, { keepCharge: true })
+                else await File.deleteOne({ _id: file._id, state: 'unused' })
+                return
             }
-        }
+            await storage.remove(file.uploadKey)
+            await File.updateOne({ _id: file._id }, { $unset: { uploadKey: 1 } })
+        })
     }
 
     // Copies that were being made and never became anything.
     const sweepCopies = async now => {
         const left = await File.find({ copyKey: { $exists: true }, copyingSince: { $lt: new Date(now - COPY_ABANDONED_MS) } }).limit(500).lean()
-        for (const file of left) {
-            try {
-                if (file.copyKey !== file.key) await storage.remove(file.copyKey)
-                await File.updateOne({ _id: file._id, copyKey: file.copyKey }, { $unset: NOT_COPYING })
-            } catch (error) {
-                console.error("failed to clear an abandoned copy:", error?.name)
-            }
-        }
+        await eachQuietly(left, 'failed to clear an abandoned copy', async file => {
+            if (file.copyKey !== file.key) await storage.remove(file.copyKey)
+            await File.updateOne({ _id: file._id, copyKey: file.copyKey }, { $unset: NOT_COPYING })
+        })
     }
 
     /**
@@ -382,7 +384,7 @@ export const createAttachments = ({ storage, settings }) => {
     }
 
     return {
-        enabled, limits, reserve, cancel, claim, release, discardOfMessage, conversationDeleted, downloadUrl, usage,
+        enabled, limits, reserve, cancel, claim, discardOfMessage, conversationDeleted, downloadUrl, usage,
         sweepPending, sweepExpired,
     }
 }
@@ -406,13 +408,7 @@ const fileIn = (payload, limits) => {
         ? payload.durationMs : undefined
     const placeholder = typeof payload.placeholder === 'string' && payload.placeholder.length <= MAX_PLACEHOLDER_LENGTH &&
         PLACEHOLDER.test(payload.placeholder) ? payload.placeholder : undefined
-    return {
-        key: `files/${randomUUID()}`, name, type, size: payload.size,
-        // (A shape is both numbers or neither.)
-        ...(width && height ? { width, height } : {}),
-        ...(durationMs === undefined ? {} : { durationMs }),
-        ...(placeholder ? { placeholder } : {}),
-    }
+    return { name, type, size: payload.size, ...measured({ width, height, durationMs, placeholder }) }
 }
 
 /** The socket events of file sharing. */
@@ -458,26 +454,10 @@ export const createFileHandlers = ({ presence, settings, rateLimiter, attachment
         return attachments.usage()
     }
 
-    const registerOn = socket => {
-        const on = (event, limit, handler) => {
-            socket.on(event, async (rawPayload, rawAck) => {
-                const { payload, reply, fail } = withAck(rawPayload, rawAck)
+    const answer = answering({ presence, allowed, unavailable: () => (attachments.enabled ? null : FILES_OFF) })
 
-                if (!allowed(socket, limit)) return fail(SLOW_DOWN)
-                const user = presence.bySocket.get(socket.id)
-                if (!user) return fail(NOT_LOGGED_IN)
-                if (!attachments.enabled) return fail(OFF)
-                if (!isDatabaseReady()) return fail(NOT_SAVED)
-                try {
-                    const result = await handler({ socket, user, payload: isObject(payload) ? payload : {} })
-                    reply({ ok: true, ...result })
-                } catch (error) {
-                    if (error instanceof Refusal) return fail(error.message)
-                    console.error(`${event} failed:`, error?.name)
-                    fail(NOT_SAVED)
-                }
-            })
-        }
+    const registerOn = socket => {
+        const on = answer(socket)
 
         on('requestUpload', 'requestUpload', requestUpload)
         on('cancelUpload', 'requestUpload', cancelUpload)

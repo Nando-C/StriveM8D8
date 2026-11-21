@@ -1,8 +1,8 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { Maximize2 } from 'lucide-react'
 import { FileCard } from '@/components/files/FileCard'
 import { formatDuration, kindOf } from '@/lib/files'
-import { useFileUrl, useMediaUrl } from '@/lib/fileUrls'
+import { openInTab, useFileUrl, useMediaUrl } from '@/lib/fileUrls'
 import { useNearViewport } from '@/lib/useNearViewport'
 import { cn } from '@/lib/utils'
 import type { Attachment } from '@/types/protocol'
@@ -32,15 +32,26 @@ const shapeOf = (file: Attachment) =>
 
 const placeholderOf = (file: Attachment) => (file.placeholder === undefined ? undefined : `url("${file.placeholder}")`)
 
+// A file's address is asked for only once its message is saved and its box is near the
+// screen; a file that turns out not to be showable is reported, once.
+const useShown = <Address extends { broken: boolean }>(
+  useUrl: (fileId: string, wanted: boolean) => Address,
+  box: RefObject<Element | null>,
+  { file, saved, onBroken }: Pick<TileProps, 'file' | 'saved' | 'onBroken'>,
+) => {
+  const address = useUrl(file.id, useNearViewport(box) && saved)
+  const { broken } = address
+  useEffect(() => {
+    if (broken) onBroken(file.id)
+  }, [broken, file.id, onBroken])
+  return address
+}
+
 // One picture, as a tile that opens the viewer. Its box has the picture's shape from the
 // start, filled with the blurred preview, so nothing moves when it loads.
 function ImageTile({ file, alone, more, onOpen, onBroken, saved }: TileProps) {
   const tile = useRef<HTMLButtonElement>(null)
-  const near = useNearViewport(tile)
-  const { url, broken, failed } = useFileUrl(file.id, near && saved)
-  useEffect(() => {
-    if (broken) onBroken(file.id)
-  }, [broken, file.id, onBroken])
+  const { url, failed } = useShown(useFileUrl, tile, { file, saved, onBroken })
 
   return (
     <button
@@ -65,21 +76,12 @@ function ImageTile({ file, alone, more, onOpen, onBroken, saved }: TileProps) {
   )
 }
 
-interface PlayerProps {
-  file: Attachment
-  own: boolean
-  onBroken: (fileId: string) => void
-  saved: boolean
-}
+type PlayerProps = Pick<TileProps, 'file' | 'onBroken' | 'saved'>
 
 /** A video, played where it is — loaded only as far as its first frame and length until then — and openable full-size. */
-function VideoPlayer({ file, own: _own, onOpen, onBroken, saved }: PlayerProps & { onOpen: (fileId: string) => void }) {
+function VideoPlayer({ file, onOpen, onBroken, saved }: PlayerProps & Pick<TileProps, 'onOpen'>) {
   const box = useRef<HTMLDivElement>(null)
-  const near = useNearViewport(box)
-  const { url, broken, media } = useMediaUrl(file.id, near && saved)
-  useEffect(() => {
-    if (broken) onBroken(file.id)
-  }, [broken, file.id, onBroken])
+  const { url, media } = useShown(useMediaUrl, box, { file, saved, onBroken })
 
   return (
     <div
@@ -105,13 +107,9 @@ function VideoPlayer({ file, own: _own, onOpen, onBroken, saved }: PlayerProps &
 }
 
 /** Sound, played where it is. Loaded only as far as knowing how long it is, until it is played. */
-function AudioPlayer({ file, own, onBroken, saved }: PlayerProps) {
+function AudioPlayer({ file, own, onBroken, saved }: PlayerProps & { own: boolean }) {
   const box = useRef<HTMLDivElement>(null)
-  const near = useNearViewport(box)
-  const { url, broken, media } = useMediaUrl(file.id, near && saved)
-  useEffect(() => {
-    if (broken) onBroken(file.id)
-  }, [broken, file.id, onBroken])
+  const { url, media } = useShown(useMediaUrl, box, { file, saved, onBroken })
 
   return (
     <div ref={box} data-attachment="audio" className="flex w-72 max-w-full flex-col gap-1">
@@ -128,7 +126,7 @@ function AudioPlayer({ file, own, onBroken, saved }: PlayerProps) {
 interface AttachmentsProps {
   files: Attachment[]
   own: boolean
-  /** Opens a picture, a video or a PDF in the viewer. */
+  /** Opens a picture, a video or a PDF in the viewer. The same function whatever the file. */
   onOpen: (fileId: string) => void
   /** The message is saved (not still being sent, not failed): its files can be fetched. */
   saved: boolean
@@ -139,6 +137,9 @@ interface AttachmentsProps {
  * everything else — including anything this browser turns out unable to show — as a
  * card to download.
  */
+// A PDF inside a page is unreliable on phones: there it opens in a tab of its own.
+const onPhone = () => window.matchMedia?.('(max-width: 767px)').matches === true
+
 export const Attachments = memo(function Attachments({ files, own, onOpen, saved }: AttachmentsProps) {
   // Files that could not be loaded as what their type says (an odd encoding, a damaged file).
   const [broken, setBroken] = useState<ReadonlySet<string>>(new Set())
@@ -165,10 +166,10 @@ export const Attachments = memo(function Attachments({ files, own, onOpen, saved
           ))}
         </div>
       )}
-      {of('video').map(file => <VideoPlayer key={file.id} file={file} own={own} onOpen={onOpen} onBroken={onBroken} saved={saved} />)}
+      {of('video').map(file => <VideoPlayer key={file.id} file={file} onOpen={onOpen} onBroken={onBroken} saved={saved} />)}
       {of('audio').map(file => <AudioPlayer key={file.id} file={file} own={own} onBroken={onBroken} saved={saved} />)}
       {of('pdf', 'file').map(file => (
-        <FileCard key={file.id} file={file} own={own} onOpen={shown(file) === 'pdf' ? () => onOpen(file.id) : undefined} />
+        <FileCard key={file.id} file={file} own={own} onOpen={shown(file) === 'pdf' ? () => (onPhone() ? openInTab(file.id) : onOpen(file.id)) : undefined} />
       ))}
     </div>
   )

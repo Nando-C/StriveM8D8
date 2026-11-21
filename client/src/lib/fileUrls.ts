@@ -15,6 +15,7 @@ const asking = new Map<string, Promise<string | null>>()
 export const fileUrl = (fileId: string): Promise<string | null> => {
   const held = known.get(fileId)
   if (held !== undefined && held.expiresAt - MARGIN_MS > Date.now()) return Promise.resolve(held.url)
+  known.delete(fileId)
   const underWay = asking.get(fileId)
   if (underWay !== undefined) return underWay
   const request = ask('getFileUrl', { fileId }).then(answer => {
@@ -27,35 +28,35 @@ export const fileUrl = (fileId: string): Promise<string | null> => {
   return request
 }
 
-/** The address held for a file is no good (loading from it failed): the next one is asked for afresh. */
-export const forgetFileUrl = (fileId: string) => {
-  known.delete(fileId)
-}
-
 /** For tests, and for whoever logs in next on this page. */
 export const forgetFileUrls = () => {
   known.clear()
   asking.clear()
 }
 
-/** An address that saves the file rather than showing it. Never kept: used at once. */
-export const downloadUrl = async (fileId: string): Promise<string | null> => {
-  const answer = await ask('getFileUrl', { fileId, download: true })
-  return answer.ok ? answer.url : null
-}
-
 /** Starts the browser saving a file. Resolves to whether it could. */
 export const saveFile = async (fileId: string): Promise<boolean> => {
-  const url = await downloadUrl(fileId)
-  if (url === null) return false
+  // An address that saves the file rather than showing it — the server names the file
+  // and says it is to be saved. Never kept: used at once.
+  const answer = await ask('getFileUrl', { fileId, download: true })
+  if (!answer.ok) return false
   const link = document.createElement('a')
-  link.href = url
-  // (The server names the file and says it is to be saved; this covers browsers that ask.)
+  link.href = answer.url
   link.rel = 'noopener'
   document.body.append(link)
   link.click()
   link.remove()
   return true
+}
+
+/** Opens a file in a tab of its own; if that cannot be done, it is saved instead. */
+export const openInTab = (fileId: string) => {
+  // (Opened at once, while the browser still takes it for the user's doing; the address follows.)
+  const tab = window.open('about:blank', '_blank')
+  void fileUrl(fileId).then(url => {
+    if (tab === null || url === null) void saveFile(fileId)
+    else tab.location.href = url
+  })
 }
 
 /** A failure this close to when an address lapses is taken to be the address lapsing. */
@@ -98,7 +99,8 @@ export const useFileUrl = (fileId: string, wanted: boolean) => {
     if (until.current === null) return
     if (Date.now() >= until.current - LAPSE_LEEWAY_MS) failures.current = 0
     until.current = null
-    forgetFileUrl(fileId)
+    // (The address held is no good: the next one is asked for afresh.)
+    known.delete(fileId)
     // Nothing is shown from the dead address while the fresh one is fetched.
     setUrl(null)
     failures.current += 1

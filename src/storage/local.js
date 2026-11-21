@@ -25,6 +25,13 @@ export const createLocalStorage = ({ directory }) => {
         return path.join(root, key.slice('files/'.length))
     }
 
+    // (Refused, like any use of it, if it is not a key.)
+    const checked = key => {
+        pathOf(key)
+        return key
+    }
+    const sizeOf = key => stat(pathOf(key)).then(found => found.size, () => null)
+
     const sign = body => createHmac('sha256', secret).update(body).digest('base64url')
     const tokenFor = grant => {
         const body = Buffer.from(JSON.stringify(grant)).toString('base64url')
@@ -73,7 +80,7 @@ export const createLocalStorage = ({ directory }) => {
     router.get('/files/:token', async (req, res, next) => {
         const grant = grantOf(req.params.token)
         if (grant?.op !== 'get') return next(createError(403))
-        const size = await stat(pathOf(grant.key)).then(found => found.size, () => null)
+        const size = await sizeOf(grant.key)
         if (size === null) return next(createError(404))
 
         // (Set as it is: Express would add a charset of its own choosing to a text type.)
@@ -83,7 +90,7 @@ export const createLocalStorage = ({ directory }) => {
             // Whatever the bytes look like, they are what the header says and nothing more.
             'X-Content-Type-Options': 'nosniff',
             'Accept-Ranges': 'bytes',
-            'Cache-Control': 'private, max-age=300',
+            'Cache-Control': `private, max-age=${DOWNLOAD_URL_SECONDS}`,
         })
         const range = rangeOf(req.headers.range, size)
         if (range === 'unsatisfiable') {
@@ -100,12 +107,15 @@ export const createLocalStorage = ({ directory }) => {
     return {
         router,
         presignUpload: async ({ key, type, size, baseUrl }) => ({
-            url: urlFor(baseUrl, { op: 'put', key: (pathOf(key), key), type, size }, UPLOAD_URL_SECONDS),
+            url: urlFor(baseUrl, { op: 'put', key: checked(key), type, size }, UPLOAD_URL_SECONDS),
             headers: { 'Content-Type': type },
         }),
         presignDownload: async ({ key, name, type, inline, baseUrl }) =>
-            urlFor(baseUrl, { op: 'get', key: (pathOf(key), key), name, type, inline }, DOWNLOAD_URL_SECONDS),
-        head: async key => stat(pathOf(key)).then(found => ({ size: found.size }), () => null),
+            urlFor(baseUrl, { op: 'get', key: checked(key), name, type, inline }, DOWNLOAD_URL_SECONDS),
+        head: async key => {
+            const size = await sizeOf(key)
+            return size === null ? null : { size }
+        },
         copy: async (from, to) => {
             try {
                 await copyFile(pathOf(from), pathOf(to))
