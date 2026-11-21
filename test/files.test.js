@@ -74,6 +74,8 @@ const sendWith = (person, conversationId, fileIds, text = '') =>
     send(person.socket, { ...messageTo(conversationId, text), attachments: fileIds })
 const urlOf = (person, fileId) => ask(person.socket, 'getFileUrl', { fileId })
 const stored = () => readdir(directory)
+/** Waits for there to be `count` objects in storage: what a message no longer needs is cleared away after it is answered. */
+const storedIs = count => vi.waitFor(async () => expect(await stored()).toHaveLength(count))
 
 describe('sending a file', () => {
     it('goes from the browser to storage and back, without its bytes passing through a socket', async () => {
@@ -237,11 +239,15 @@ describe('asking to upload', () => {
         expect(await cancel(bob, empty)).toEqual({ ok: false, message: UNKNOWN_FILE })
         expect(await cancel(alice, empty)).toEqual({ ok: true })
         expect(await cancel(alice, empty)).toEqual({ ok: false, message: UNKNOWN_FILE })
+        // Its address still works, so it still counts — until the address is dead; then it has cost nothing.
+        expect(await File.find().lean()).toMatchObject([{ state: 'unused' }])
+        expect((await reserve(alice, id, photo({ size: 6000 }))).ok).toBe(false)
+        await app.sweepPendingUploads({ now: Date.now() + 31 * MINUTE })
         expect(await File.countDocuments()).toBe(0)
 
         const uploaded = await upload(alice, id, photo({ size: 6000 }))
         expect(await cancel(alice, uploaded)).toEqual({ ok: true })
-        expect(await stored()).toEqual([])
+        await storedIs(0)
         expect(await sendWith(alice, id, [uploaded])).toEqual({ ok: false, message: NOT_AVAILABLE })
         expect(await reserve(alice, id, photo({ size: 6000 }))).toEqual({ ok: false, message: 'You have reached your upload limit for today' })
 
@@ -334,7 +340,7 @@ describe('the address a file is uploaded to', () => {
         expect((await put(reserved, bytesOf(2048), { 'Content-Type': 'text/html' })).status).toBe(400)
         expect((await put(reserved, bytesOf(2047))).status).toBe(400)
         expect((await put(reserved, bytesOf(4096))).status).toBe(400)
-        expect(await stored()).toEqual([])
+        await storedIs(0)
 
         // An address that was not signed here, and one that was signed for something else.
         const [base, signature] = reserved.uploadUrl.split(/\.(?=[^.]*$)/)
@@ -345,7 +351,7 @@ describe('the address a file is uploaded to', () => {
         expect((await fetch(`${app.url}/files/nonsense`)).status).toBe(403)
 
         expect((await put(reserved, bytesOf(2048))).status).toBe(200)
-        expect(await stored()).toHaveLength(1)
+        await storedIs(1)
     })
 })
 
@@ -481,6 +487,122 @@ describe('fetching a file', () => {
     })
 })
 
+describe('what was sent cannot be replaced', () => {
+    it('the address a file was uploaded to goes on working, but the message no longer looks there', async () => {
+        const alice = await account('alice')
+        const bob = await guest('bob')
+        const id = dm(alice, bob)
+        const reserved = await reserve(alice, id, photo({ size: 100 }))
+        expect((await put(reserved, bytesOf(100, 1))).status).toBe(200)
+        expect(await sendWith(alice, id, [reserved.fileId])).toMatchObject({ ok: true })
+        const bytesBobGets = async () => Buffer.from(await (await fetch((await urlOf(bob, reserved.fileId)).url)).arrayBuffer())
+        expect((await bytesBobGets()).equals(bytesOf(100, 1))).toBe(true)
+        // Only the message's own copy is kept.
+        await storedIs(1)
+
+        // Other bytes of the same size and type, to the same address, after the fact.
+        expect((await put(reserved, bytesOf(100, 2))).status).toBe(200)
+        expect((await bytesBobGets()).equals(bytesOf(100, 1))).toBe(true)
+
+        // What arrived late is deleted once the address is dead; the message's file stays.
+        await storedIs(2)
+        await app.sweepPendingUploads({ now: Date.now() + 31 * MINUTE })
+        await storedIs(1)
+        expect((await bytesBobGets()).equals(bytesOf(100, 1))).toBe(true)
+        expect((await File.findById(reserved.fileId).lean()).uploadKey).toBeUndefined()
+    })
+
+    it('files attached by a write that then failed are not left attached to a message that never was', async () => {
+        const alice = await account('alice')
+        const bob = await guest('bob')
+        const id = dm(alice, bob)
+        const first = await upload(alice, id)
+        const second = await upload(alice, id)
+        const write = File.bulkWrite.bind(File)
+        // (The first write notes where the copies are going; the second attaches them.)
+        vi.spyOn(File, 'bulkWrite').mockImplementationOnce(write).mockImplementationOnce(async operations => {
+            await write(operations.slice(0, 1))
+            throw new Error('connection lost')
+        })
+        expect((await sendWith(alice, id, [first, second])).ok).toBe(false)
+        expect(await File.find({ state: 'pending' }).countDocuments()).toBe(2)
+        // One object each, and no more: the copies nothing uses are gone.
+        await storedIs(2)
+        // They can be sent after all.
+        expect(await sendWith(alice, id, [first, second])).toMatchObject({ ok: true })
+        await storedIs(2)
+    })
+
+    it('a copy left behind when everything failed at once is found and deleted later', async () => {
+        const alice = await account('alice')
+        const bob = await guest('bob')
+        const id = dm(alice, bob)
+        const fileId = await upload(alice, id)
+        const write = File.bulkWrite.bind(File)
+        const find = File.find.bind(File)
+        // The database goes away after the copy was made: nothing is attached, and nothing can be tidied.
+        vi.spyOn(File, 'bulkWrite').mockImplementationOnce(write).mockRejectedValueOnce(new Error('connection lost'))
+        vi.spyOn(File, 'find').mockImplementationOnce(find).mockImplementationOnce(() => ({ lean: () => Promise.reject(new Error('connection lost')) }))
+        vi.spyOn(console, 'error').mockImplementation(() => {})
+        expect((await sendWith(alice, id, [fileId])).ok).toBe(false)
+        await storedIs(2)
+        expect(await File.findById(fileId).lean()).toMatchObject({ state: 'pending', copyKey: expect.stringMatching(/^files\//) })
+
+        await app.sweepPendingUploads({ now: Date.now() + 4 * MINUTE })
+        await storedIs(2)
+        await app.sweepPendingUploads({ now: Date.now() + 6 * MINUTE })
+        await storedIs(1)
+        expect((await File.findById(fileId).lean()).copyKey).toBeUndefined()
+        // The file itself was not touched: it can still be sent.
+        expect(await sendWith(alice, id, [fileId])).toMatchObject({ ok: true })
+        await storedIs(1)
+        expect((await fetch((await urlOf(bob, fileId)).url)).status).toBe(200)
+    })
+
+    it('a message that was refused keeps its files to be sent again — once', async () => {
+        const alice = await account('alice')
+        const bob = await guest('bob')
+        const id = dm(alice, bob)
+        const fileId = await upload(alice, id)
+        vi.spyOn(Message, 'create').mockRejectedValueOnce(new Error('down'))
+        expect((await sendWith(alice, id, [fileId])).ok).toBe(false)
+        expect(await File.findById(fileId).lean()).toMatchObject({ state: 'pending' })
+        await storedIs(1)
+        expect(await sendWith(alice, id, [fileId])).toMatchObject({ ok: true })
+        await storedIs(1)
+        expect((await fetch((await urlOf(bob, fileId)).url)).status).toBe(200)
+    })
+})
+
+describe('deleting, in the corners', () => {
+    it('a message from before messages had kinds can be deleted by its author', async () => {
+        const alice = await account('alice')
+        const bob = await guest('bob')
+        const sent = await send(alice.socket, messageTo(dm(alice, bob), 'an old one'))
+        await Message.collection.updateOne({ clientId: { $exists: true } }, { $unset: { kind: 1 } })
+        expect((await Message.collection.findOne({})).kind).toBeUndefined()
+        expect(await ask(alice.socket, 'deleteMessage', { id: sent.id })).toEqual({ ok: true })
+        expect((await Message.findById(sent.id).lean()).kind).toBe('deleted')
+    })
+
+    it('files sent into a conversation that is deleted at that moment go with it', async () => {
+        const alice = await account('alice')
+        const bob = await guest('bob')
+        const id = dm(alice, bob)
+        await send(alice.socket, messageTo(id, 'hello'))
+        const fileId = await upload(alice, id)
+        const create = Message.create.bind(Message)
+        vi.spyOn(Message, 'create').mockImplementationOnce(async document => {
+            const saved = await create(document)
+            await Conversation.deleteOne({ _id: id })
+            return saved
+        })
+        await sendWith(alice, id, [fileId])
+        await storedIs(0)
+        expect(await File.findById(fileId).lean()).toMatchObject({ state: 'discarded' })
+    })
+})
+
 describe('uploads that were never sent', () => {
     const later = () => app.sweepPendingUploads({ now: Date.now() + 16 * MINUTE })
 
@@ -496,6 +618,10 @@ describe('uploads that were never sent', () => {
         // Not yet: an upload has fifteen minutes.
         expect(await app.sweepPendingUploads({ now: Date.now() + 14 * MINUTE })).toEqual({ refunded: 0, discarded: 0 })
         expect(await later()).toEqual({ refunded: 1, discarded: 0 })
+        // Counted for as long as its address might still be used, and not a moment longer.
+        expect(await File.find().lean()).toMatchObject([{ state: 'unused' }])
+        expect((await reserve(alice, id, photo({ size: 9000 }))).ok).toBe(false)
+        await app.sweepPendingUploads({ now: Date.now() + 31 * MINUTE })
         expect(await File.countDocuments()).toBe(0)
         expect((await reserve(alice, id, photo({ size: 9000 }))).ok).toBe(true)
     })
@@ -507,16 +633,48 @@ describe('uploads that were never sent', () => {
         const bob = await account('bob')
         const id = dm(alice, bob)
         const fileId = await upload(alice, id, photo({ size: 9000 }))
-        expect(await stored()).toHaveLength(1)
+        await storedIs(1)
 
         expect(await later()).toEqual({ refunded: 0, discarded: 1 })
-        expect(await stored()).toEqual([])
+        await storedIs(0)
         expect(await File.findById(fileId).lean()).toMatchObject({ state: 'discarded', size: 9000 })
         // It can no longer be sent…
         expect(await sendWith(alice, id, [fileId])).toEqual({ ok: false, message: NOT_AVAILABLE })
         // …alice has still used up her day…
         expect(await reserve(alice, id, photo({ size: 9000 }))).toEqual({ ok: false, message: 'You have reached your upload limit for today' })
         // …and the room it took is free again, for anyone.
+        expect((await reserve(bob, id, photo({ size: 9000 }))).ok).toBe(true)
+    })
+
+    it('leave nothing behind when the upload arrives after it was given up', async () => {
+        await app.stop()
+        await start({ uploadMaxUserMbPerDay: 0.01, uploadMaxTotalMb: 0.01 })
+        const alice = await account('alice')
+        const bob = await account('bob')
+        const id = dm(alice, bob)
+        // Taken back before anything was uploaded. But the address still works…
+        const cancelled = await reserve(alice, id, photo({ size: 6000 }))
+        expect(await ask(alice.socket, 'cancelUpload', { fileId: cancelled.fileId })).toEqual({ ok: true })
+        expect((await put(cancelled, bytesOf(6000))).status).toBe(200)
+        // …and so does that of one the sweep gave up on.
+        const swept = await reserve(alice, id, photo({ size: 3000 }))
+        expect(await later()).toEqual({ refunded: 1, discarded: 0 })
+        expect((await put(swept, bytesOf(3000))).status).toBe(200)
+        await storedIs(2)
+        // Neither can be sent — and what is there is counted: against her day, and against storage.
+        expect(await sendWith(alice, id, [cancelled.fileId])).toEqual({ ok: false, message: NOT_AVAILABLE })
+        expect(await reserve(alice, id, photo({ size: 2000 }))).toEqual({ ok: false, message: 'You have reached your upload limit for today' })
+        expect(await reserve(bob, id, photo({ size: 2000 }))).toEqual({ ok: false, message: 'Storage is full — no more files can be uploaded for now' })
+
+        // Once no address can still be in use, what arrived is deleted, and the records with it.
+        await app.sweepPendingUploads({ now: Date.now() + 29 * MINUTE })
+        await storedIs(2)
+        await app.sweepPendingUploads({ now: Date.now() + 31 * MINUTE })
+        await storedIs(0)
+        // Given up and then uploaded all the same: charged to the day after all, like any upload not sent…
+        expect((await File.find().lean()).map(file => file.state)).toEqual(['discarded', 'discarded'])
+        expect(await reserve(alice, id, photo({ size: 2000 }))).toEqual({ ok: false, message: 'You have reached your upload limit for today' })
+        // …though no longer to storage, where nothing of it is left.
         expect((await reserve(bob, id, photo({ size: 9000 }))).ok).toBe(true)
     })
 
@@ -542,7 +700,7 @@ describe('files and expiry', () => {
 
         expect(await app.sweepExpiredFiles({ now: Date.now() + HOUR })).toEqual({ expired: 0 })
         expect(await app.sweepExpiredFiles({ now: Date.now() + 3 * HOUR })).toEqual({ expired: 1 })
-        expect(await stored()).toEqual([])
+        await storedIs(0)
         expect(await File.countDocuments()).toBe(0)
     })
 
@@ -555,7 +713,7 @@ describe('files and expiry', () => {
         await sendWith(alice, dm(alice, bob), [fileId])
         expect(await File.findById(fileId).lean()).not.toHaveProperty('expiresAt')
         expect(await app.sweepExpiredFiles({ now: Date.now() + 10_000 * HOUR })).toEqual({ expired: 0 })
-        expect(await stored()).toHaveLength(1)
+        await storedIs(1)
     })
 
     it('what is kept only for a day’s allowance is dropped when the day is over', async () => {
@@ -583,7 +741,7 @@ describe('files and expiry', () => {
         await ask(bob.socket, 'leaveGroup', { conversationId: id })
         await settle()
         expect(await Conversation.findById(id)).toBeNull()
-        expect(await stored()).toEqual([])
+        await storedIs(0)
         expect(await File.countDocuments({ state: { $in: ['pending', 'attached'] } })).toBe(0)
     })
 })
@@ -615,7 +773,7 @@ describe('deleting a message', () => {
         expect(history.messages[1]).not.toHaveProperty('attachments')
         expect(JSON.stringify(await Message.findById(second.id).lean())).not.toContain('delete this')
         // The file is gone from storage, and nobody can fetch it.
-        expect(await stored()).toEqual([])
+        await storedIs(0)
         expect(await urlOf(bob, fileId)).toEqual({ ok: false, message: UNKNOWN_FILE })
         // Positions that pointed at it still mean what they meant.
         expect(await ask(bob.socket, 'markRead', { conversationId: id, upTo: positionOf(second) })).toEqual({ ok: true })

@@ -344,8 +344,13 @@ export function MessageList({
   const everyFile = useMemo(() => messages.flatMap(message => message.attachments ?? []), [messages])
   const gallery = useMemo(() => everyFile.filter(isMedia), [everyFile])
   const viewed = viewing === null ? undefined : everyFile.find(file => file.id === viewing)
+  // (Read when a file is opened, so that the function every row is given never changes.)
+  const files = useRef(everyFile)
+  useEffect(() => {
+    files.current = everyFile
+  }, [everyFile])
   const openFile = useCallback((fileId: string) => {
-    const file = everyFile.find(candidate => candidate.id === fileId)
+    const file = files.current.find(candidate => candidate.id === fileId)
     // A PDF inside a page is unreliable on phones: there it opens in a tab of its own.
     if (file !== undefined && kindOf(file.type) === 'pdf' && window.matchMedia?.('(max-width: 767px)').matches) {
       const tab = window.open('about:blank', '_blank')
@@ -356,7 +361,7 @@ export function MessageList({
       return
     }
     setViewing(fileId)
-  }, [everyFile])
+  }, [])
 
   // What each row is given, worked out when the messages or the members' positions
   // change — not each time something else in the app does (someone's presence, a message

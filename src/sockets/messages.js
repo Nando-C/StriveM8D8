@@ -1,6 +1,6 @@
 import { BOT, BOT_MEMBER, BOT_REPLY_DELAY_MS, botReply, mentionsBot, withoutBotMention } from '../bot.js'
 import {
-    advancePosition, conversationViewFor, directConversationId, joinedBefore, lastPosition, memberOf, parseDirectId,
+    NOT_TO_READ, advancePosition, conversationViewFor, directConversationId, joinedBefore, lastPosition, memberOf, parseDirectId,
     previewOf, publishPositions, receiptOf, visibleTo,
 } from '../conversations.js'
 import mongoose from 'mongoose'
@@ -276,6 +276,11 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter, att
             // messages went with it, and this one must not be left behind.
             await Message.deleteOne({ _id: saved._id })
                 .catch(error => console.error("failed to remove a message of a deleted conversation:", error.name))
+            // (Its files were attached after the conversation's own were deleted.)
+            if (files.length > 0) {
+                await attachments.discardOfMessage(saved._id.toString())
+                    .catch(error => console.error("failed to remove the files of a deleted conversation:", error.name))
+            }
             return saved
         }
         for (const member of current.members) {
@@ -346,15 +351,22 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter, att
             if (!sender) return fail(NOT_LOGGED_IN)
             if (!isDatabaseReady()) return fail(NOT_SAVED)
 
-            // With files, the message's position is decided first: it is what each file is
-            // then attached at — and what decides, later, who may download it.
-            const at = fileIds.length > 0 ? { ts: Date.now(), id: new mongoose.Types.ObjectId().toString() } : null
+            // With files, the message's position is decided before it is saved: it is what
+            // each file is attached at — and what decides, later, who may download it.
+            // (Decided by `claim`, as late as it can be.)
+            const position = () => ({ ts: Date.now(), id: new mongoose.Types.ObjectId().toString() })
+            let at = null
+            let files = []
             let claimed = false
+            // Clears away what attaching the files left in storage. After the message, never before.
+            let done = async () => {}
             try {
                 const refusal = await refusalToWrite(conversationId, sender)
                 if (refusal) return fail(refusal)
-                const files = at === null ? [] : await attachments.claim({ fileIds, sender, conversationId, at })
-                claimed = at !== null
+                if (fileIds.length > 0) {
+                    ;({ attachments: files, at, done } = await attachments.claim({ fileIds, sender, conversationId, position }))
+                    claimed = true
+                }
 
                 let conversation = await Conversation.findById(conversationId).lean()
                 let created = false
@@ -379,12 +391,17 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter, att
                     else if (mentionsBot(text)) answerAsBot(conversation, sender, withoutBotMention(text))
                 }
                 reply({ ok: true, id: saved._id.toString(), timestamp: saved.createdAt.getTime() })
+                // (After the answer: nobody waits for storage to be tidied.)
+                await done()
             } catch (error) {
                 // A message that was not saved has no files: they can be sent again.
                 if (claimed) await attachments.release(at.id).catch(() => {})
-                if (error instanceof Refusal) return fail(error.message)
-                console.error("failed to save message:", error.name)
-                fail(NOT_SAVED)
+                if (error instanceof Refusal) fail(error.message)
+                else {
+                    console.error("failed to save message:", error.name)
+                    fail(NOT_SAVED)
+                }
+                await done()
             }
         })
 
@@ -496,7 +513,8 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter, att
 
             try {
                 // One's own, and something that was said: not a line about a group, not already deleted.
-                const own = { _id: payload.id, from: author.userId, kind: 'text' }
+                // (A message from before messages had kinds has none stored, and was said.)
+                const own = { _id: payload.id, from: author.userId, kind: { $nin: NOT_TO_READ } }
                 const message = await Message.findOne(own).lean()
                 // (Someone no longer in the conversation has no say in it any more.)
                 if (!message || !memberOf(await Conversation.findById(message.conversationKey).lean(), author.userId)) {

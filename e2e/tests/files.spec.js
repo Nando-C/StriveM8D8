@@ -67,6 +67,13 @@ test('a picture, a video and a PDF: sent from one browser, previewed in the othe
     await expect.poll(() => loaded(ben.getByRole('dialog').getByRole('img', { name: 'holiday.png' }))).toBe(true)
     await ben.keyboard.press('ArrowRight')
     await expect(ben.getByRole('dialog', { name: 'clip.webm' })).toContainText('2 of 2')
+    // What is shown is the video itself — nothing of the picture before it is carried over —
+    // and stepping back shows the picture again.
+    await expect.poll(() => ben.getByRole('dialog').locator('video').evaluate(element => element.videoWidth)).toBe(64)
+    await ben.keyboard.press('ArrowLeft')
+    await expect.poll(() => loaded(ben.getByRole('dialog').getByRole('img', { name: 'holiday.png' }))).toBe(true)
+    await ben.keyboard.press('ArrowRight')
+    await expect.poll(() => ben.getByRole('dialog').locator('video').evaluate(element => element.videoWidth)).toBe(64)
     await ben.keyboard.press('Escape')
 
     // A very wide picture is sent smaller — measured and given a small blurred preview

@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { Maximize2 } from 'lucide-react'
 import { FileCard } from '@/components/files/FileCard'
 import { formatDuration, kindOf } from '@/lib/files'
-import { useFileUrl } from '@/lib/fileUrls'
+import { useFileUrl, useMediaUrl } from '@/lib/fileUrls'
 import { useNearViewport } from '@/lib/useNearViewport'
 import { cn } from '@/lib/utils'
 import type { Attachment } from '@/types/protocol'
@@ -76,7 +76,7 @@ interface PlayerProps {
 function VideoPlayer({ file, own: _own, onOpen, onBroken, saved }: PlayerProps & { onOpen: (fileId: string) => void }) {
   const box = useRef<HTMLDivElement>(null)
   const near = useNearViewport(box)
-  const { url, broken, failed } = useFileUrl(file.id, near && saved)
+  const { url, broken, media } = useMediaUrl(file.id, near && saved)
   useEffect(() => {
     if (broken) onBroken(file.id)
   }, [broken, file.id, onBroken])
@@ -90,7 +90,7 @@ function VideoPlayer({ file, own: _own, onOpen, onBroken, saved }: PlayerProps &
     >
       {url !== null && (
         // eslint-disable-next-line jsx-a11y/media-has-caption -- a file someone sent: there are no captions to offer
-        <video controls playsInline preload="metadata" src={`${url}${FIRST_FRAME}`} aria-label={file.name} onError={failed} className="absolute inset-0 size-full" />
+        <video controls playsInline preload="metadata" src={`${url}${FIRST_FRAME}`} aria-label={file.name} {...media} className="absolute inset-0 size-full" />
       )}
       <button
         type="button"
@@ -108,7 +108,7 @@ function VideoPlayer({ file, own: _own, onOpen, onBroken, saved }: PlayerProps &
 function AudioPlayer({ file, own, onBroken, saved }: PlayerProps) {
   const box = useRef<HTMLDivElement>(null)
   const near = useNearViewport(box)
-  const { url, broken, failed } = useFileUrl(file.id, near && saved)
+  const { url, broken, media } = useMediaUrl(file.id, near && saved)
   useEffect(() => {
     if (broken) onBroken(file.id)
   }, [broken, file.id, onBroken])
@@ -120,7 +120,7 @@ function AudioPlayer({ file, own, onBroken, saved }: PlayerProps) {
         {file.durationMs !== undefined && ` · ${formatDuration(file.durationMs)}`}
       </span>
       {/* eslint-disable-next-line jsx-a11y/media-has-caption -- a file someone sent: there are no captions to offer */}
-      <audio controls preload="metadata" src={url ?? undefined} aria-label={file.name} onError={url === null ? undefined : failed} className="h-10 w-full" />
+      <audio controls preload="metadata" src={url ?? undefined} aria-label={file.name} {...media} className="h-10 w-full" />
     </div>
   )
 }
