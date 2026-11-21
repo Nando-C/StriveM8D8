@@ -1,15 +1,21 @@
-import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { Check, CheckCheck, CircleAlert, LoaderCircle } from 'lucide-react'
+import { Check, CheckCheck, CircleAlert, LoaderCircle, Trash2 } from 'lucide-react'
+import { Attachments } from '@/components/files/Attachments'
+import { MediaViewer } from '@/components/files/MediaViewer'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { UserAvatar } from '@/components/UserAvatar'
 import type { Thread } from '@/lib/chatState'
+import { isMedia, kindOf } from '@/lib/files'
+import { fileUrl, saveFile } from '@/lib/fileUrls'
 import { describeGroupEvent } from '@/lib/groupEvents'
-import type { LocalMessage } from '@/lib/messages'
+import { deletedLine, isSaid, type LocalMessage } from '@/lib/messages'
 import { comparePositions, positionOf } from '@/lib/positions'
+import { ask } from '@/lib/request'
+import { useRequest } from '@/lib/useRequest'
 import { TICK_LABELS, receiptsOf, tickOf, type Tick } from '@/lib/ticks'
 import { formatDay, formatTime, isSameDay } from '@/lib/format'
 import { fade, messageIn } from '@/lib/motion'
@@ -25,6 +31,8 @@ interface MessageListProps {
   group?: boolean
   /** The user was added to the group after it began. */
   joinedLater?: boolean
+  /** Whether the user's own messages can be deleted right now: connected and logged in. */
+  canDelete?: boolean
   /** Ask for the messages before the oldest one shown. */
   onLoadEarlier: () => void
   /** Whether the end of the conversation is on screen — the newest message can be read. */
@@ -114,6 +122,42 @@ function MessageStatus({ message, tick, seenBy, deliveredTo }: { message: LocalM
   )
 }
 
+// Taking back one's own message: asked for, then confirmed, then done by the server —
+// the message turns into its marker when the server says so.
+function DeleteMessage({ id, disabled }: { id: string; disabled: boolean }) {
+  const [open, setOpen] = useState(false)
+  const { busy, error, run } = useRequest()
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        aria-label="Delete this message"
+        disabled={disabled}
+        className="flex items-center rounded-sm opacity-60 outline-none hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-30"
+      >
+        <Trash2 aria-hidden="true" className="size-3.5" />
+      </PopoverTrigger>
+      <PopoverContent align="end" className="flex w-60 flex-col gap-2 text-xs">
+        <p>Delete this message for everyone? Its files are deleted too. This cannot be undone.</p>
+        {error !== null && <p role="alert" className="text-destructive">{error}</p>}
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" className="flex-1" onClick={() => setOpen(false)} disabled={busy}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            className="flex-1"
+            disabled={busy}
+            onClick={() => void run(() => ask('deleteMessage', { id }), () => setOpen(false))}
+          >
+            Delete
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 interface MessageProps {
   message: LocalMessage
   /** How far it has got, if it is the user's own. */
@@ -127,11 +171,15 @@ interface MessageProps {
   deliveredTo?: string
   /** What a system message says, in words. */
   line?: string
+  /** Opens one of its files in the viewer. The same function for every row. */
+  onOpenFile: (fileId: string) => void
+  /** Whether the user's own messages can be deleted right now (connected and logged in). */
+  canDelete: boolean
 }
 
 // Drawn again only when something about this message changes: a conversation can hold
 // hundreds, and every event in it (and every change of anyone's presence) reaches the list.
-const Message = memo(function Message({ message, tick, animateIn, sender, seenBy, deliveredTo, line }: MessageProps) {
+const Message = memo(function Message({ message, tick, animateIn, sender, seenBy, deliveredTo, line, onOpenFile, canDelete }: MessageProps) {
   // Something that happened to the group: a quiet line across the middle, nobody's bubble.
   if (line !== undefined) {
     return (
@@ -146,20 +194,25 @@ const Message = memo(function Message({ message, tick, animateIn, sender, seenBy
       </motion.li>
     )
   }
-  const bubble = (
-    <p
-      data-bubble="message"
-      className={cn(
-        // wrap-anywhere: a long word with no spaces must wrap instead of widening the page.
-        'max-w-[80%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed wrap-anywhere whitespace-pre-wrap',
-        'transition-[opacity,background-color,color] duration-200',
-        message.own ? 'rounded-br-md bg-primary text-primary-foreground' : 'rounded-bl-md bg-muted',
-        message.status === 'pending' && 'opacity-60',
-        message.status === 'failed' && 'bg-destructive/10 text-destructive',
-      )}
-    >
+  const files = message.attachments ?? []
+  const look = cn(
+    // wrap-anywhere: a long word with no spaces must wrap instead of widening the page.
+    'max-w-[80%] rounded-2xl text-sm leading-relaxed wrap-anywhere whitespace-pre-wrap',
+    'transition-[opacity,background-color,color] duration-200',
+    message.own ? 'rounded-br-md bg-primary text-primary-foreground' : 'rounded-bl-md bg-muted',
+    message.status === 'pending' && 'opacity-60',
+    message.status === 'failed' && 'bg-destructive/10 text-destructive',
+  )
+  const bubble = files.length === 0 ? (
+    <p data-bubble="message" className={cn(look, 'px-3.5 py-2')}>
       {message.text}
     </p>
+  ) : (
+    // Files sit closer to the edge of the bubble than words do; the words, if any, go under them.
+    <div data-bubble="message" className={cn(look, 'flex flex-col gap-1.5 p-1.5')}>
+      <Attachments files={files} own={message.own} onOpen={onOpenFile} saved={message.status === 'sent'} />
+      {message.text !== '' && <p className="px-2 pb-0.5">{message.text}</p>}
+    </div>
   )
   return (
     <motion.li
@@ -215,13 +268,16 @@ const Message = memo(function Message({ message, tick, animateIn, sender, seenBy
             <MessageStatus message={message} tick={tick} seenBy={seenBy} deliveredTo={deliveredTo} />
           </motion.span>
         </AnimatePresence>
+        {message.own && message.status === 'sent' && message.id !== null && (
+          <DeleteMessage id={message.id} disabled={!canDelete} />
+        )}
       </p>
     </motion.li>
   )
 })
 
 export function MessageList({
-  title, thread, ownUserId, group = false, joinedLater = false, onLoadEarlier, onAtEndChange,
+  title, thread, ownUserId, group = false, joinedLater = false, canDelete = false, onLoadEarlier, onAtEndChange,
 }: MessageListProps) {
   const root = useRef<HTMLDivElement>(null)
   const end = useRef<HTMLDivElement>(null)
@@ -241,7 +297,7 @@ export function MessageList({
       ? undefined
       : messages.find(
           message =>
-            !message.own && message.kind !== 'system' && message.id !== null && comparePositions(positionOf({ id: message.id, timestamp: message.timestamp }), unreadFrom) > 0,
+            !message.own && isSaid(message) && message.id !== null && comparePositions(positionOf({ id: message.id, timestamp: message.timestamp }), unreadFrom) > 0,
         )?.key
 
   const viewport = () => root.current?.querySelector<HTMLElement>('[data-slot=scroll-area-viewport]') ?? null
@@ -283,6 +339,25 @@ export function MessageList({
     seen.current = { newest, oldest, count: messages.length, height: scroller?.scrollHeight ?? 0 }
   }, [newest, oldest, messages.length])
 
+  // The file open in the viewer, and the pictures and videos its arrows step through.
+  const [viewing, setViewing] = useState<string | null>(null)
+  const everyFile = useMemo(() => messages.flatMap(message => message.attachments ?? []), [messages])
+  const gallery = useMemo(() => everyFile.filter(isMedia), [everyFile])
+  const viewed = viewing === null ? undefined : everyFile.find(file => file.id === viewing)
+  const openFile = useCallback((fileId: string) => {
+    const file = everyFile.find(candidate => candidate.id === fileId)
+    // A PDF inside a page is unreliable on phones: there it opens in a tab of its own.
+    if (file !== undefined && kindOf(file.type) === 'pdf' && window.matchMedia?.('(max-width: 767px)').matches) {
+      const tab = window.open('about:blank', '_blank')
+      void fileUrl(fileId).then(url => {
+        if (tab === null || url === null) void saveFile(fileId)
+        else tab.location.href = url
+      })
+      return
+    }
+    setViewing(fileId)
+  }, [everyFile])
+
   // What each row is given, worked out when the messages or the members' positions
   // change — not each time something else in the app does (someone's presence, a message
   // in another conversation).
@@ -292,9 +367,11 @@ export function MessageList({
       messages.map((message, index) => {
         const previous = messages[index - 1]
         const startsDay = previous === undefined || !isSameDay(previous.timestamp, message.timestamp)
-        const system = message.kind === 'system'
+        // A line across the middle rather than anybody's bubble: what happened to a
+        // group, and what is left of a message its author deleted.
+        const system = !isSaid(message)
         const sameSender =
-          !startsDay && previous !== undefined && previous.kind !== 'system' && previous.from === message.from
+          !startsDay && previous !== undefined && isSaid(previous) && previous.from === message.from
         const receipts =
           group && message.own && message.status === 'sent' && summary !== null && ownUserId !== null
             ? receiptsOf(message, summary, ownUserId)
@@ -303,7 +380,7 @@ export function MessageList({
           message,
           startsDay,
           tick: message.own ? tickOf(message, summary, ownUserId) : ('sent' as const),
-          line: system ? describeGroupEvent(message.data, ownUserId) : undefined,
+          line: message.kind === 'deleted' ? deletedLine(message) : system ? describeGroupEvent(message.data, ownUserId) : undefined,
           sender: !group || system || message.own ? undefined : sameSender ? ('continued' as const) : ('named' as const),
           seenBy: receipts?.seenBy.join(', '),
           deliveredTo: receipts?.deliveredTo.join(', '),
@@ -370,6 +447,8 @@ export function MessageList({
                   sender={sender}
                   seenBy={seenBy}
                   deliveredTo={deliveredTo}
+                  onOpenFile={openFile}
+                  canDelete={canDelete}
                 />
               </Fragment>
             )
@@ -377,6 +456,9 @@ export function MessageList({
         </ul>
         <div ref={end} className="h-px" />
       </div>
+      {viewed !== undefined && (
+        <MediaViewer file={viewed} gallery={gallery} onShow={setViewing} onClose={() => setViewing(null)} />
+      )}
     </ScrollArea>
   )
 }

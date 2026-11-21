@@ -19,7 +19,8 @@ A real-time, one-to-one chat application: a Node.js + Socket.IO server with Mong
 - **Guests and accounts.** Type a name and you are in, with that name kept for your browser; or create an account with a password and use it from several devices at once — with a list of those devices, remote sign-out, and a recovery code in place of an email address.
 - **Status that means something.** Online, away (also set by itself after five minutes without activity, and only when *every* one of your devices is idle), do not disturb, and invisible — plus a line of your own that can clear itself after a while. Invisible is real: to everyone else you are indistinguishable from someone who is not connected, yet you can read and write as usual.
 - **Group chats.** Up to twenty people, made in two clicks. Each message says who wrote it, the ticks say when *everyone* has it — press them to see who has seen it — and membership is handled the way people expect: anyone can add or leave, the creator can rename and remove, someone added later sees the conversation from that point on, and someone removed loses it at once.
-- **631 automated tests**, 30 of them driving real browsers against the built app, run on every push by GitHub Actions.
+- **File sharing.** Attach, drop or paste files into a message: they upload straight from the browser to private storage with a progress bar, and arrive as a picture grid, a video or audio player, or a download card. Pictures open full size with the arrow keys stepping through the conversation's media; a message, and its files, can be deleted by whoever sent it.
+- **695 automated tests**, 32 of them driving real browsers against the built app, run on every push by GitHub Actions.
 
 ## Tech stack
 
@@ -89,6 +90,7 @@ src/                        SERVER
 │   ├── index.js            Wires everything onto each connection
 │   ├── messages.js         Sending, history, delivery to every device with its own acknowledgement, receipts
 │   ├── groups.js           Creating a group, adding and removing members, leaving, renaming, succession
+│   ├── files.js            Uploads: reserving one, attaching it to a message, who may download it, allowances, sweeps
 │   ├── session.js          Guests and accounts: login, sign-up, passwords, hourly housekeeping
 │   ├── deviceSessions.js   The devices an account is signed in on, and ending them
 │   ├── guesses.js          Limits on guessing a password, recovery code or bootstrap code
@@ -98,18 +100,20 @@ src/                        SERVER
 ├── conversations.js        Conversation ids, what a member may see, the one view sent to clients
 ├── positions.js            Positions in a conversation: { timestamp, id } pairs and their order
 ├── status.js               What a user chooses to show, and the one rule for what others then see
-└── models/                 Conversation, Message, Identity, Session (a signed-in device), Invitation
+├── storage/                Where files are kept: an S3-compatible bucket, or a local folder for development
+└── models/                 Conversation, Message, File, Identity, Session (a signed-in device), Invitation
 test/                       Server integration tests (real socket clients, in-memory MongoDB)
 
 client/                     CLIENT
 └── src/
     ├── App.tsx             Entry screen or chat shell
-    ├── components/         EntryScreen, account/ (menu and dialogs), groups/ (new group, details, people picker), Sidebar, MessageList, MessageComposer, ConnectionBanner, …
+    ├── components/         EntryScreen, account/ (menu and dialogs), groups/ (new group, details, people picker), files/ (attachments in a message, the full-size viewer, upload chips), Sidebar, MessageList, MessageComposer, ConnectionBanner, …
     │   └── ui/             shadcn/ui components (source files, see below)
     ├── hooks/useChat.ts    Connects the chat to the socket: presence, messages, read reports
     ├── hooks/useSessionLogin.ts  Who this tab is: logging in, back in after a reconnect, and out
+    ├── hooks/useDraftFiles.ts    The files chosen for the message being written: measured, uploaded, cancelled
     ├── lib/chatState.ts    Every state change, as a pure reducer (with chatSelectors.ts, messages.ts)
-    ├── lib/                socket, requests, stored sessions, server config, motion timings, formatting
+    ├── lib/                socket, requests, stored sessions, server config, motion timings, formatting; files: what kind a file is, measuring and shrinking it before upload, the upload itself, short-lived download addresses
     ├── types/protocol.ts   The wire protocol as TypeScript types
     └── test/               Client tests (the real app against a fake socket)
 
@@ -160,7 +164,7 @@ Three suites, each testing what the others cannot.
 
 | | Server | Client |
 |---|---|---|
-| Tests | 347, in 18 files | 254, in 13 files |
+| Tests | 385, in 19 files | 278, in 14 files |
 | Approach | Real Socket.IO clients against a fresh server per test, with an in-memory MongoDB | The real app rendered against a fake socket; each test plays the server |
 | Lint | oxlint | oxlint, including React hooks rules |
 | Types | — | TypeScript, checked on every build |
@@ -175,6 +179,7 @@ Three suites, each testing what the others cannot.
   - someone leaving and vanishing from the list promptly;
   - a conversation arriving exactly once on both sides;
   - a message waiting for someone who is away, and the "New messages" line when they return;
+  - a picture, a video and a PDF sent from one browser and previewed in another from real storage, a wide photo sent smaller, opening full size, downloading, deleting, and the size limit;
   - reload restoring everything;
   - a third person seeing nothing;
   - the bot;
@@ -238,6 +243,13 @@ Server — `.env` in the repository root:
 | `MEMBER_DIRECTORY` | No | `online` (default): people can start a chat with whoever is connected. `all`: accounts are also shown every other account, connected or not (up to 200) — for a private deployment, where otherwise you could never write to someone who is not online at that moment. Guests are never sent the list. |
 | `TRUSTED_PROXY_HOPS` | When behind a proxy | How many proxies stand between the internet and the server (default `0`). Limits on sign-ups and wrong passwords are counted per client address; behind a hosting platform's proxy every visitor appears to come from the proxy unless this is set, and they would all share one limit. Too high a number lets a client forge its address. Not every host documents this: use `PROXY_CHECK` to find the value. |
 | `PROXY_CHECK` | No | Set to `true` while setting up a host. It adds `GET /proxy-check`, which shows whoever asks how their own request arrived and which address each value of `TRUSTED_PROXY_HOPS` would take them for. Open it from a browser, compare with your real public address, set the hops that give it, and remove this setting again. |
+| `FILE_STORAGE` | No | Unset: no file sharing, and the client hides it. `s3`: an S3-compatible bucket (the `S3_…` settings below). `local`: a folder on the server's disk, for development and tests only — a hosted server's disk does not last. |
+| `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | With `FILE_STORAGE=s3` | The bucket and a key that can read, write and delete in it. `S3_ENDPOINT` is for services other than AWS (for Cloudflare R2, the account's S3 endpoint); `S3_REGION` defaults to `auto`. If the bucket or the key is missing, file sharing stays off. The bucket must be **private**, and needs a CORS rule that allows `PUT` and `GET` from the client's origin with the `Content-Type` header. |
+| `FILE_STORAGE_DIR` | No | With `FILE_STORAGE=local`: the folder (default `uploads`, git-ignored). |
+| `UPLOAD_MAX_FILE_MB` | No | Largest single file. Default `25`. |
+| `UPLOAD_MAX_USER_MB_PER_DAY` | No | How much one account may upload in 24 hours. Default `200`. |
+| `UPLOAD_MAX_ADDRESS_MB_PER_DAY` | No | The same for everything from one client address. Default: four times the per-account figure. `0` switches it off — for a household behind one address. |
+| `UPLOAD_MAX_TOTAL_MB` | No | How much may be stored in all; beyond it, uploads are refused for everyone until files expire or are deleted. Default `2000`. |
 
 Client — `client/.env`:
 
@@ -379,9 +391,14 @@ People are identified by a permanent `userId`; usernames are labels. No event ca
 | Event | Payload | Reply |
 |-------|---------|-------|
 | `login` | one of the three forms below | `loggedin` or `loginError` |
-| `sendmessage` | `{ conversationId, text, clientId }` + acknowledgement callback | The acknowledgement (below) |
+| `sendmessage` | `{ conversationId, text, clientId, attachments? }` + acknowledgement callback | The acknowledgement (below) |
 | `getHistory` | `{ conversationId, before? }` | `history` or `historyError` |
 | `markRead` | `{ conversationId, upTo }` + acknowledgement callback | `{ ok: true }` or `{ ok: false, message }` |
+| `deleteMessage` | `{ id }` + acknowledgement callback | `{ ok: true }` or `{ ok: false, message }` — your own messages only |
+| `requestUpload` | `{ conversationId, name, type, size, width?, height?, durationMs?, placeholder? }` + acknowledgement callback | `{ ok: true, fileId, uploadUrl, headers, expiresInSeconds }` or `{ ok: false, message }` — accounts only |
+| `cancelUpload` | `{ fileId }` + acknowledgement callback | `{ ok: true }` or `{ ok: false, message }` — your own upload, before it is sent |
+| `getFileUrl` | `{ fileId, download? }` + acknowledgement callback | `{ ok: true, url, expiresInSeconds }` or `{ ok: false, message }` |
+| `getStorageUsage` | `{}` + acknowledgement callback | `{ ok: true, usedBytes, maxBytes, files }` — administrators only |
 | `setStatus` | `{ status?, text?, clearAfterMinutes? }` + acknowledgement callback | `{ ok: true, status, statusText, statusClearAt }` or `{ ok: false, message }` |
 | `setIdle` | `{ idle }` + acknowledgement callback | `{ ok: true }` or `{ ok: false, message }` |
 | `createGroup` | `{ name, userIds }` + acknowledgement callback | `{ ok: true, conversationId }` or `{ ok: false, message }` |
@@ -455,7 +472,7 @@ The recovery code is shown once and is the only way back into an account whose p
 
 | Event | Sent to | Payload | Meaning |
 |-------|---------|---------|---------|
-| `loggedin` | The socket that logged in, with an acknowledgement callback when a guest name was just reserved | `{ userId, username, kind, admin, sessionToken, ownStatus, onlineUsers, conversations, groupIds, members?, reservation?, session? }` | Login accepted. `ownStatus` is what you have chosen to show (`{ status, statusText, statusClearAt }`), which nobody else is sent. `onlineUsers` is everyone who can be seen (users, below) — including you, unless you are invisible. `conversations` is your 50 most recently active (conversations, below). `groupIds` is the id of every group you are in, listed or not: a client that was not connected when you were taken out of one learns it from its absence here. `members` is every account, sent only to accounts and only where `MEMBER_DIRECTORY=all`. `sessionToken`, `reservation` and `session` are private to this client. **Acknowledge it**: a newly reserved guest name is provisional until the browser confirms the secret arrived, and is given up if the connection closes first or no confirmation comes within ten seconds — otherwise a secret lost in transit would lock the name against its own owner. |
+| `loggedin` | The socket that logged in, with an acknowledgement callback when a guest name was just reserved | `{ userId, username, kind, admin, sessionToken, ownStatus, onlineUsers, conversations, groupIds, features, members?, reservation?, session? }` | Login accepted. `ownStatus` is what you have chosen to show (`{ status, statusText, statusClearAt }`), which nobody else is sent. `onlineUsers` is everyone who can be seen (users, below) — including you, unless you are invisible. `conversations` is your 50 most recently active (conversations, below). `features` says what this deployment offers: `{ files }`, and with files on, `maxFileBytes` and `maxFilesPerMessage`. `groupIds` is the id of every group you are in, listed or not: a client that was not connected when you were taken out of one learns it from its absence here. `members` is every account, sent only to accounts and only where `MEMBER_DIRECTORY=all`. `sessionToken`, `reservation` and `session` are private to this client. **Acknowledge it**: a newly reserved guest name is provisional until the browser confirms the secret arrived, and is given up if the connection closes first or no confirmation comes within ten seconds — otherwise a secret lost in transit would lock the name against its own owner. |
 | `loginError` | The socket that tried | `{ message, retryable?, retryAfterMs?, sessionEnded? }` | For example `Invalid username`, `Username already in use`, `That name belongs to an account — sign in`, `Wrong username or password`, `Already logged in`, `Too many requests, slow down`. `retryable`: the server is still starting, try again shortly. `sessionEnded`: the device session no longer exists. |
 | `sessionRevoked` | The sockets being signed out | `{ reason }` | This connection was signed out on purpose — its device was revoked, the password changed, the account deleted or the guest name expired — and is closed straight after. |
 | `newLogin` | Everyone else who is logged in | a user | A user came online (or stopped being invisible), or who they are changed (a guest became an account). Treat as an upsert by `userId`. Sent once per user, however many devices they connect. |
@@ -466,6 +483,7 @@ The recovery code is shown once and is the only way back into an account whose p
 | `receipt` | Whoever wrote the messages it covers, on every connection | `{ conversationId, userId, deliveredUpTo, readUpTo }` | Another member has received or read further. Positions only move forward. This is what the ticks on your own messages are worked out from — so in a group it is sent only to the authors of what was just received or read, not to every member (one message to a group of 20 is 19 of these, not 380); everyone finds all positions in `members` at their next login. It can arrive before `conversationUpdated` describes a brand-new conversation: keep it and apply it then. Someone who joined a group later is not sent a position from before they joined (it would name an earlier message); for them it is `null`, here and in `members`. |
 | `conversationUpdated` | Each member, separately | `{ conversation }` | A conversation is new to you or something about it changed (it was just created; the other person is gone; another of your devices read it; a group's members, admin or name changed). Replaces what you had. After the first message of a one-to-one conversation it arrives *after* the `message`; for a change to a group, *before* the system message that records it. |
 | `conversationRemoved` | Every connection of someone who left a group or was removed from it | `{ id }` | You are no longer in that group: forget it. |
+| `messageDeleted` | Every member who could read the message, on every connection | `{ conversationId, id }` | Its author deleted it. What is left is a marker: the same message with `kind: "deleted"`, no text and no attachments. A `conversationUpdated` follows, with the preview and unread count as they now are. |
 | `history` | The requester only | `{ conversationId, messages, hasMore }` | Up to 100 messages, oldest first. `hasMore`: there are earlier ones; ask again with `before` set to the first message's position. |
 | `historyError` | The requester only | `{ conversationId, message }` | `Invalid conversation`, `Invalid position`, `Not logged in`, `Unknown conversation`, `History could not be loaded`, or `Too many requests, slow down`. |
 | `memberJoined` / `memberLeft` | Accounts, where `MEMBER_DIRECTORY=all` | `{ userId, username, kind }` / `{ userId }` | An account was created or removed. |
@@ -481,9 +499,12 @@ The shapes used above:
 //  statusText: a line of their own, possibly empty
 
 // a message — the same object live and in history
-{ id, conversationId, from, fromName, kind, text, data?, timestamp, clientId }
+{ id, conversationId, from, fromName, kind, text, data?, attachments?, timestamp, clientId }
 //  from: the author's userId; fromName: their name when it was sent
-//  kind: "text", or "system" for a change to a group — then text is null and data says what happened (see Groups)
+//  kind: "text"; "system" for a change to a group — then text is null and data says what happened (see Groups);
+//        or "deleted" for what is left of a message its author deleted — text is null
+//  attachments: [{ id, name, type, size, width?, height?, durationMs?, placeholder? }] — files sent with it (see Files);
+//        text may then be ""
 //  clientId: the id you gave your own message, null on anyone else's
 
 // a conversation, as you are shown it
@@ -493,14 +514,31 @@ The shapes used above:
 //            `bot: true` marks the demo bot, which a client leaves out of a group's "seen by everyone")
 //           your own entry holds your true positions; everyone else's hold what they let be known —
 //           the same thing, except that an invisible member's stand still until they are visible again
-//  lastMessage: { id, from, fromName, preview, timestamp, kind?, data? } | null
-//           null also when the last message is from before you joined; kind and data only when it is not text
-//  unreadCount: messages from others after your read position, at most 99 (system messages are not counted)
+//  lastMessage: { id, from, fromName, preview, timestamp, kind?, data?, attachments? } | null
+//           null also when the last message is from before you joined; kind and data only when it is not text;
+//           attachments: how many files it carries, when it carries any (preview is "" for files alone)
+//  unreadCount: messages from others after your read position, at most 99 (system and deleted messages are not counted)
 ```
 
 `timestamp` is milliseconds since the Unix epoch. The same message has the same `id` and `timestamp` in the live `message` event, in the sender's acknowledgement, and in `history`. A member marked `gone` no longer exists: the conversation is kept for the other person, who can read it but not add to it.
 
 `disconnect` is Socket.IO's built-in event. Closing the connection takes that connection offline, and the user with it when it was their last; a guest's name stays reserved to their browser, and lapses after the message lifetime without a visit (30 days where messages do not expire).
+
+### Files
+
+Off unless `FILE_STORAGE` is set; `loggedin.features.files` says which. A file's bytes never pass through this server or a socket: the browser sends them straight to storage and fetches them straight from it, each time with a short-lived address that allows exactly one thing.
+
+1. **`requestUpload`** — an account says what it wants to send (`name`, `type`, `size` in bytes; for pictures and video also `width`, `height`, `durationMs` and a `placeholder`, a tiny blurred preview as a data URL of at most 1000 characters). The server checks that the sender may write in the conversation and has room in its allowances, and answers with a `fileId` and an `uploadUrl`.
+2. **The browser `PUT`s the file** to `uploadUrl` with exactly the `headers` it was given. The address accepts that type and that many bytes and nothing else, for 15 minutes.
+3. **`sendmessage`** with `attachments: [fileId, …]` (at most 10, each your own, uploaded for this conversation, not used before). The server checks that each object really arrived at its declared size before saving the message. `text` may be empty.
+4. **`getFileUrl`** — anyone who could read the message (including guests, and never someone who joined a group after it was sent) gets an address good for 5 minutes. Pictures, video, audio and PDF are served to be shown in the page; **everything else — SVG and HTML included — only ever as a download**. With `download: true` anything is served as a download.
+
+- **Allowances.** Uploading is for accounts; guests can receive files. Each request is charged at once, by its declared size, to the account's day, to its client address's day, and to the total stored. An account may have 5 uploads waiting to be sent.
+- **Uploads that are never sent.** After 15 minutes: if nothing was uploaded, the reservation is undone and costs nothing; if something was, it is deleted and still counts against that day's allowances.
+- **Lifetime.** A file lasts as long as its message: with `MESSAGE_TTL_HOURS` set, an hourly sweep deletes expired files from storage. A bucket lifecycle rule is a sensible backstop. Deleting a message (`deleteMessage`) deletes its files at once.
+- **When storage is full**, uploads are refused for everyone until something expires or is deleted. Administrators can ask how full it is (`getStorageUsage`).
+
+Failure messages: `File sharing is not available here`, `Create an account to send files`, `Invalid file`, `A file can be at most 25 MB`, `Unknown conversation`, `This person is no longer here`, `Send or remove what you have already attached first (at most 5 at a time)`, `You have reached your upload limit for today`, `Too much has been uploaded from this network today`, `Storage is full — no more files can be uploaded for now`, `An attachment is not available — upload it again`, `An attachment was not uploaded completely`, `Unknown file`, `Unknown message`, `Only an administrator can see that`.
 
 ### Limits
 
@@ -520,20 +558,22 @@ With `DEMO_BOT=true` the server adds a user called `demo-bot` who is always onli
 | `GET` | `/proxy-check` | Only with `PROXY_CHECK=true`: `{ connectionFrom, forwardedFor, addressWithHops, configuredHops, addressAsConfigured }` — how the asker's own request arrived |
 | `GET` | `/config` | `{ signup: "open" \| "invite" \| "closed", guests: boolean, protocol: 2 }` — which ways in this deployment offers |
 | `GET` | `/health` | `{ status: "ok", db: "up" \| "down" }` — always `200` while the process is alive, including when the database is down |
+| `PUT`, `GET` | `/files/:token` | Only with `FILE_STORAGE=local`: where a file is uploaded to and fetched from in development. The token is signed by the server, names one file and one operation, and expires in minutes; `GET` honours `Range`. With `s3` these addresses are the bucket's own. |
 
 Clients do not need `/online-users` — presence arrives over the socket, and the client in this repository never calls it — but it is handy for inspection. `/config` is the one thing that client fetches over HTTP: it has to know which ways in to offer before anyone is logged in. Unknown routes return `404` with a JSON body.
 
 ## Known limitations
 
 - **A forgotten password and a lost recovery code cannot be recovered.** There is no email address on an account, by design.
-- **A group has one admin and no roles beyond that**, and its messages cannot be edited or deleted. The demo bot answers in a group only when mentioned.
+- **A group has one admin and no roles beyond that.** Messages cannot be edited; their author can delete them. The demo bot answers in a group only when mentioned.
+- **Files are not scanned for malware.** On a public deployment accounts are free to create, so the total-storage ceiling is the real limit: when it is reached, uploads stop for everyone until files expire. A message carries at most five files from this client (the server allows an account five uploads waiting to be sent). Pictures in formats browsers cannot show (HEIC, for instance) arrive as a download rather than a preview.
 - **At login a user is sent their 50 most recently active conversations.** Older ones still exist and receive messages, but are not listed until something happens in them.
 - **Single instance.** The list of who is online lives in the server's memory, so the server cannot be scaled to several instances as it stands.
 - **On the live demo:** messages are deleted automatically a day after they are sent, and because the server sleeps when idle on free hosting, the first visitor after a quiet spell waits for it to wake. The client says so while it waits.
 
 ### What would come next
 
-- **File attachments, then one-to-one video calls.**
+- **One-to-one video calls.**
 - **Horizontal scaling**, moving presence into Redis and using Socket.IO's Redis adapter.
 - **More browsers.** The end-to-end suite runs in Chromium only; Firefox and WebKit would be a configuration change and a longer run.
 

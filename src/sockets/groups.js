@@ -65,7 +65,7 @@ const userIdsIn = (payload, exceptUserId) => {
 
 const named = member => ({ userId: member.userId, username: member.username })
 
-export const createGroupHandlers = ({ presence, settings, rateLimiter, messages }) => {
+export const createGroupHandlers = ({ presence, settings, rateLimiter, messages, onConversationDeleted = async () => {} }) => {
     const allowed = rateLimiter.perSocket(RATE_LIMITS)
 
     /** Each of these users as `{ userId, username }`, in the order given. Every one must exist (or be the bot). */
@@ -157,6 +157,9 @@ export const createGroupHandlers = ({ presence, settings, rateLimiter, messages 
                 // moment is either caught by the second, or finds no group and removes itself.
                 await Conversation.deleteOne({ _id: group._id })
                 await Message.deleteMany({ conversationKey: group._id })
+                // (And the files that were sent in it.)
+                await onConversationDeleted(group._id)
+                    .catch(error => console.error("failed to delete a group's files:", error?.name))
                 return null
             }
             if (people.some(member => member.userId === group.admin)) return group

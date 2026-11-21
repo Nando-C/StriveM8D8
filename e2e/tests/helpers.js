@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { crc32, deflateSync } from 'node:zlib'
 import { expect } from '@playwright/test'
 
 // What a person does in the app, in the words the tests use. Everything is found the way
@@ -160,3 +161,106 @@ export const groupDetails = async (page, name) => {
 }
 /** The row (author, text, status) of the message with exactly this text. */
 export const messageRow = (page, text) => log(page).getByRole('listitem').filter({ has: page.getByText(text, { exact: true }) })
+
+
+// ---------- files
+
+/** The (hidden) control behind the attach button. */
+export const filePicker = page => page.getByLabel('Choose files to send')
+/** The chips of the files chosen for the message being written. */
+export const draftFiles = page => page.getByRole('list', { name: 'Files to send' }).getByRole('listitem')
+
+/** Attaches files and waits until each has been uploaded. `files`: `{ name, mimeType, buffer }`. */
+export const attach = async (page, ...files) => {
+    await filePicker(page).setInputFiles(files)
+    await expect(draftFiles(page)).toHaveCount(files.length)
+    for (const chip of await draftFiles(page).all()) await expect(chip).toHaveAttribute('data-status', 'ready')
+}
+
+const chunk = (type, data) => {
+    const body = Buffer.concat([Buffer.from(type), data])
+    const length = Buffer.alloc(4)
+    length.writeUInt32BE(data.length)
+    const check = Buffer.alloc(4)
+    check.writeUInt32BE(crc32(body))
+    return Buffer.concat([length, body, check])
+}
+
+/** A real PNG of one colour, `width` × `height`. */
+export const pngFile = (name, width = 64, height = 48, colour = [40, 120, 200]) => {
+    const header = Buffer.alloc(13)
+    header.writeUInt32BE(width, 0)
+    header.writeUInt32BE(height, 4)
+    header.set([8, 2, 0, 0, 0], 8)   // 8 bits a channel, RGB
+    const row = () => Buffer.concat([Buffer.from([0]), Buffer.alloc(width * 3, Buffer.from(colour))])
+    const buffer = Buffer.concat([
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        chunk('IHDR', header),
+        chunk('IDAT', deflateSync(Buffer.concat(Array.from({ length: height }, row)))),
+        chunk('IEND', Buffer.alloc(0)),
+    ])
+    return { name, mimeType: 'image/png', buffer }
+}
+
+/** A one-page PDF with a line of text. */
+export const pdfFile = name => {
+    const objects = [
+        '<< /Type /Catalog /Pages 2 0 R >>',
+        '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+        '<< /Length 44 >>\nstream\nBT /F1 18 Tf 40 100 Td (Hello from a PDF) Tj ET\nendstream',
+        '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    ]
+    let body = '%PDF-1.4\n'
+    const offsets = objects.map((object, index) => {
+        const at = body.length
+        body += `${index + 1} 0 obj\n${object}\nendobj\n`
+        return at
+    })
+    const xref = body.length
+    body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+    for (const at of offsets) body += `${String(at).padStart(10, '0')} 00000 n \n`
+    body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`
+    return { name, mimeType: 'application/pdf', buffer: Buffer.from(body, 'latin1') }
+}
+
+/** A real JPEG at full quality, like a photo: stripes and noise, drawn and encoded in the browser. */
+export const jpegFile = async (page, name, width, height) => {
+    const bytes = await page.evaluate(async ([w, h]) => {
+        const canvas = document.createElement('canvas')
+        canvas.width = w
+        canvas.height = h
+        const context = canvas.getContext('2d')
+        for (let x = 0; x < w; x += 4) {
+            context.fillStyle = `hsl(${Math.random() * 360} 70% ${30 + Math.random() * 40}%)`
+            context.fillRect(x, 0, 4, h)
+        }
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 1))
+        return [...new Uint8Array(await blob.arrayBuffer())]
+    }, [width, height])
+    return { name, mimeType: 'image/jpeg', buffer: Buffer.from(bytes) }
+}
+
+/** A short real video, recorded in the browser from a canvas (so that no binary file is kept in the repository). */
+export const webmFile = async (page, name) => {
+    const bytes = await page.evaluate(async () => {
+        const canvas = document.createElement('canvas')
+        canvas.width = 64
+        canvas.height = 48
+        const context = canvas.getContext('2d')
+        const recorder = new MediaRecorder(canvas.captureStream(30), { mimeType: 'video/webm' })
+        const chunks = []
+        recorder.ondataavailable = event => chunks.push(event.data)
+        const stopped = new Promise(resolve => { recorder.onstop = resolve })
+        recorder.start()
+        for (let frame = 0; frame < 12; frame += 1) {
+            context.fillStyle = `hsl(${frame * 30} 80% 50%)`
+            context.fillRect(0, 0, 64, 48)
+            await new Promise(resolve => setTimeout(resolve, 60))
+        }
+        recorder.stop()
+        await stopped
+        return [...new Uint8Array(await new Blob(chunks).arrayBuffer())]
+    })
+    return { name, mimeType: 'video/webm', buffer: Buffer.from(bytes) }
+}

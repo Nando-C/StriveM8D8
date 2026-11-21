@@ -1,7 +1,9 @@
-import { UNCONFIRMED, fromServer, mergeConfirmed, previewOf, type LocalMessage } from '@/lib/messages'
+import { UNCONFIRMED, asDeleted, fromServer, isSaid, mergeConfirmed, previewOf, type LocalMessage } from '@/lib/messages'
 import { comparePositions, positionOf } from '@/lib/positions'
 import type {
+  Attachment,
   ConversationSummary,
+  Features,
   HistoryErrorPayload,
   HistoryPayload,
   IdentityKind,
@@ -72,6 +74,8 @@ export interface ChatState {
   /** Guest or account; `null` until the server has said. */
   kind: IdentityKind | null
   admin: boolean
+  /** What this deployment offers (file sharing, and its limits). */
+  features: Features
   /** What the user has chosen to show; `null` until the server has said. */
   ownStatus: OwnStatus | null
   loginError: string | null
@@ -113,6 +117,7 @@ export type ChatAction =
   | { type: 'conversationUpdated'; conversation: ConversationSummary }
   /** The user is no longer in this group. */
   | { type: 'conversationRemoved'; conversationId: string }
+  | { type: 'messageDeleted'; conversationId: string; id: string }
   /** `peer` is given when the conversation is opened from the people list. */
   | { type: 'conversationSelected'; conversationId: string; peer?: Peer }
   | { type: 'conversationClosed' }
@@ -126,9 +131,12 @@ export type ChatAction =
   | { type: 'receipt'; payload: ReceiptPayload }
   /** This client told the server how far it has read. */
   | { type: 'readUpTo'; conversationId: string; position: Position }
-  | { type: 'sendStarted'; conversationId: string; clientId: string; text: string; timestamp: number }
+  | { type: 'sendStarted'; conversationId: string; clientId: string; text: string; attachments?: Attachment[]; timestamp: number }
   | { type: 'sendConfirmed'; conversationId: string; clientId: string; id: string; timestamp: number }
   | { type: 'sendFailed'; conversationId: string; clientId: string; reason: string }
+
+/** A server that says nothing about what it offers offers no files. */
+const NO_FEATURES: Features = { files: false }
 
 export const CONNECTION_LOST = 'The connection dropped before you were signed in. Please try again.'
 
@@ -149,6 +157,7 @@ export const initialChatState = (storedUsername: string | null): ChatState => ({
   username: storedUsername,
   kind: null,
   admin: false,
+  features: NO_FEATURES,
   ownStatus: null,
   loginError: null,
   loginCount: 0,
@@ -298,6 +307,7 @@ const withLastMessage = (thread: Thread, message: LocalMessage): Thread => {
         fromName: message.fromName,
         preview: previewOf(message.text),
         timestamp: message.timestamp,
+        ...(message.attachments?.length ? { attachments: message.attachments.length } : {}),
       },
     },
   }
@@ -331,6 +341,7 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
         username: payload.username,
         kind: payload.kind,
         admin: payload.admin,
+        features: payload.features ?? NO_FEATURES,
         ownStatus: payload.ownStatus,
         loginError: null,
         loginCount: state.loginCount + 1,
@@ -399,6 +410,14 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
 
     case 'conversationRemoved':
       return withoutThreads(state, new Set([action.conversationId]))
+
+    // (The server's word on the conversation — its preview, what is unread — follows.)
+    case 'messageDeleted':
+      return withThread(state, action.conversationId, thread =>
+        thread.messages.some(message => message.id === action.id && message.kind !== 'deleted')
+          ? { ...thread, messages: thread.messages.map(message => (message.id === action.id ? asDeleted(message) : message)) }
+          : thread,
+      )
 
     case 'conversationSelected': {
       const { conversationId, peer } = action
@@ -473,7 +492,7 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
       const alreadyKnown = threadOf(state, conversationId).messages.some(candidate => candidate.id === id)
       // What happened to a group (someone was added, it was renamed) is shown in it, but
       // is not a message to read — and the server's own word on the group came just before it.
-      const system = message.kind === 'system'
+      const system = !isSaid(message)
       // The user's own message, sent from another of their devices, is not news to them.
       const counts = !message.own && !alreadyKnown && !system
       const next = withThreadBegun(state, conversationId, thread => {
@@ -524,6 +543,7 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
         fromName: state.username,
         kind: 'text',
         text: action.text,
+        ...(action.attachments?.length ? { attachments: action.attachments } : {}),
         timestamp: action.timestamp,
         own: true,
         status: 'pending',

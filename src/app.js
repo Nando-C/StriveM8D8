@@ -6,6 +6,7 @@ import { Server } from 'socket.io'
 import { registerSocketHandlers } from './sockets/index.js'
 import { PROTOCOL_VERSION, createRouter } from './routes.js'
 import { resolveSettings } from './settings.js'
+import { createStorage } from './storage/index.js'
 
 // Returns the origin part of a URL ("http://localhost:5173"), or null if it is not one.
 const toOrigin = value => {
@@ -45,13 +46,22 @@ export const createApp = (options = {}) => {
     if (settings.trustedProxyHops > 0) app.set('trust proxy', settings.trustedProxyHops)
 
     app.use(cors({ origin: allowedOrigins }))
+
+    // Where uploaded files are kept, if this deployment has file sharing at all. The
+    // local driver serves its files from this server; mounted before the JSON parser,
+    // which would otherwise read the body of an uploaded .json file itself.
+    const storage = createStorage(settings)
+    if (storage?.router) app.use(storage.router)
+
     app.use(express.json())
 
     const server = createServer(app)
 
     const io = new Server(server, {
-        // The largest legitimate payload is a 2000-character message; the default is 1 MB.
-        maxHttpBufferSize: 10_000,
+        // The largest legitimate payload is a 2000-character message — up to four bytes a
+        // character — with the ids of ten attachments (about 400 bytes) and its framing.
+        // (A file's bytes never come this way: they go straight to storage.) The default is 1 MB.
+        maxHttpBufferSize: 12_000,
         // Covers the long-polling transport.
         cors: { origin: allowedOrigins },
         // Covers the WebSocket handshake, which CORS does not apply to.
@@ -75,15 +85,26 @@ export const createApp = (options = {}) => {
         next(error)
     })
 
-    const { getOnlineUsers, runMaintenance, hasherStats } = registerSocketHandlers(io, settings)
+    const { getOnlineUsers, runMaintenance, sweepPendingUploads, sweepExpiredFiles, hasherStats } =
+        registerSocketHandlers(io, settings, { storage })
 
     // Hourly housekeeping (idle guests, last-seen times). It never keeps the process
     // alive by itself, and stops with the server.
     const housekeeping = setInterval(() => {
         runMaintenance().catch(error => console.error("housekeeping failed:", error.name))
+        sweepExpiredFiles().catch(error => console.error("sweeping files failed:", error.name))
     }, 60 * 60_000)
     housekeeping.unref()
     server.on('close', () => clearInterval(housekeeping))
+
+    // Uploads that were reserved and never sent are let go of every five minutes.
+    if (storage) {
+        const sweeping = setInterval(() => {
+            sweepPendingUploads().catch(error => console.error("sweeping uploads failed:", error.name))
+        }, 5 * 60_000)
+        sweeping.unref()
+        server.on('close', () => clearInterval(sweeping))
+    }
 
     app.use(createRouter({ getOnlineUsers, settings }))
 
@@ -101,5 +122,5 @@ export const createApp = (options = {}) => {
         res.status(status).json({ message: err.message })
     })
 
-    return { app, server, io, runMaintenance, hasherStats }
+    return { app, server, io, runMaintenance, sweepPendingUploads, sweepExpiredFiles, hasherStats }
 }

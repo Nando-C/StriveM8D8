@@ -8,6 +8,7 @@
 // Playwright starts this through `webServer` and stops it when the run ends.
 
 import { spawn } from 'node:child_process'
+import { rm } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { MongoMemoryServer } from 'mongodb-memory-server'
@@ -78,8 +79,13 @@ const waitFor = async (url, what, timeoutMs = 60_000) => {
     }
 }
 
+const uploads = path.join(here, '.build', `uploads-${name}`)
+
 try {
-    mongo = await MongoMemoryServer.create()
+    await rm(uploads, { recursive: true, force: true })
+    // Given a minute to start rather than the default ten seconds: two of these start
+    // side by side (one per profile), and on a busy CI machine ten is not always enough.
+    mongo = await MongoMemoryServer.create({ instance: { launchTimeout: 60_000 } })
     log('database started')
 
     start('server', process.execPath, ['src/index.js'], {
@@ -90,6 +96,10 @@ try {
             // a developer's .env, which must not leak into what is being tested.
             DEMO_BOT: '', MESSAGE_TTL_HOURS: '', SIGNUP_MODE: '', GUESTS: '', ADMIN_USERNAMES: '',
             SIGNUP_BOOTSTRAP_CODE: '', MEMBER_DIRECTORY: '', TRUSTED_PROXY_HOPS: '',
+            FILE_STORAGE: '', UPLOAD_MAX_FILE_MB: '', UPLOAD_MAX_USER_MB_PER_DAY: '',
+            UPLOAD_MAX_ADDRESS_MB_PER_DAY: '', UPLOAD_MAX_TOTAL_MB: '',
+            // Where a profile with local file storage keeps its files: emptied at each start.
+            FILE_STORAGE_DIR: uploads,
             ...profile.env,
             PORT: String(profile.serverPort),
             FRONTEND_URL: clientUrl(name),

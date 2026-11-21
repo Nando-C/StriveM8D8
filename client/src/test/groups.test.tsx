@@ -227,7 +227,7 @@ describe('a group conversation', () => {
     const events = await loginAs('alice', [user('bob')], [conversation('alice', 'bob', { last: message('alice', 'bob', 'hi', { id: mid(1), timestamp: 1000 }) })])
     await events.click(chatButton('bob'))
     serverSays('history', { conversationId: conversation('alice', 'bob').id, messages: [message('alice', 'bob', 'hi', { id: mid(1), timestamp: 1000 })], hasMore: false })
-    expect(within(messageRow('hi')).queryByRole('button')).not.toBeInTheDocument()
+    expect(within(messageRow('hi')).queryByRole('button', { name: /show who has seen this/ })).not.toBeInTheDocument()
   })
 })
 

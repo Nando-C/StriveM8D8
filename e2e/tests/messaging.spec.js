@@ -38,6 +38,9 @@ test('a message to someone who is away waits for them, and is marked as new when
     await send(ana, 'before you left')
     await chat(ben, anaName).click()
     await expect(bubbles(ben)).toHaveText(['before you left'])
+    // He has read it, and the server knows: otherwise it would still be new when he returns.
+    // (Closing the tab the moment the message shows can beat the report that says so.)
+    await expect(messageRow(ana, 'before you left')).toContainText('Seen')
     const benContext = ben.context()
 
     // Ben goes away.

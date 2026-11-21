@@ -10,11 +10,13 @@ export const OWNER = 'owner'
 const BEHIND_ONE_PROXY = { TRUSTED_PROXY_HOPS: '1' }
 
 export const PROFILES = {
-    // The public demo: every default, plus the bot and message expiry.
+    // The public demo: every default, plus the bot, message expiry and file sharing —
+    // files in a folder of this machine (stack.js gives it one), and a small size limit
+    // so that going over it does not take a large file.
     demo: {
         clientPort: 4100,
         serverPort: 4101,
-        env: { ...BEHIND_ONE_PROXY, DEMO_BOT: 'true', MESSAGE_TTL_HOURS: '24' },
+        env: { ...BEHIND_ONE_PROXY, DEMO_BOT: 'true', MESSAGE_TTL_HOURS: '24', FILE_STORAGE: 'local', UPLOAD_MAX_FILE_MB: '1' },
     },
     // A private deployment: accounts only, by invitation, everyone listed.
     private: {

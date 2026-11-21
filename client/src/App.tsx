@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type DragEvent, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { ArrowLeft, Info, MessagesSquare } from 'lucide-react'
 import { ConnectionBanner } from '@/components/ConnectionBanner'
@@ -6,17 +6,19 @@ import { EntryScreen } from '@/components/EntryScreen'
 import { GroupAvatar } from '@/components/groups/GroupAvatar'
 import { GroupDetails } from '@/components/groups/GroupDetails'
 import { NewGroupDialog } from '@/components/groups/NewGroupDialog'
-import { MessageComposer } from '@/components/MessageComposer'
+import { MessageComposer, type ComposerFiles } from '@/components/MessageComposer'
 import { MessageList } from '@/components/MessageList'
 import { Sidebar } from '@/components/Sidebar'
 import { Button } from '@/components/ui/button'
 import { UserAvatar } from '@/components/UserAvatar'
 import { useChat } from '@/hooks/useChat'
+import { useDraftFiles } from '@/hooks/useDraftFiles'
 import type { Candidate, OpenGroup } from '@/lib/chatSelectors'
 import { fade } from '@/lib/motion'
 import { useServerConfig, type ServerConfig } from '@/lib/serverConfig'
 import { presenceLineOf } from '@/lib/status'
 import { cn } from '@/lib/utils'
+import type { Features } from '@/types/protocol'
 
 function App() {
   const chat = useChat()
@@ -127,6 +129,7 @@ function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat
           account={{
             kind: chat.kind,
             admin: chat.admin,
+            files: chat.features.files,
             config,
             online,
             ownStatus: chat.ownStatus,
@@ -209,22 +212,34 @@ function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat
                   <GroupDetailsButton conversationId={open.id} group={open.group} candidates={chat.candidates} online={online} />
                 )}
               </header>
-              <MessageList
+              <ConversationBody
                 key={open.id}
-                title={open.title}
-                thread={chat.thread}
-                ownUserId={chat.userId}
-                group={open.group !== null}
-                joinedLater={open.group?.joinedLater === true}
-                onLoadEarlier={chat.loadEarlier}
-                onAtEndChange={chat.reportAtEnd}
-              />
-              <MessageComposer
-                key={`composer-${open.id}`}
-                recipient={open.title}
+                conversationId={open.id}
+                // Sending files is for accounts; anyone can receive them.
+                filesUnavailable={chat.kind === 'account' ? null : 'Create an account to send files'}
+                features={chat.features}
                 canSend={chat.canSend}
-                blockedReason={blockedReason}
-                onSend={chat.sendMessage}
+                list={
+                  <MessageList
+                    title={open.title}
+                    thread={chat.thread}
+                    ownUserId={chat.userId}
+                    group={open.group !== null}
+                    joinedLater={open.group?.joinedLater === true}
+                    canDelete={online}
+                    onLoadEarlier={chat.loadEarlier}
+                    onAtEndChange={chat.reportAtEnd}
+                  />
+                }
+                composer={files => (
+                  <MessageComposer
+                    recipient={open.title}
+                    canSend={chat.canSend}
+                    blockedReason={blockedReason}
+                    onSend={chat.sendMessage}
+                    files={files}
+                  />
+                )}
               />
             </motion.div>
           )}
@@ -236,6 +251,56 @@ function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat
           onCreated={chat.selectConversation}
           onClose={() => setCreatingGroup(false)}
         />
+      )}
+    </div>
+  )
+}
+
+interface ConversationBodyProps {
+  conversationId: string
+  features: Features
+  filesUnavailable: string | null
+  canSend: boolean
+  list: ReactNode
+  composer: (files: ComposerFiles | undefined) => ReactNode
+}
+
+// The open conversation below its header: the messages, and the box to write in. The
+// files being attached belong to both — they are dropped onto the messages and listed
+// above the box — so they are held here.
+function ConversationBody({ conversationId, features, filesUnavailable, canSend, list, composer }: ConversationBodyProps) {
+  const drafts = useDraftFiles({ conversationId, maxFileBytes: features.maxFileBytes })
+  const [over, setOver] = useState(false)
+  const droppable = features.files && filesUnavailable === null && canSend
+  const carriesFiles = (event: DragEvent) => event.dataTransfer.types.includes('Files')
+
+  return (
+    <div
+      className="relative flex min-h-0 flex-1 flex-col"
+      onDragEnter={event => droppable && carriesFiles(event) && setOver(true)}
+      onDragOver={event => {
+        // (Without this the browser would open a dropped file instead.)
+        if (droppable && carriesFiles(event)) event.preventDefault()
+      }}
+      onDragLeave={event => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOver(false)
+      }}
+      onDrop={event => {
+        if (!droppable || !carriesFiles(event)) return
+        event.preventDefault()
+        setOver(false)
+        drafts.add([...event.dataTransfer.files])
+      }}
+    >
+      {list}
+      {composer(features.files ? { ...drafts, unavailable: filesUnavailable } : undefined)}
+      {over && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-2 flex items-center justify-center rounded-xl border-2 border-dashed border-primary bg-background/85 text-sm font-medium"
+        >
+          Drop files to send them
+        </div>
       )}
     </div>
   )

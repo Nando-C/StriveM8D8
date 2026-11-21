@@ -1,4 +1,4 @@
-import type { Message, MessageKind } from '@/types/protocol'
+import type { Attachment, Message, MessageKind } from '@/types/protocol'
 
 export type MessageStatus = 'sent' | 'pending' | 'failed'
 
@@ -18,6 +18,8 @@ export interface LocalMessage {
   text: string
   /** What a system message says happened (see lib/groupEvents.ts). */
   data?: unknown
+  /** Files sent with it. */
+  attachments?: Attachment[]
   timestamp: number
   /** Sent by the logged-in user (from this device or another). */
   own: boolean
@@ -42,6 +44,22 @@ export const previewOf = (text: string) => {
   return flat.length > PREVIEW_LENGTH ? `${flat.slice(0, PREVIEW_LENGTH)}…` : flat
 }
 
+/** Whether a message is something somebody said: not a line about a group, not what is left of a deleted one. */
+export const isSaid = (message: Pick<LocalMessage, 'kind'>) => message.kind !== 'system' && message.kind !== 'deleted'
+
+/** What stands where a deleted message was. */
+export const deletedLine = (message: Pick<LocalMessage, 'own' | 'fromName'>) =>
+  `${message.own ? 'You' : message.fromName} deleted a message`
+
+/** What a message of files alone is called where there is only room for a line. */
+export const filesLabel = (count: number) => (count === 1 ? '1 file' : `${count} files`)
+
+/** What is left of a message once its author has deleted it. */
+export const asDeleted = (message: LocalMessage): LocalMessage => {
+  const { data: _data, attachments: _attachments, ...kept } = message
+  return { ...kept, kind: 'deleted', text: '' }
+}
+
 export const UNCONFIRMED = 'Delivery unconfirmed: the connection was lost'
 
 /** A message from the server — live (`arrivedAt` set) or from history (`null`). */
@@ -57,6 +75,7 @@ export const fromServer = (message: Message, ownUserId: string, arrivedAt: numbe
     kind: message.kind,
     text: message.text ?? '',
     ...(message.data === undefined ? {} : { data: message.data }),
+    ...(message.attachments === undefined ? {} : { attachments: message.attachments }),
     timestamp: message.timestamp,
     own,
     status: 'sent',
