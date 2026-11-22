@@ -43,18 +43,24 @@ export const startRingtone = (): (() => void) => {
   }
 }
 
-/** Alternates the tab's title with `notice`. Returns what puts it back. */
+/**
+ * Alternates the tab's title with `notice`. Returns what puts it back. The title under
+ * the notice may change meanwhile (a message arrives, and is counted there): whatever it
+ * was last set to by someone else is what is alternated with, and what is left at the end.
+ */
 export const flashTitle = (notice: string): (() => void) => {
-  const original = document.title
+  let under = document.title
   let shown = false
   const flip = () => {
+    if (document.title !== notice) under = document.title
     shown = !shown
-    document.title = shown ? notice : original
+    document.title = shown ? notice : under
   }
   flip()
   const repeating = setInterval(flip, 1000)
   return () => {
     clearInterval(repeating)
-    document.title = original
+    // (If it is not the notice that is there, someone has just set it: theirs stays.)
+    if (document.title === notice) document.title = under
   }
 }

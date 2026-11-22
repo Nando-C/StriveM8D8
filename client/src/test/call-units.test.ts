@@ -6,6 +6,7 @@ import {
 import { chooseDevice, chosenDevices, listDevices, preferring } from '@/lib/call/devices'
 import { createPeer, LOST_PATIENCE_MS, POLITE_HEAD_START_MS, type PathSample, type PeerOptions } from '@/lib/call/peer'
 import { createQualityMeter, isPoorBetween } from '@/lib/call/quality'
+import { flashTitle } from '@/lib/call/ringing'
 import { FakeMediaStream, FakePeerConnection, track } from '@/test/fakeWebRTC'
 import type { CallSignal } from '@/types/protocol'
 
@@ -607,5 +608,49 @@ describe('the devices a call uses', () => {
   it('has nothing to choose between in a browser that will not say', async () => {
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: {} })
     expect(await listDevices()).toEqual({ microphone: [], camera: [], speaker: [] })
+  })
+})
+
+describe('the tab’s title while a call rings', () => {
+  beforeEach(() => void vi.useFakeTimers())
+  afterEach(() => void vi.useRealTimers())
+
+  it('alternates with what was there, and leaves it as it was', () => {
+    document.title = 'Chat'
+    const restore = flashTitle('bob is calling…')
+    expect(document.title).toBe('bob is calling…')
+    vi.advanceTimersByTime(1000)
+    expect(document.title).toBe('Chat')
+    vi.advanceTimersByTime(1000)
+    restore()
+    expect(document.title).toBe('Chat')
+  })
+
+  it('keeps what someone else writes there meanwhile: a message that arrives is still counted when the ringing stops', () => {
+    document.title = 'Chat'
+    const restore = flashTitle('bob is calling…')
+
+    // Written over the notice: it is what the notice alternates with from then on.
+    document.title = '(1) Chat'
+    vi.advanceTimersByTime(1000)
+    expect(document.title).toBe('(1) Chat')
+    vi.advanceTimersByTime(1000)
+    expect(document.title).toBe('bob is calling…')
+    vi.advanceTimersByTime(1000)
+    expect(document.title).toBe('(1) Chat')
+    // Written while the notice is not up, likewise.
+    document.title = '(2) Chat'
+    vi.advanceTimersByTime(1000)
+    expect(document.title).toBe('bob is calling…')
+    restore()
+    expect(document.title).toBe('(2) Chat')
+
+    // Written the very moment it stops: that stays.
+    const again = flashTitle('bob is calling…')
+    document.title = '(3) Chat'
+    again()
+    expect(document.title).toBe('(3) Chat')
+    vi.advanceTimersByTime(5000)
+    expect(document.title).toBe('(3) Chat')
   })
 })

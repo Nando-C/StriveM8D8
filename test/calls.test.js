@@ -544,20 +544,66 @@ describe('a connection lost during a call', () => {
         expect((await callLines(1))[0].data).toMatchObject({ media: 'video', outcome: 'failed' })
     })
 
-    it('does not wait for a device that hung up, or logged out', async () => {
-        await start({ callGraceMs: 150 })
+    it('does not wait for a device that signed out: the call ends there and then, as hung up', async () => {
+        // (A wait that would outlast the test, were there one.)
+        await start({ callGraceMs: 60_000 })
         const alice = await guest('alice')
         const bob = await account('bob')
         const { callId } = await callUnderWay(alice, bob)
-        const lost = nextEvent(alice.socket, 'call:peer')
         const ended = nextEvent(alice.socket, 'call:ended')
 
-        // Logged out, the connection still open: it is no longer in the call.
+        // Signed out, the connection still open: that device is not coming back to the call.
         expect((await ask(bob.socket, 'logout')).ok).toBe(true)
 
-        expect(await lost).toEqual({ callId, connected: false })
+        expect(await ended).toEqual({ callId, reason: 'ended' })
         expect(await ask(bob.socket, 'call:signal', { callId, description: OFFER })).toEqual({ ok: false, message: 'Not logged in' })
-        expect(await ended).toEqual({ callId, reason: 'failed' })
+        expect((await callLines(1))[0].data.outcome).toBe('ended')
+    })
+
+    it('does not wait for a device that was signed out from another: nor for a caller who signs out while it rings', async () => {
+        await start({ callGraceMs: 60_000 })
+        const alice = await guest('alice')
+        const bob = await account('bob')
+        // (Signed in there with the password: a device of its own, not another tab of the first.)
+        const phone = acknowledging(await app.client())
+        expect((await login(phone, { username: 'bob', password: PASSWORD })).ok).toBe(true)
+        const { callId } = await callUnderWay(alice, bob)
+        const ended = nextEvent(alice.socket, 'call:ended')
+
+        // Bob's phone signs his other device out — the one in the call.
+        const { sessions } = await ask(phone, 'listSessions')
+        const other = sessions.find(session => !session.current)
+        expect(await ask(phone, 'revokeSession', { id: other.id })).toEqual({ ok: true })
+
+        expect(await ended).toEqual({ callId, reason: 'ended' })
+
+        // And a call still ringing whose caller signs out was cancelled.
+        const carol = await account('carol')
+        const rung = nextEvent(phone, 'call:incoming')
+        const invited = await invite(carol.socket, bob)
+        await rung
+        const stopped = nextEvent(phone, 'call:ended')
+        expect((await ask(carol.socket, 'logout')).ok).toBe(true)
+        expect(await stopped).toEqual({ callId: invited.callId, reason: 'cancelled' })
+        expect((await callLines(2)).map(line => line.data.outcome)).toEqual(['ended', 'cancelled'])
+    })
+
+    it('is a call they missed, to the person called, if the caller\'s connection goes for good while it rings', async () => {
+        await start({ callGraceMs: 150 })
+        const alice = await guest('alice')
+        const bob = await guest('bob')
+        const rung = nextEvent(bob.socket, 'call:incoming')
+        const invited = await invite(alice.socket, bob)
+        await rung
+        const ended = nextEvent(bob.socket, 'call:ended')
+
+        alice.socket.close()
+
+        expect(await ended).toEqual({ callId: invited.callId, reason: 'cancelled' })
+        expect((await callLines(1))[0].data.outcome).toBe('cancelled')
+        // Unread, for the one who never got to answer.
+        const { conversations } = await login(await app.client(), { username: bob.username, reservation: bob.reservation })
+        expect(conversations[0].unreadCount).toBe(1)
     })
 
     it('keeps ringing the other devices when one that was ringing goes', async () => {

@@ -13,7 +13,7 @@ import { MessageList } from '@/components/MessageList'
 import { Sidebar } from '@/components/Sidebar'
 import { Button } from '@/components/ui/button'
 import { UserAvatar } from '@/components/UserAvatar'
-import { useCall } from '@/hooks/useCall'
+import { useCall, type Call } from '@/hooks/useCall'
 import { useChat } from '@/hooks/useChat'
 import { useDraftFiles } from '@/hooks/useDraftFiles'
 import { isEngaged } from '@/lib/call/callState'
@@ -27,6 +27,14 @@ import type { Features } from '@/types/protocol'
 function App() {
   const chat = useChat()
   const config = useServerConfig()
+  // One call for the whole app: it goes on whichever conversation is open. Held here, not
+  // by the chat's screen, so that a call ringing as the user signs in is heard: the server
+  // says so the moment they are logged in, before that screen is there.
+  const call = useCall({
+    online: chat.connected && chat.phase === 'loggedIn',
+    loginCount: chat.loginCount,
+    signedIn: chat.username !== null && chat.phase !== 'replaced',
+  })
 
   if (chat.outdated) return <OutdatedNotice />
 
@@ -48,7 +56,7 @@ function App() {
         </motion.div>
       ) : (
         <motion.div key="chat" variants={fade} initial="hidden" animate="visible" exit="exit">
-          <ChatShell chat={chat} config={config} username={chat.username} />
+          <ChatShell chat={chat} call={call} config={config} username={chat.username} />
         </motion.div>
       )}
     </AnimatePresence>
@@ -97,11 +105,9 @@ function GroupDetailsButton(props: GroupDetailsButtonProps) {
   )
 }
 
-function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat>; config: ServerConfig; username: string }) {
+function ChatShell({ chat, call, config, username }: { chat: ReturnType<typeof useChat>; call: Call; config: ServerConfig; username: string }) {
   const [creatingGroup, setCreatingGroup] = useState(false)
   const online = chat.connected && chat.phase === 'loggedIn'
-  // One call for the whole app: it goes on whichever conversation is open.
-  const call = useCall({ online, loginCount: chat.loginCount })
 
   const open = chat.open
   const blockedReason = !chat.connected

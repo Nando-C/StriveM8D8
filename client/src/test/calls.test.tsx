@@ -1,7 +1,7 @@
 import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { OUTCOME_SHOWN_MS } from '@/hooks/useCall'
+import { OUTCOME_SHOWN_MS, REJOIN_AGAIN_MS, REJOIN_FOR_MS } from '@/hooks/useCall'
 import { callLength, describeCall } from '@/lib/callEvents'
 import { FakeMediaStream, FakePeerConnection, track } from '@/test/fakeWebRTC'
 import {
@@ -416,15 +416,60 @@ describe('calling', () => {
       expect(allStopped()).toBe(true)
     })
 
-    it('declines if the microphone cannot be used after all', async () => {
+    it('says so if the microphone cannot be used after all — without declining: another device of theirs may yet answer', async () => {
       getUserMedia.mockRejectedValue(denied('NotAllowedError'))
       const events = await withBob()
       incoming('audio')
 
       await events.click(button('Accept'))
 
-      await waitFor(() => expect(sent('call:decline')).toEqual([{ callId: 'call-2' }]))
-      expect(alertText()).toContain('not allowed to use the microphone or camera')
+      await waitFor(() => expect(alertText()).toContain('not allowed to use the microphone or camera'))
+      expect(ringing()).not.toBeInTheDocument()
+      expect(sent('call:decline')).toEqual([])
+      expect(sent('call:end')).toEqual([])
+      expect(sent('call:accept')).toEqual([])
+    })
+
+    it('rings on a device that is signed in while the call is being made: the server says so at once, before the chat is on screen', async () => {
+      renderApp()
+      const events = userEvent.setup()
+      await events.type(screen.getByLabelText('Username'), 'alice')
+      await events.click(screen.getByRole('button', { name: 'Join' }))
+
+      // In one go, as they arrive.
+      act(() => {
+        fakeSocket.trigger('loggedin', { ...loggedInPayload('alice', [user('bob')], 'token-1'), features: { files: false, calls: true } })
+        fakeSocket.trigger('call:incoming', { callId: 'call-2', conversationId: dm('alice', 'bob'), media: 'video', from: BOB })
+      })
+
+      await waitFor(() => expect(ringing()).toBeInTheDocument())
+      expect(document.title).toBe('bob is calling…')
+      serverSays('call:ended', { callId: 'call-2', reason: 'cancelled' })
+    })
+
+    it('takes the place of a call of the user’s own that had not got as far as the server', async () => {
+      let allow: (stream: FakeMediaStream) => void = () => {}
+      getUserMedia.mockImplementationOnce(() => new Promise(resolve => { allow = resolve }))
+      const events = await withBob()
+      // The browser is asking about the microphone…
+      await events.click(button('Voice call'))
+      expect(callView()).toHaveTextContent('Calling…')
+
+      // …when bob calls. The server would refuse alice's call now: his is the one that is real.
+      incoming('audio')
+
+      expect(ringing()).toBeInTheDocument()
+      await waitFor(() => expect(callView()).not.toBeInTheDocument())
+      // The microphone, allowed after all, is let go; nobody is rung.
+      const late = new FakeMediaStream([track('audio')])
+      await act(async () => allow(late))
+      expect(late.getTracks()[0].readyState).toBe('ended')
+      expect(sent('call:invite')).toEqual([])
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+      // And it can be answered like any other.
+      await events.click(button('Accept'))
+      await waitFor(() => expect(sent('call:accept')).toEqual([{ callId: 'call-2' }]))
     })
 
     it('stops ringing if the connection to the server goes: it will ring again if it is still being made', async () => {
@@ -563,6 +608,91 @@ describe('calling', () => {
       // A new path is looked for: the old one went with the old network.
       expect(connection.restarts).toBe(1)
       expect(callView()).toBeInTheDocument()
+    })
+
+    it('goes on asking for the call back while the server does not answer, and gives it up when the server would have', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      await callUnderWay()
+      disconnect()
+      connectAs('socket-3')
+      serverSays('loggedin', { ...loggedInPayload('alice', [user('bob')], 'token-3'), features: { files: false, calls: true } })
+      await waitFor(() => expect(sent('call:rejoin')).toHaveLength(1))
+
+      // No answer in time (the request layer's own words for it), twice; then one.
+      await answer('call:rejoin', { ok: false, message: 'No answer', retryable: true })
+      await act(() => vi.advanceTimersByTimeAsync(REJOIN_AGAIN_MS))
+      expect(sent('call:rejoin')).toHaveLength(2)
+      expect(callView()).toBeInTheDocument()
+
+      // Still none by the time the server has ended the call: this device was not told, and says so itself.
+      await act(() => vi.advanceTimersByTimeAsync(REJOIN_FOR_MS))
+      await answer('call:rejoin', { ok: false, message: 'No answer', retryable: true })
+
+      await waitFor(() => expect(callView()).not.toBeInTheDocument())
+      expect(alertText()).toContain('The call was cut off')
+      expect(allStopped()).toBe(true)
+      const asked = sent('call:rejoin').length
+      await act(() => vi.advanceTimersByTimeAsync(REJOIN_AGAIN_MS * 3))
+      expect(sent('call:rejoin')).toHaveLength(asked)
+    })
+
+    it('is over, with nothing more to say, when the user leaves — the server ends it and does not tell a page that is nobody', async () => {
+      const { events, connection } = await callUnderWay()
+      await events.click(button('Minimise the call'))
+
+      await events.click(screen.getByRole('button', { name: 'Account menu for alice' }))
+      await events.click(await screen.findByRole('menuitem', { name: 'Leave' }))
+      await answer('logout', { ok: true })
+
+      await screen.findByLabelText('Username')
+      expect(callView()).not.toBeInTheDocument()
+      expect(connection.closed).toBe(true)
+      expect(allStopped()).toBe(true)
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+
+    it('is over when this tab is put aside by another, or signed out from elsewhere', async () => {
+      const { connection } = await callUnderWay()
+
+      serverSays('sessionRevoked', { reason: 'Signed out from another device' })
+      disconnect('io server disconnect')
+
+      await waitFor(() => expect(connection.closed).toBe(true))
+      expect(allStopped()).toBe(true)
+      expect(callView()).not.toBeInTheDocument()
+    })
+
+    it('opens one camera, however many times the button is pressed while it opens', async () => {
+      const { connection } = await callUnderWay('audio')
+      let allow: (stream: FakeMediaStream) => void = () => {}
+      getUserMedia.mockImplementationOnce(() => new Promise(resolve => { allow = resolve }))
+
+      const camera = button('Turn the camera on')
+      await act(async () => {
+        camera.click()
+        camera.click()
+      })
+      const stream = new FakeMediaStream([track('video')])
+      opened.push(stream)
+      await act(async () => allow(stream))
+
+      await waitFor(() => expect(button('Turn the camera off')).toBeInTheDocument())
+      expect(getUserMedia).toHaveBeenCalledTimes(2)
+      expect(connection.senders.map(sender => sender.track)).toEqual([opened[0].getAudioTracks()[0], stream.getVideoTracks()[0]])
+      expect(stream.getVideoTracks()[0].enabled).toBe(true)
+    })
+
+    it('looks for a path through the server anyone may use if this one did not say which to use', async () => {
+      const events = await withBob()
+      await events.click(button('Voice call'))
+      await waitFor(() => expect(sent('call:invite')).toHaveLength(1))
+      await answer('call:invite', { ok: true, callId: 'call-1', secret: 'secret-1' })
+      serverSays('call:accepted', { callId: 'call-1' })
+      await waitFor(() => expect(sent('call:config')).toHaveLength(1))
+
+      await answer('call:config', { ok: false, message: 'Too many requests, slow down' })
+
+      expect(FakePeerConnection.last().configuration).toEqual({ iceServers: [{ urls: ['stun:stun.cloudflare.com:3478'] }] })
     })
 
     it('is over if the server no longer knows it by then', async () => {

@@ -30,7 +30,8 @@ export const registerSocketHandlers = (io, settings, { storage = null } = {}) =>
         iceServers: createIceServers({ turn: settings.turn, ttlSeconds: (settings.callMaxMs + settings.callRingTimeoutMs) / 1000 + 600 }),
     })
     // A socket that stops being logged in — closed, logged out, replaced — leaves its call.
-    presence.hooks.detached = calls.socketGone
+    // (A socket whose connection merely dropped has been through `socketGone` by then — see `disconnect` below.)
+    presence.hooks.detached = calls.socketLeft
     const status = createStatusHandlers({ presence, rateLimiter, onVisibleAgain: messages.visibleAgain })
     const session = createSessionHandlers({
         presence, settings, rateLimiter,

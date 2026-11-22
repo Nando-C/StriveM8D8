@@ -272,9 +272,10 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
     }
 
     /**
-     * A socket is gone (or logged out) without having hung up. If it was a device in a
+     * A socket's connection is gone without it having hung up. If it was a device in a
      * call, the call waits a while for it to come back; if it was only ringing, it rings
-     * no more there.
+     * no more there. A call that was still ringing when the wait runs out was never
+     * answered because its caller went: to the person called that is a call they missed.
      */
     const socketGone = socketId => {
         for (const call of calls.values()) {
@@ -282,10 +283,23 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
             for (const own of [call.caller, call.callee]) {
                 if (own.socketId !== socketId) continue
                 own.socketId = null
-                own.lost = later(settings.callGraceMs, () => finish(call, 'failed'))
+                own.lost = later(settings.callGraceMs, () => finish(call, call.state === 'ringing' ? 'cancelled' : 'failed'))
                 const peer = otherSide(call, own)
                 if (peer.socketId !== null) presence.tellSockets([peer.socketId], 'call:peer', { callId: call.callId, connected: false })
             }
+        }
+    }
+
+    /**
+     * A socket stopped being its user on purpose — signed out, or was signed out (from
+     * another device, by a changed password, by the account going). That device is not
+     * coming back to its call: the call ends now, not after a wait.
+     */
+    const socketLeft = socketId => {
+        // (Deleting from a Map while iterating over it is safe.)
+        for (const call of calls.values()) {
+            call.ringing.delete(socketId)
+            if (call.caller.socketId === socketId || call.callee.socketId === socketId) finish(call, call.state === 'ringing' ? 'cancelled' : 'ended')
         }
     }
 
@@ -326,5 +340,5 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
         on('call:signal', 'signal', signal)
     }
 
-    return { registerOn, socketGone, socketJoined, leave, count: () => calls.size }
+    return { registerOn, socketGone, socketLeft, socketJoined, leave, count: () => calls.size }
 }
