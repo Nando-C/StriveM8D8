@@ -29,3 +29,8 @@ export const addressOfSocket = (socket, trustedHops = 0) => clientAddress({
     remoteAddress: socket.handshake.address,
     forwardedFor: socket.handshake.headers['x-forwarded-for'],
 }, trustedHops)
+
+export const addressOfRequest = (req, trustedHops = 0) => clientAddress(seenOf(req), trustedHops)
+
+/** How a request arrived: where its connection came from, and what it claims of itself. */
+export const seenOf = req => ({ remoteAddress: req.socket.remoteAddress, forwardedFor: req.headers['x-forwarded-for'] })

@@ -10,9 +10,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { UserAvatar } from '@/components/UserAvatar'
 import type { Thread } from '@/lib/chatState'
 import { isMedia } from '@/lib/files'
-import { describeCall } from '@/lib/callEvents'
-import { describeGroupEvent } from '@/lib/groupEvents'
-import { deletedLine, isSaid, isToRead, type LocalMessage } from '@/lib/messages'
+import { deletedLine, eventLine, isSaid, isToRead, type LocalMessage } from '@/lib/messages'
 import { comparePositions, positionOf } from '@/lib/positions'
 import { ask } from '@/lib/request'
 import { useRequest } from '@/lib/useRequest'
@@ -367,10 +365,7 @@ export function MessageList({
           message,
           startsDay,
           tick: message.own ? tickOf(message, summary, ownUserId) : ('sent' as const),
-          line: !system ? undefined
-            : message.kind === 'deleted' ? deletedLine(message)
-              : message.kind === 'call' ? describeCall(message.data, message.own)
-                : describeGroupEvent(message.data, ownUserId),
+          line: message.kind === 'deleted' ? deletedLine(message) : (eventLine(message, ownUserId) ?? undefined),
           sender: !group || system || message.own ? undefined : sameSender ? ('continued' as const) : ('named' as const),
           seenBy: receipts?.seenBy.join(', '),
           deliveredTo: receipts?.deliveredTo.join(', '),

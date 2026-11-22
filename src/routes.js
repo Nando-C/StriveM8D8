@@ -1,12 +1,12 @@
 import express, { Router } from 'express'
 import createError from 'http-errors'
-import { clientAddress } from './clientAddress.js'
+import { addressOfRequest, clientAddress, seenOf } from './clientAddress.js'
 import { isDatabaseReady } from './db.js'
 
 /** The socket protocol's version. A client built for another one should say so, not misbehave. */
 export const PROTOCOL_VERSION = 2
 
-export const createRouter = ({ getOnlineUsers, settings, leaveCall = () => {} }) => {
+export const createRouter = ({ getOnlineUsers, settings, leaveCall }) => {
     const router = Router()
 
     // Where guests are switched off the deployment is private, and this would publish
@@ -33,7 +33,7 @@ export const createRouter = ({ getOnlineUsers, settings, leaveCall = () => {} })
     // nothing about anyone else.
     if (settings.proxyCheck) {
         router.get('/proxy-check', (req, res) => {
-            const seen = { remoteAddress: req.socket.remoteAddress, forwardedFor: req.headers['x-forwarded-for'] }
+            const seen = seenOf(req)
             const chain = String(seen.forwardedFor ?? '').split(',').map(entry => entry.trim()).filter(Boolean)
             res.send({
                 connectionFrom: clientAddress(seen, 0),
@@ -52,8 +52,7 @@ export const createRouter = ({ getOnlineUsers, settings, leaveCall = () => {} })
     router.post('/call/leave', express.text({ type: () => true, limit: 500 }), (req, res) => {
         try {
             const { callId, secret } = typeof req.body === 'string' ? JSON.parse(req.body) : req.body
-            const address = clientAddress({ remoteAddress: req.socket.remoteAddress, forwardedFor: req.headers['x-forwarded-for'] }, settings.trustedProxyHops)
-            leaveCall({ callId, secret, address })
+            leaveCall({ callId, secret, address: addressOfRequest(req, settings.trustedProxyHops) })
         } catch {
             // Not something this route understands: nothing to do, and nothing to say.
         }

@@ -15,6 +15,13 @@ const asCallRecord = (data: unknown): CallRecord | null => {
   return { media: media as CallMedia, outcome: outcome as CallOutcome, durationMs: typeof durationMs === 'number' && durationMs > 0 ? durationMs : 0 }
 }
 
+// Calls the person called did not take, whatever the reason. (As the server counts them unread.)
+const MISSED: readonly unknown[] = ['missed', 'cancelled', 'unavailable', 'dnd', 'busy']
+
+/** Whether the data of a call message says the person called missed it. */
+export const isMissedCall = (data: unknown) =>
+  typeof data === 'object' && data !== null && MISSED.includes((data as { outcome?: unknown }).outcome)
+
 /** "45 s", "4 min", "1 h 5 min": how long a call lasted, to the nearest unit worth saying. */
 export const callLength = (durationMs: number) => {
   const seconds = Math.round(durationMs / 1000)
@@ -33,17 +40,18 @@ export const describeCall = (data: unknown, own: boolean): string => {
   const Kind = call.media === 'video' ? 'Video call' : 'Voice call'
   // Two people spoke, however it then ended.
   if (call.durationMs > 0) return `${Kind} · ${callLength(call.durationMs)}`
+  if (!own && isMissedCall(call)) return `Missed ${kind}`
   switch (call.outcome) {
     case 'declined':
       return own ? `${Kind} · declined` : `You declined a ${kind}`
     case 'cancelled':
-      return own ? `Cancelled ${kind}` : `Missed ${kind}`
+      return `Cancelled ${kind}`
     case 'failed':
       return `${Kind} · could not connect`
     case 'ended':
       return Kind
     // Nobody answered, whatever the reason: the caller was told which at the time.
     default:
-      return own ? `${Kind} · no answer` : `Missed ${kind}`
+      return `${Kind} · no answer`
   }
 }

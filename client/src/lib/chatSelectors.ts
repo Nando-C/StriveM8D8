@@ -1,7 +1,5 @@
 import { EMPTY_THREAD, ownMember, type ChatState, type Thread } from '@/lib/chatState'
-import { describeCall } from '@/lib/callEvents'
-import { describeGroupEvent } from '@/lib/groupEvents'
-import { filesLabel, oneLine, type LocalMessage } from '@/lib/messages'
+import { eventLine, filesLabel, oneLine, type LocalMessage } from '@/lib/messages'
 import type { Presence } from '@/lib/status'
 import type { Member, PublicUser, UserKind } from '@/types/protocol'
 
@@ -107,23 +105,20 @@ export const chatList = (state: Pick<ChatState, 'threads' | 'onlineUsers' | 'use
         : last && { kind: last.kind, own: last.from === state.userId, data: last.data, text: last.preview, fromName: last.fromName, files: last.attachments ?? 0 }
       const group = thread.summary?.kind === 'group'
       // What happened to a group, and a call, are told as they are: nobody "said" them.
-      const call = shownLast?.kind === 'call'
-      const system = shownLast?.kind === 'system' || call
-      const deleted = shownLast?.kind === 'deleted'
+      const event = shownLast ? eventLine(shownLast, state.userId) : null
+      const text = shownLast != null && event === null && shownLast.kind !== 'deleted'
       // Files alone have no words to show: said as what they are.
       const said = shownLast?.text === '' && shownLast.files > 0 ? filesLabel(shownLast.files) : (shownLast?.text ?? '')
-      const previewOwn = !system && !deleted && shownLast?.own === true
+      const previewOwn = text && shownLast?.own === true
       return {
         id,
         title: titleOf(state, thread),
         counterpart,
         // (A group has no counterpart.)
         ...(counterpart === null ? NO_APPEARANCE : appearanceOf(shown.get(counterpart.userId))),
-        preview: call ? describeCall(shownLast?.data, shownLast?.own === true)
-          : system ? describeGroupEvent(shownLast?.data, state.userId)
-            : deleted ? 'Message deleted' : said,
+        preview: event ?? (shownLast?.kind === 'deleted' ? 'Message deleted' : said),
         previewOwn,
-        previewFrom: group && !system && !deleted && !previewOwn ? (shownLast?.fromName ?? null) : null,
+        previewFrom: group && text && !previewOwn ? (shownLast?.fromName ?? null) : null,
         memberNames: group ? otherNames(state, thread) : null,
         unread: thread.unread,
         activeAt: activeAt(state, thread, local),

@@ -19,7 +19,7 @@ import type { CallSignal, IceServer } from '@/types/protocol'
 // impolite one does so at once, the polite one a few seconds later and only if the other
 // has proposed nothing meanwhile.
 
-export type PeerConnectionState = 'connected' | 'interrupted'
+type PeerConnectionState = 'connected' | 'interrupted'
 
 /** What picture an end is sending: its camera, its screen, or none. */
 export type Picture = 'camera' | 'screen' | 'none'

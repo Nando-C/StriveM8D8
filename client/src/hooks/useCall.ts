@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
-import { callReducer, initialCallState, pictureSent, type CallOutcome } from '@/lib/call/callState'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { callReducer, initialCallState, outcomeStays, pictureSent, ringingAs, type CallAction, type CallOutcome } from '@/lib/call/callState'
 import {
-  canShareScreen, chooseDevice, chosenDevices, listDevices, NO_DEVICES, preferring, type ChosenDevices, type DeviceKind, type Devices,
+  canShareScreen, chooseDevice, chosenDevices, exactly, listDevices, NO_DEVICES, preferring, sameDevices, type ChosenDevices, type DeviceKind, type Devices,
 } from '@/lib/call/devices'
 import { callsSupported, createPeer, type Peer, type Picture } from '@/lib/call/peer'
 import { createQualityMeter, QUALITY_PERIOD_MS } from '@/lib/call/quality'
@@ -17,7 +17,7 @@ import type { CallMedia, CallSignal, IceServer, NamedUser } from '@/types/protoc
 // for the microphone and camera, and holds the connection to the other browser.
 
 /** How long an answered call may take to find a path between the two devices. */
-export const CONNECT_TIMEOUT_MS = 30_000
+const CONNECT_TIMEOUT_MS = 30_000
 /** How long the reason a call ended stays on screen by itself. */
 export const OUTCOME_SHOWN_MS = 5000
 /** How long a call may go on being taken back after the connection returned, when the server does not answer. */
@@ -26,8 +26,6 @@ export const REJOIN_FOR_MS = 15_000
 export const REJOIN_AGAIN_MS = 1000
 // Where to look for a path if the server could not be asked for its list: free, and needs no credentials.
 const FALLBACK_SERVERS: IceServer[] = [{ urls: ['stun:stun.cloudflare.com:3478'] }]
-// Things the user has to do something about are left until they close them.
-const STAYS: readonly (CallOutcome | null)[] = ['permission', 'no-device', 'unreachable']
 
 // Everything one call holds besides its state. A new object per call: whatever was
 // started for a call checks, when it comes back, that the call is still the one.
@@ -78,7 +76,20 @@ const newLive = (callId: string | null = null): Live => ({
   rejoinTimer: undefined, rejoin: 0, turn: Promise.resolve(), pending: new Set(),
 })
 
+// Where a call stands for this device, as what it holds says.
+/** This device is in the call: it has its secret. */
+const holds = (call: Live): call is Live & { callId: string; secret: string } => call.callId !== null && call.secret !== null
+/** The call only rings here: it is the server's to ring, and may be taken on another device. */
+const onlyRings = (call: Live): call is Live & { callId: string } => call.callId !== null && call.secret === null && !call.answering
+/** A call of the user's own that the server has not answered for yet. */
+const notYetMade = (call: Live) => call.callId === null && !call.answering
+
 const stop = (stream: MediaStream | null) => stream?.getTracks().forEach(track => track.stop())
+
+const stopScreen = (screen: MediaStreamTrack) => {
+  screen.onended = null
+  screen.stop()
+}
 
 /** Whether a camera looks away from the user. (A browser that does not say is taken to have one that looks at them.) */
 const facesAway = (camera: MediaStreamTrack | undefined) => camera?.getSettings?.().facingMode === 'environment'
@@ -131,13 +142,16 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
     clearTimeout(current.rejoinTimer)
     current.peer?.close()
     stop(current.local)
-    if (current.screen !== null) {
-      current.screen.onended = null
-      current.screen.stop()
-    }
+    if (current.screen !== null) stopScreen(current.screen)
     setLocalStream(null)
     setRemoteStream(null)
   }, [])
+
+  /** The call is over for this device: everything is let go, and the state is told how it ended. */
+  const over = useCallback((action: CallAction) => {
+    release()
+    dispatch(action)
+  }, [release])
 
   // Sets up the connection to the other browser, once both sides are in the call.
   const begin = useCallback(async (current: Live, polite: boolean) => {
@@ -146,6 +160,10 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
     current.begun = true
     const config = await ask('call:config', { callId })
     if (live.current !== current) return
+    const unreachable = () => {
+      void ask('call:end', { callId })
+      over({ type: 'failed', outcome: 'unreachable' })
+    }
     try {
       current.peer = createPeer({
         polite,
@@ -168,21 +186,15 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
         },
       })
     } catch {
-      void ask('call:end', { callId })
-      release()
-      dispatch({ type: 'failed', outcome: 'unreachable' })
-      return
+      return unreachable()
     }
     if (current.local !== null) current.peer.send(current.local)
     current.peer.say(current.picture)
     for (const signal of current.waiting.splice(0)) void current.peer.signal(signal)
     current.connectTimer = setTimeout(() => {
-      if (live.current !== current || current.reached) return
-      void ask('call:end', { callId })
-      release()
-      dispatch({ type: 'failed', outcome: 'unreachable' })
+      if (live.current === current && !current.reached) unreachable()
     }, CONNECT_TIMEOUT_MS)
-  }, [release])
+  }, [over])
 
   useEffect(() => listen(on => {
     on('call:incoming', call => {
@@ -190,9 +202,8 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
       if (own !== null) {
         // A call of the user's own that the server has not been asked for yet: someone got
         // in first, and that call would only be refused. It is let go for the one that is real.
-        if (own.callId !== null || own.answering) return
-        release()
-        dispatch({ type: 'hungUp' })
+        if (!notYetMade(own)) return
+        over({ type: 'hungUp' })
       }
       live.current = newLive(call.callId)
       dispatch({ type: 'incoming', call })
@@ -216,11 +227,9 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
       if (connected && live.current?.callId === callId) live.current.peer?.restart()
     })
     on('call:ended', ({ callId, reason }) => {
-      if (live.current?.callId !== callId) return
-      release()
-      dispatch({ type: 'ended', callId, reason })
+      if (live.current?.callId === callId) over({ type: 'ended', callId, reason })
     })
-  }), [begin, release])
+  }), [begin, over])
 
   // Leaving the page hangs up: the other person is not left waiting on a call nobody is in.
   // Said twice: over the socket, which is quickest, and by a beacon — the one thing a
@@ -228,7 +237,7 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
   useEffect(() => onLeaving(() => {
     const current = live.current
     // (Only a call this device is in. One that merely rings here goes on ringing on the user's other devices.)
-    if (current === null || current.callId === null || current.secret === null) return
+    if (current === null || !holds(current)) return
     socket.emit('call:end', { callId: current.callId }, () => {})
     navigator.sendBeacon?.(`${import.meta.env.VITE_BACKEND_URL}/call/leave`, JSON.stringify({ callId: current.callId, secret: current.secret }))
   }), [])
@@ -238,18 +247,14 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
   // stops — and rings again on logging back in, if it is still being made.
   useEffect(() => {
     const current = live.current
-    if (online || current === null || current.answering || current.secret !== null || current.callId === null) return
-    release()
-    dispatch({ type: 'hungUp' })
-  }, [online, release])
+    if (!online && current !== null && onlyRings(current)) over({ type: 'hungUp' })
+  }, [online, over])
 
   // Signed out, or put aside by another tab: the server has ended this device's call, and
   // does not tell a connection that is nobody.
   useEffect(() => {
-    if (signedIn || live.current === null) return
-    release()
-    dispatch({ type: 'hungUp' })
-  }, [signedIn, release])
+    if (!signedIn && live.current !== null) over({ type: 'hungUp' })
+  }, [signedIn, over])
 
   // Logged in again on a new connection: the call is taken back, with this device's secret.
   const lastLogin = useRef(loginCount)
@@ -257,22 +262,18 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
     if (lastLogin.current === loginCount) return
     lastLogin.current = loginCount
     const current = live.current
-    if (current === null || current.callId === null || current.secret === null) return
+    if (current === null || !holds(current)) return
     const { callId, secret } = current
     const attempt = (current.rejoin += 1)
     const since = Date.now()
     clearTimeout(current.rejoinTimer)
-    const lost = () => {
-      release()
-      dispatch({ type: 'failed', outcome: 'failed' })
-    }
+    const lost = () => over({ type: 'failed', outcome: 'failed' })
     const rejoin = () => void ask('call:rejoin', { callId, secret }).then(answer => {
       if (live.current !== current || current.rejoin !== attempt) return
       if (!answer.ok) {
         // A server that did not answer may yet — for as long as it would keep the call.
         // After that it has ended it, and told only the other side.
-        if (!('retryable' in answer && answer.retryable === true)) return lost()
-        if (Date.now() - since >= REJOIN_FOR_MS) return lost()
+        if (!('retryable' in answer && answer.retryable === true) || Date.now() - since >= REJOIN_FOR_MS) return lost()
         current.rejoinTimer = setTimeout(rejoin, REJOIN_AGAIN_MS)
         return
       }
@@ -284,7 +285,7 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
       current.peer?.restart()
     })
     rejoin()
-  }, [loginCount, begin, release])
+  }, [loginCount, begin, over])
 
   // This device joined a network (Wi-Fi came back, or mobile data took over): the path
   // through the old one is gone, and is not waited for.
@@ -322,8 +323,7 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
   useEffect(() => allowSound(), [])
 
   // A call makes itself heard at both ends while it rings, and an incoming one is seen from another tab.
-  // (At the caller's end only once the server has said that it rings.)
-  const ringing = state.phase === 'incoming' || (state.phase === 'outgoing' && state.callId !== null) ? state.phase : null
+  const ringing = ringingAs(state)
   const caller = state.peer?.username
   useEffect(() => {
     if (ringing === null) return
@@ -337,10 +337,29 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
 
   // Why a call ended is said for a moment, then gets out of the way.
   useEffect(() => {
-    if (state.phase !== 'ended' || STAYS.includes(state.outcome)) return
+    if (state.phase !== 'ended' || outcomeStays(state.outcome)) return
     const timer = setTimeout(() => dispatch({ type: 'dismissed' }), OUTCOME_SHOWN_MS)
     return () => clearTimeout(timer)
   }, [state.phase, state.outcome])
+
+  // Opens the microphone (and the camera, if asked for) for a call that is beginning.
+  // Says whether the call has them now: if not, it has been let go, or was no longer the one.
+  const openInto = useCallback(async (current: Live, video: boolean) => {
+    const opened = await openMedia(video)
+    if (live.current !== current) {
+      stop('problem' in opened ? null : opened.stream)
+      return false
+    }
+    if ('problem' in opened) {
+      over({ type: 'failed', outcome: opened.problem })
+      return false
+    }
+    current.local = opened.stream
+    setLocalStream(opened.stream)
+    if (video && !opened.video) dispatch({ type: 'cameraUnavailable' })
+    dispatch({ type: 'facing', away: facesAway(opened.stream.getVideoTracks()[0]) })
+    return true
+  }, [over])
 
   /** Calls someone. */
   const start = useCallback(async (peer: NamedUser, media: CallMedia, conversationId: string) => {
@@ -350,23 +369,11 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
     dispatch({ type: 'calling', peer, media, conversationId })
 
     // The microphone first: nobody is rung by someone who then cannot speak.
-    const opened = await openMedia(media === 'video')
-    if (live.current !== current) return stop('problem' in opened ? null : opened.stream)
-    if ('problem' in opened) {
-      release()
-      dispatch({ type: 'failed', outcome: opened.problem })
-      return
-    }
-    current.local = opened.stream
-    setLocalStream(opened.stream)
-    if (media === 'video' && !opened.video) dispatch({ type: 'cameraUnavailable' })
-    dispatch({ type: 'facing', away: facesAway(opened.stream.getVideoTracks()[0]) })
+    if (!(await openInto(current, media === 'video'))) return
 
     const answer = await ask('call:invite', { to: peer.userId, media })
     if (!answer.ok) {
-      if (live.current !== current) return
-      release()
-      dispatch({ type: 'failed', outcome: answer.reason ?? 'refused', message: answer.message })
+      if (live.current === current) over({ type: 'failed', outcome: answer.reason ?? 'refused', message: answer.message })
       return
     }
     // Hung up before the server had answered: now it can be told which call.
@@ -374,56 +381,51 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
     current.callId = answer.callId
     current.secret = answer.secret
     dispatch({ type: 'invited', callId: answer.callId })
-  }, [online, release])
+  }, [online, openInto, over])
 
   /** Accepts the call that is ringing, with or without picture. */
   const accept = useCallback(async (video: boolean) => {
     const current = live.current
-    if (current === null || current.callId === null || current.answering || current.secret !== null) return
+    if (current === null || !onlyRings(current)) return
     const callId = current.callId
     current.answering = true
     dispatch({ type: 'answering', video })
 
-    const opened = await openMedia(video)
-    if (live.current !== current) return stop('problem' in opened ? null : opened.stream)
-    if ('problem' in opened) {
-      // Not declined: it may be answered on another of the user's devices, where there is
-      // a microphone. If there is none, the caller is told nobody answered — which is so.
-      release()
-      dispatch({ type: 'failed', outcome: opened.problem })
-      return
-    }
-    current.local = opened.stream
-    setLocalStream(opened.stream)
-    if (video && !opened.video) dispatch({ type: 'cameraUnavailable' })
-    dispatch({ type: 'facing', away: facesAway(opened.stream.getVideoTracks()[0]) })
+    // (Without a microphone the call is not declined: it may be answered on another of the
+    // user's devices, where there is one. If there is none, the caller is told nobody
+    // answered — which is so.)
+    if (!(await openInto(current, video))) return
 
     const answer = await ask('call:accept', { callId })
     if (live.current !== current) return
     if (!answer.ok) {
-      release()
       // Taken on another of the user's devices: it goes on there, and there is nothing to say here.
-      dispatch(answer.reason === 'answered-elsewhere' ? { type: 'hungUp' } : { type: 'failed', outcome: 'refused', message: answer.message })
-      return
+      return over(answer.reason === 'answered-elsewhere' ? { type: 'hungUp' } : { type: 'failed', outcome: 'refused', message: answer.message })
     }
     current.secret = answer.secret
     await begin(current, true)
-  }, [begin, release])
+  }, [begin, openInto, over])
 
   /** Hangs up — which, for a call that is still ringing, cancels or declines it. */
   const hangUp = useCallback(() => {
     const current = live.current
     if (current === null) return
     if (current.callId !== null) void ask('call:end', { callId: current.callId })
-    release()
-    dispatch({ type: 'hungUp' })
-  }, [release])
+    over({ type: 'hungUp' })
+  }, [over])
 
   const toggleMic = useCallback(() => {
     const local = live.current?.local
     if (local == null) return
     for (const track of local.getAudioTracks()) track.enabled = !track.enabled
     dispatch({ type: 'micToggled' })
+  }, [])
+
+  // The camera (or none) is what is sent from now on — unless the screen is: the camera
+  // then waits its turn — and whoever shows the user's own picture sees that it changed.
+  const sendCamera = useCallback(async (current: Live, track: MediaStreamTrack | null) => {
+    if (current.screen === null) await current.peer?.put('video', track).catch(() => {})
+    if (current.local !== null) setLocalStream(shown(current.local))
   }, [])
 
   /** Stops or starts sending picture — opening the camera first, in a call that began without one. */
@@ -441,15 +443,13 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
       const [track] = camera.getVideoTracks()
       if (live.current !== current || current.local === null || track === undefined) return stop(camera)
       current.local.addTrack(track)
-      // (Not in place of the screen, if that is what is being sent: the camera waits its turn.)
-      if (current.screen === null) await current.peer?.put('video', track).catch(() => {})
-      setLocalStream(shown(current.local))
+      await sendCamera(current, track)
       dispatch({ type: 'cameraToggled' })
       dispatch({ type: 'facing', away: facesAway(track) })
     } catch {
       // No camera, or not allowed: the call goes on without picture.
     }
-  }, [])
+  }, [sendCamera])
 
   // One change to what is sent at a time, and no change asked for twice while it is being
   // made: opening a camera takes a moment, and a second press in that moment would open a second.
@@ -465,7 +465,7 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
     if (current?.local == null) return
     let opened: MediaStream
     try {
-      opened = await navigator.mediaDevices.getUserMedia({ audio: id === undefined ? true : { deviceId: { exact: id } } })
+      opened = await navigator.mediaDevices.getUserMedia({ audio: exactly(id) })
     } catch {
       // It cannot be used after all: the call keeps the one it has.
       return
@@ -497,25 +497,20 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
     if (live.current !== current || current.local === null) return void stop(opened)
     current.local.removeTrack(old)
     const track = opened?.getVideoTracks()[0]
-    if (track === undefined) {
-      if (current.screen === null) await current.peer?.put('video', null).catch(() => {})
-      setLocalStream(shown(current.local))
-      dispatch({ type: 'cameraUnavailable' })
-      return
+    if (track !== undefined) {
+      track.enabled = old.enabled
+      current.local.addTrack(track)
     }
-    track.enabled = old.enabled
-    current.local.addTrack(track)
-    if (current.screen === null) await current.peer?.put('video', track).catch(() => {})
-    setLocalStream(shown(current.local))
-    dispatch({ type: 'facing', away: facesAway(track) })
+    await sendCamera(current, track ?? null)
+    dispatch(track === undefined ? { type: 'cameraUnavailable' } : { type: 'facing', away: facesAway(track) })
     return track
-  }, [])
+  }, [sendCamera])
 
   /** Uses this microphone, camera or speaker — now, if a call is under way, and from now on. */
   const choose = useCallback((kind: DeviceKind, id: string | undefined) => {
     setChosen(chooseDevice(kind, id))
     if (kind === 'microphone') void queued(null, () => swapMicrophone(id))
-    else if (kind === 'camera') void queued(null, () => swapCamera(id === undefined ? true : { deviceId: { exact: id } }))
+    else if (kind === 'camera') void queued(null, () => swapCamera(exactly(id)))
     // (The speaker is whoever plays the sound's to use: the call view.)
   }, [queued, swapMicrophone, swapCamera])
 
@@ -532,8 +527,7 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
     const screen = current.screen
     if (screen === null) return
     current.screen = null
-    screen.onended = null
-    screen.stop()
+    stopScreen(screen)
     if (live.current !== current) return
     dispatch({ type: 'sharing', sharing: false })
     await current.peer?.put('video', current.local?.getVideoTracks()[0] ?? null).catch(() => {})
@@ -572,7 +566,7 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
     let stale = false
     const refresh = () => {
       void listDevices().then(found => {
-        if (!stale) setDevices(found)
+        if (!stale) setDevices(before => (sameDevices(before, found) ? before : found))
       })
       // The microphone in use was pulled out: whichever the browser picks next.
       if (live.current?.local?.getAudioTracks()[0]?.readyState === 'ended') void queued('unplugged', () => swapMicrophone(undefined))
@@ -589,14 +583,18 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
   const setMinimised = useCallback((minimised: boolean) => dispatch({ type: 'minimised', minimised }), [])
   const dismiss = useCallback(() => dispatch({ type: 'dismissed' }), [])
 
-  return {
+  const supported = callsSupported()
+  const canShare = canShareScreen()
+  // (The same object from one render to the next unless something of the call changed:
+  // the app above re-renders at every message, and the call's screens need not.)
+  return useMemo(() => ({
     state,
     localStream,
     remoteStream,
     /** Whether this browser can make calls at all. */
-    supported: callsSupported(),
+    supported,
     /** Whether this browser can send the screen. */
-    canShare: canShareScreen(),
+    canShare,
     /** The microphones, cameras and speakers there are (known during a call), and the user's choice of each. */
     devices,
     chosen,
@@ -610,7 +608,10 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
     toggleCamera,
     setMinimised,
     dismiss,
-  }
+  }), [
+    state, localStream, remoteStream, supported, canShare, devices, chosen, choose, flipCamera, toggleSharing, start, accept, hangUp, toggleMic, toggleCamera,
+    setMinimised, dismiss,
+  ])
 }
 
 export type Call = ReturnType<typeof useCall>

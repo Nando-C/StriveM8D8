@@ -16,7 +16,8 @@ export const NO_DEVICES: Devices = { microphone: [], camera: [], speaker: [] }
 
 const STORAGE_KEY = 'strive-chat.call-devices'
 const KINDS: Record<string, DeviceKind> = { audioinput: 'microphone', videoinput: 'camera', audiooutput: 'speaker' }
-const NAMES: Record<DeviceKind, string> = { microphone: 'Microphone', camera: 'Camera', speaker: 'Speaker' }
+/** What each kind is called. */
+export const DEVICE_NAMES: Record<DeviceKind, string> = { microphone: 'Microphone', camera: 'Camera', speaker: 'Speaker' }
 const MAX_ID_LENGTH = 500
 
 export const chosenDevices = (): ChosenDevices => {
@@ -59,7 +60,7 @@ export const listDevices = async (): Promise<Devices> => {
       // (No id: the browser is not saying yet. "default" is listed beside the device it stands for.)
       if (ours === undefined || deviceId === '' || deviceId === 'default' || deviceId === 'communications') continue
       if (found[ours].some(device => device.id === deviceId)) continue
-      found[ours].push({ id: deviceId, label: label !== '' ? label : `${NAMES[ours]} ${found[ours].length + 1}` })
+      found[ours].push({ id: deviceId, label: label !== '' ? label : `${DEVICE_NAMES[ours]} ${found[ours].length + 1}` })
     }
   } catch {
     // A browser that will not say: there is nothing to choose between.
@@ -69,6 +70,15 @@ export const listDevices = async (): Promise<Devices> => {
 
 /** What to ask the browser for: the chosen device if it is still there, else whichever it has. */
 export const preferring = (id: string | undefined): MediaTrackConstraints | true => (id === undefined ? true : { deviceId: { ideal: id } })
+
+/** What to ask for when the user picked one there and then: that device, or it fails. */
+export const exactly = (id: string | undefined): MediaTrackConstraints | true => (id === undefined ? true : { deviceId: { exact: id } })
+
+/** Whether two lists name the same devices: a browser announces a change several times over. */
+export const sameDevices = (one: Devices, other: Devices) =>
+  (Object.keys(one) as DeviceKind[]).every(kind =>
+    one[kind].length === other[kind].length &&
+    one[kind].every((device, index) => device.id === other[kind][index].id && device.label === other[kind][index].label))
 
 /** Whether this browser can send the screen. (Phones' browsers cannot.) */
 export const canShareScreen = () => typeof navigator.mediaDevices?.getDisplayMedia === 'function'

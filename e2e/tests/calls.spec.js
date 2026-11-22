@@ -1,5 +1,5 @@
 import { expect, test } from './test.js'
-import { bubbles, chat, guests, person } from './helpers.js'
+import { bubbles, chat, chooseStatus, composer, guests, person } from './helpers.js'
 
 // Calls, with Chromium's made-up camera and microphone (see playwright.config.js): two
 // real browsers really connect to each other, on this machine.
@@ -43,7 +43,7 @@ test('a video call: each sees and hears the other, and the conversation says how
 
     // Shrunk to a corner, the conversation can be written in; and brought back.
     await ana.page.getByRole('button', { name: 'Minimise the call' }).click()
-    await expect(ana.page.getByRole('textbox', { name: /^Message / })).toBeVisible()
+    await expect(composer(ana.page)).toBeVisible()
     await ana.page.getByRole('button', { name: 'Back to the call' }).click()
 
     // Muting is said to the user; it does not end anything.
@@ -172,8 +172,7 @@ test('someone who is offline or not to be disturbed cannot be called, and the bu
     await person(ana.page, ben.name).click()
     await expect(ana.page.getByRole('button', { name: 'Video call', exact: true })).toBeEnabled()
 
-    await ben.page.getByRole('button', { name: `Account menu for ${ben.name}` }).click()
-    await ben.page.getByRole('menuitemradio', { name: /^Do not disturb/ }).click()
+    await chooseStatus(ben.page, ben.name, 'Do not disturb')
     await expect(ana.page.getByRole('button', { name: `Video call — ${ben.name} has asked not to be disturbed` })).toBeDisabled()
 
     await ben.page.close()

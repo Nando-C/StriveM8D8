@@ -4,9 +4,9 @@ import type { PathSample } from '@/lib/call/peer'
 // voice breaking up is then the network's doing, not the app's or the other person's.
 
 /** There and back in more than this is heard as people talking over each other. */
-export const SLOW_ROUND_TRIP_MS = 400
+const SLOW_ROUND_TRIP_MS = 400
 /** More than this share of packets lost is heard and seen. */
-export const HEAVY_LOSS = 0.05
+const HEAVY_LOSS = 0.05
 /** How often the path is looked at. */
 export const QUALITY_PERIOD_MS = 3000
 // One bad reading is a blip; it is said after this many in a row.
