@@ -11,9 +11,9 @@ const MAX_LISTED_CONVERSATIONS = 50
 const MAX_UNREAD_SHOWN = 99
 const PREVIEW_LENGTH = 80
 
-// Kinds of message that are not something to read: what happened to a group, and what is
-// left of a message its author deleted.
-export const NOT_TO_READ = ['system', 'deleted']
+// Kinds of message that are not something to read: what happened to a group, a call
+// that took place (or did not), and what is left of a message its author deleted.
+export const NOT_TO_READ = ['system', 'call', 'deleted']
 
 const USER_ID = /^[A-Za-z0-9-]{1,64}$/
 

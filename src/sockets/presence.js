@@ -16,8 +16,11 @@ export const createPresence = (io, { demoBot = false } = {}) => {
     const users = new Map()
     /** socketId → the same user object */
     const bySocket = new Map()
-    /** Told when a user's first socket connects and when their last one goes (status.js keeps timers by it). */
-    const hooks = { online: () => {}, offline: () => {} }
+    /**
+     * Told when a user's first socket connects and when their last one goes (status.js
+     * keeps timers by it), and when any logged-in socket stops being one (calls.js).
+     */
+    const hooks = { online: () => {}, offline: () => {}, detached: () => {} }
 
     // The demo bot is a permanent entry: it has no socket, so it never disconnects.
     if (demoBot) {
@@ -54,6 +57,15 @@ export const createPresence = (io, { demoBot = false } = {}) => {
      */
     const tell = (userIds, event, payload, { exceptSocketId = null } = {}) => {
         const sockets = userIds.flatMap(socketsOf).filter(socketId => socketId !== exceptSocketId)
+        if (sockets.length > 0) io.to(sockets).emit(event, payload)
+    }
+
+    /**
+     * The same for particular devices — for what concerns one device of a user and not
+     * the others (a call). Only to sockets that are logged in, and to nobody when none is.
+     */
+    const tellSockets = (socketIds, event, payload) => {
+        const sockets = socketIds.filter(socketId => bySocket.has(socketId))
         if (sockets.length > 0) io.to(sockets).emit(event, payload)
     }
 
@@ -144,6 +156,7 @@ export const createPresence = (io, { demoBot = false } = {}) => {
         const before = publicUser(user)
         user.sockets.delete(socketId)
         bySocket.delete(socketId)
+        hooks.detached(socketId)
 
         if (user.sockets.size === 0) {
             users.delete(user.userId)
@@ -168,5 +181,5 @@ export const createPresence = (io, { demoBot = false } = {}) => {
         }
     }
 
-    return { users, bySocket, hooks, getOnlineUsers, publicUser, isShown, socketsOf, tell, attach, detach, revoke, update }
+    return { users, bySocket, hooks, getOnlineUsers, publicUser, isShown, socketsOf, tell, tellSockets, attach, detach, revoke, update }
 }

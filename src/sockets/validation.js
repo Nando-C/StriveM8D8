@@ -45,9 +45,11 @@ export const refuse = (message, extra) => {
  * For a module's events that are asked by someone logged in and answered by an
  * acknowledgement: `answering(…)(socket)` is `on(event, limit, handler)`. The handler is
  * given `{ socket, user, payload }` (the payload always an object) and resolves to what
- * the answer carries, or refuses. `unavailable()` may give a reason nothing can be asked at all.
+ * the answer carries, or refuses (what a refusal carries besides its reason goes into
+ * the answer too). `unavailable()` may give a reason nothing can be asked at all;
+ * `database: false` is for events that are still to be answered while the database is down.
  */
-export const answering = ({ presence, allowed, unavailable = () => null }) => socket => (event, limit, handler) => {
+export const answering = ({ presence, allowed, unavailable = () => null, database = true }) => socket => (event, limit, handler) => {
     socket.on(event, async (rawPayload, rawAck) => {
         const { payload, reply, fail } = withAck(rawPayload, rawAck)
 
@@ -56,12 +58,12 @@ export const answering = ({ presence, allowed, unavailable = () => null }) => so
         if (!user) return fail(NOT_LOGGED_IN)
         const off = unavailable()
         if (off) return fail(off)
-        if (!isDatabaseReady()) return fail(COULD_NOT_BE_SAVED)
+        if (database && !isDatabaseReady()) return fail(COULD_NOT_BE_SAVED)
         try {
             const result = await handler({ socket, user, payload: isObject(payload) ? payload : {} })
             reply({ ok: true, ...result })
         } catch (error) {
-            if (error instanceof Refusal) return fail(error.message)
+            if (error instanceof Refusal) return reply({ ok: false, message: error.message, ...error.extra })
             console.error(`${event} failed:`, error?.name)
             fail(COULD_NOT_BE_SAVED)
         }

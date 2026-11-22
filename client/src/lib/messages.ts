@@ -44,8 +44,8 @@ export const previewOf = (text: string) => {
   return flat.length > PREVIEW_LENGTH ? `${flat.slice(0, PREVIEW_LENGTH)}…` : flat
 }
 
-/** Whether a message is something somebody said: not a line about a group, not what is left of a deleted one. */
-export const isSaid = (message: Pick<LocalMessage, 'kind'>) => message.kind !== 'system' && message.kind !== 'deleted'
+/** Whether a message is something somebody said: not a line about a group or a call, not what is left of a deleted one. */
+export const isSaid = (message: Pick<LocalMessage, 'kind'>) => message.kind === 'text'
 
 /** What stands where a deleted message was. */
 export const deletedLine = (message: Pick<LocalMessage, 'own' | 'fromName'>) =>

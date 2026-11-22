@@ -82,7 +82,7 @@ describe('sending a file', () => {
         const alice = await account('alice')
         const bob = await guest('bob')
         const id = dm(alice, bob)
-        expect(alice.features).toEqual({ files: true, maxFileBytes: 25 * MB, maxFilesPerMessage: 10 })
+        expect(alice.features).toEqual({ files: true, calls: true, maxFileBytes: 25 * MB, maxFilesPerMessage: 10 })
 
         // Asked for before the two have ever spoken: the conversation need not exist yet.
         const reserved = await reserve(alice, id)
@@ -169,7 +169,7 @@ describe('where file sharing is not set up', () => {
         app = await startApp()
         const alice = await account('alice')
         const bob = await guest('bob')
-        expect(alice.features).toEqual({ files: false })
+        expect(alice.features).toEqual({ files: false, calls: true })
         expect(await reserve(alice, dm(alice, bob))).toEqual({ ok: false, message: OFF })
         expect(await urlOf(alice, '00000000-0000-4000-8000-000000000000')).toEqual({ ok: false, message: OFF })
         expect(await sendWith(alice, dm(alice, bob), ['00000000-0000-4000-8000-000000000000'], 'hi')).toEqual({ ok: false, message: OFF })

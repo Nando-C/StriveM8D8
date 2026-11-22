@@ -20,7 +20,7 @@ A real-time, one-to-one chat application: a Node.js + Socket.IO server with Mong
 - **Status that means something.** Online, away (also set by itself after five minutes without activity, and only when *every* one of your devices is idle), do not disturb, and invisible — plus a line of your own that can clear itself after a while. Invisible is real: to everyone else you are indistinguishable from someone who is not connected, yet you can read and write as usual.
 - **Group chats.** Up to twenty people, made in two clicks. Each message says who wrote it, the ticks say when *everyone* has it — press them to see who has seen it — and membership is handled the way people expect: anyone can add or leave, the creator can rename and remove, someone added later sees the conversation from that point on, and someone removed loses it at once.
 - **File sharing.** Attach, drop or paste files into a message: they upload straight from the browser to private storage with a progress bar, and arrive as a picture grid, a video or audio player, or a download card. Pictures open full size with the arrow keys stepping through the conversation's media; a message, and its files, can be deleted by whoever sent it.
-- **707 automated tests**, 32 of them driving real browsers against the built app, run on every push by GitHub Actions.
+- **780 automated tests**, 32 of them driving real browsers against the built app, run on every push by GitHub Actions.
 
 ## Tech stack
 
@@ -164,7 +164,7 @@ Three suites, each testing what the others cannot.
 
 | | Server | Client |
 |---|---|---|
-| Tests | 392, in 19 files | 283, in 14 files |
+| Tests | 445, in 20 files | 303, in 15 files |
 | Approach | Real Socket.IO clients against a fresh server per test, with an in-memory MongoDB | The real app rendered against a fake socket; each test plays the server |
 | Lint | oxlint | oxlint, including React hooks rules |
 | Types | — | TypeScript, checked on every build |
@@ -250,6 +250,7 @@ Server — `.env` in the repository root:
 | `UPLOAD_MAX_USER_MB_PER_DAY` | No | How much one account may upload in 24 hours. Default `200`. |
 | `UPLOAD_MAX_ADDRESS_MB_PER_DAY` | No | The same for everything from one client address. Default: four times the per-account figure. `0` switches it off — for a household behind one address. |
 | `UPLOAD_MAX_TOTAL_MB` | No | How much may be stored in all; beyond it, uploads are refused for everyone until files expire or are deleted. Default `2000`. |
+| `TURN_KEY_ID`, `TURN_API_TOKEN` | No | A Cloudflare Realtime TURN key, both halves. With it, the two parties of a call are handed short-lived relay credentials, made per call; the key itself never leaves the server. Without it calls are set up with STUN only, and fail between networks that allow no direct path (many mobile and corporate ones). |
 
 Client — `client/.env`:
 
@@ -406,6 +407,12 @@ People are identified by a permanent `userId`; usernames are labels. No event ca
 | `removeMember` | `{ conversationId, userId }` + acknowledgement callback | `{ ok: true }` or `{ ok: false, message }` — the group's admin only |
 | `leaveGroup` | `{ conversationId }` + acknowledgement callback | `{ ok: true }` or `{ ok: false, message }` |
 | `renameGroup` | `{ conversationId, name }` + acknowledgement callback | `{ ok: true }` or `{ ok: false, message }` — the group's admin only |
+| `call:invite` | `{ to, media }` + acknowledgement callback | `{ ok: true, callId, secret }` or `{ ok: false, message, reason? }` — see Calls |
+| `call:accept` | `{ callId }` + acknowledgement callback | `{ ok: true, secret }` or `{ ok: false, message, reason? }` |
+| `call:decline`, `call:cancel`, `call:end` | `{ callId }` + acknowledgement callback | `{ ok: true }` or `{ ok: false, message }` |
+| `call:signal` | `{ callId, description }` or `{ callId, candidate }` + acknowledgement callback | `{ ok: true }` or `{ ok: false, message, reason? }` |
+| `call:rejoin` | `{ callId, secret }` + acknowledgement callback | `{ ok: true, state, media, peerConnected }` or `{ ok: false, message }` |
+| `call:config` | `{ callId }` + acknowledgement callback | `{ ok: true, iceServers }` or `{ ok: false, message }` |
 
 `login` has three forms:
 
@@ -472,7 +479,7 @@ The recovery code is shown once and is the only way back into an account whose p
 
 | Event | Sent to | Payload | Meaning |
 |-------|---------|---------|---------|
-| `loggedin` | The socket that logged in, with an acknowledgement callback when a guest name was just reserved | `{ userId, username, kind, admin, sessionToken, ownStatus, onlineUsers, conversations, groupIds, features, members?, reservation?, session? }` | Login accepted. `ownStatus` is what you have chosen to show (`{ status, statusText, statusClearAt }`), which nobody else is sent. `onlineUsers` is everyone who can be seen (users, below) — including you, unless you are invisible. `conversations` is your 50 most recently active (conversations, below). `features` says what this deployment offers: `{ files }`, and with files on, `maxFileBytes` and `maxFilesPerMessage`. `groupIds` is the id of every group you are in, listed or not: a client that was not connected when you were taken out of one learns it from its absence here. `members` is every account, sent only to accounts and only where `MEMBER_DIRECTORY=all`. `sessionToken`, `reservation` and `session` are private to this client. **Acknowledge it**: a newly reserved guest name is provisional until the browser confirms the secret arrived, and is given up if the connection closes first or no confirmation comes within ten seconds — otherwise a secret lost in transit would lock the name against its own owner. |
+| `loggedin` | The socket that logged in, with an acknowledgement callback when a guest name was just reserved | `{ userId, username, kind, admin, sessionToken, ownStatus, onlineUsers, conversations, groupIds, features, members?, reservation?, session? }` | Login accepted. `ownStatus` is what you have chosen to show (`{ status, statusText, statusClearAt }`), which nobody else is sent. `onlineUsers` is everyone who can be seen (users, below) — including you, unless you are invisible. `conversations` is your 50 most recently active (conversations, below). `features` says what this deployment offers: `{ files, calls }`, and with files on, `maxFileBytes` and `maxFilesPerMessage`. `groupIds` is the id of every group you are in, listed or not: a client that was not connected when you were taken out of one learns it from its absence here. `members` is every account, sent only to accounts and only where `MEMBER_DIRECTORY=all`. `sessionToken`, `reservation` and `session` are private to this client. **Acknowledge it**: a newly reserved guest name is provisional until the browser confirms the secret arrived, and is given up if the connection closes first or no confirmation comes within ten seconds — otherwise a secret lost in transit would lock the name against its own owner. |
 | `loginError` | The socket that tried | `{ message, retryable?, retryAfterMs?, sessionEnded? }` | For example `Invalid username`, `Username already in use`, `That name belongs to an account — sign in`, `Wrong username or password`, `Already logged in`, `Too many requests, slow down`. `retryable`: the server is still starting, try again shortly. `sessionEnded`: the device session no longer exists. |
 | `sessionRevoked` | The sockets being signed out | `{ reason }` | This connection was signed out on purpose — its device was revoked, the password changed, the account deleted or the guest name expired — and is closed straight after. |
 | `newLogin` | Everyone else who is logged in | a user | A user came online (or stopped being invisible), or who they are changed (a guest became an account). Treat as an upsert by `userId`. Sent once per user, however many devices they connect. |
@@ -484,6 +491,11 @@ The recovery code is shown once and is the only way back into an account whose p
 | `conversationUpdated` | Each member, separately | `{ conversation }` | A conversation is new to you or something about it changed (it was just created; the other person is gone; another of your devices read it; a group's members, admin or name changed). Replaces what you had. After the first message of a one-to-one conversation it arrives *after* the `message`; for a change to a group, *before* the system message that records it. |
 | `conversationRemoved` | Every connection of someone who left a group or was removed from it | `{ id }` | You are no longer in that group: forget it. |
 | `messageDeleted` | Every member who could read the message, on every connection | `{ conversationId, id }` | Its author deleted it. What is left is a marker: the same message with `kind: "deleted"`, no text and no attachments. A `conversationUpdated` follows, with the preview and unread count as they now are. |
+| `call:incoming` | Every connection of the person called | `{ callId, conversationId, media, from: { userId, username } }` | Someone is calling. Also sent to a connection that logs in while it rings. |
+| `call:accepted` | The calling device | `{ callId }` | The other person accepted: set the call up. |
+| `call:signal` | The other device in the call | `{ callId, description }` or `{ callId, candidate }` | What the other browser says, exactly the fields listed under Calls. |
+| `call:peer` | The other device in the call | `{ callId, connected }` | The other device's connection dropped — it has 15 seconds to come back — or is back. |
+| `call:ended` | Both devices in the call, and every connection still ringing | `{ callId, reason }` | It is over: `ended`, `declined`, `cancelled`, `missed`, `failed`, or — to the other connections of someone who accepted — `answered-elsewhere`. |
 | `history` | The requester only | `{ conversationId, messages, hasMore }` | Up to 100 messages, oldest first. `hasMore`: there are earlier ones; ask again with `before` set to the first message's position. |
 | `historyError` | The requester only | `{ conversationId, message }` | `Invalid conversation`, `Invalid position`, `Not logged in`, `Unknown conversation`, `History could not be loaded`, or `Too many requests, slow down`. |
 | `memberJoined` / `memberLeft` | Accounts, where `MEMBER_DIRECTORY=all` | `{ userId, username, kind }` / `{ userId }` | An account was created or removed. |
@@ -502,6 +514,7 @@ The shapes used above:
 { id, conversationId, from, fromName, kind, text, data?, attachments?, timestamp, clientId }
 //  from: the author's userId; fromName: their name when it was sent
 //  kind: "text"; "system" for a change to a group — then text is null and data says what happened (see Groups);
+//        "call" for a call that took place or did not — text is null, data is { media, outcome, durationMs } (see Calls);
 //        or "deleted" for what is left of a message its author deleted — text is null
 //  attachments: [{ id, name, type, size, width?, height?, durationMs?, placeholder? }] — files sent with it (see Files);
 //        text may then be ""
@@ -517,7 +530,7 @@ The shapes used above:
 //  lastMessage: { id, from, fromName, preview, timestamp, kind?, data?, attachments? } | null
 //           null also when the last message is from before you joined; kind and data only when it is not text;
 //           attachments: how many files it carries, when it carries any (preview is "" for files alone)
-//  unreadCount: messages from others after your read position, at most 99 (system and deleted messages are not counted)
+//  unreadCount: messages from others after your read position, at most 99 (system, call and deleted messages are not counted)
 ```
 
 `timestamp` is milliseconds since the Unix epoch. The same message has the same `id` and `timestamp` in the live `message` event, in the sender's acknowledgement, and in `history`. A member marked `gone` no longer exists: the conversation is kept for the other person, who can read it but not add to it.
@@ -540,9 +553,27 @@ Off unless `FILE_STORAGE` is set; `loggedin.features.files` says which. A file's
 
 Failure messages: `File sharing is not available here`, `Create an account to send files`, `Invalid file`, `A file can be at most 25 MB`, `Unknown conversation`, `This person is no longer here`, `Send or remove what you have already attached first (at most 5 at a time)`, `You have reached your upload limit for today`, `Too much has been uploaded from this network today`, `Storage is full — no more files can be uploaded for now`, `An attachment is not available — upload it again`, `An attachment was not uploaded completely`, `Unknown file`, `Unknown message`, `Only an administrator can see that`.
 
+### Calls
+
+Between two people, sound or sound and picture. The media never passes through this server: the two browsers connect to each other (WebRTC), and what travels over the socket is who is calling whom and what the two browsers say to find a path between them. `loggedin.features.calls` says the server does this. The events are in place and tested; the screens that use them are the next step, so the live app does not place calls yet.
+
+1. **`call:invite`** `{ to, media }` — `to` is a `userId`, `media` is `"audio"` or `"video"`. Whoever may write to someone may call them. Every connection of the person called receives `call:incoming`; the caller's acknowledgement carries the `callId` and a `secret`.
+2. **`call:accept`** from any one of the called person's connections takes the call: its acknowledgement carries that device's own `secret`, the caller receives `call:accepted`, and the other connections stop ringing (`call:ended`, `answered-elsewhere`). `call:decline` refuses it; the caller can `call:cancel` before it is answered; unanswered after 30 seconds it is `missed`.
+3. **`call:config`** gives a device that is in the call its `iceServers`: public STUN and, where `TURN_KEY_ID` and `TURN_API_TOKEN` are set, relay credentials made for that call.
+4. **`call:signal`** carries one thing to the other device and to nobody else: a `description` (`{ type, sdp }`, `type` one of `offer`, `answer`, `pranswer`, `rollback`, at most 48,000 characters) or a `candidate` (`{ candidate, sdpMid, sdpMLineIndex, usernameFragment }`). Only those fields are passed on.
+5. **`call:end`** hangs up from either side, in whatever state the call is. A call ends by itself after 60 minutes.
+
+- **A call belongs to two devices, not to two connections.** If a device's connection drops without `call:end`, the other is told (`call:peer`) and the call waits 15 seconds; a new connection logged in as the same user takes it back with `call:rejoin` and the `secret`. Knowing the `callId` is not enough — the user's other devices know it too. After 15 seconds the call ends as `failed`.
+- **One call at a time.** Someone ringing or in a call is `busy`; a caller already in one is refused (`reason: "in-call"`).
+- **When the call cannot begin**, the acknowledgement of `call:invite` says why in `reason`: `unavailable` (not connected), `dnd` (they asked not to be disturbed: nothing rings), or `busy`. **Someone invisible is answered for exactly as someone who is not connected.**
+- **Every call leaves a line in the conversation**: a message of `kind: "call"`, written as the caller's, whose `data` is `{ media, outcome, durationMs }` — `outcome` being how it ended (`ended`, `declined`, `cancelled`, `missed`, `failed`) or why it never rang (`unavailable`, `dnd`, `busy`). So the person called finds a missed call there, whether they were away, invisible or busy. It is not counted as unread and cannot be deleted. The client puts it into words for whoever is reading.
+- **The demo bot declines.**
+
+Failure messages: `Invalid call`, `Unknown conversation`, `This person is no longer here`, `You are already in a call`, `They cannot be reached right now`, `They have asked not to be disturbed`, `They are in another call`, `Unknown call` (one answer for a call that does not exist, is somebody else's, or is not this device's), `Answered on another device`, `Invalid signal`, `The call has not been answered`, `The other side is not connected right now`, `Not logged in`, `Could not be saved`, `Too many requests, slow down`.
+
 ### Limits
 
-The server is meant to be reachable by anyone, so each socket is rate-limited (the server's own acknowledgement wait for a delivery is 10 seconds): 10 messages per 10 seconds, 10 history requests per 10 seconds, 30 read reports per 10 seconds, 10 status changes and 30 idle reports per 10 seconds, 10 group requests per 10 seconds of which at most 5 may add members, 5 logins per 10 seconds, and 5 requests per 10 seconds for anything that checks a password. A request over the limit is refused with `Too many requests, slow down` and has no other effect. A single socket payload may not exceed 10 kB; a connection that sends more is closed.
+The server is meant to be reachable by anyone, so each socket is rate-limited (the server's own acknowledgement wait for a delivery is 10 seconds): 10 messages per 10 seconds, 10 history requests per 10 seconds, 30 read reports per 10 seconds, 10 status changes and 30 idle reports per 10 seconds, 10 group requests per 10 seconds of which at most 5 may add members, 5 logins per 10 seconds, and 5 requests per 10 seconds for anything that checks a password. A request over the limit is refused with `Too many requests, slow down` and has no other effect. Calls: 6 invitations a minute, 20 answers (accept, decline, cancel, end, rejoin) and 200 signals per 10 seconds — candidates arrive in bursts — and 5 requests for servers per 10 seconds. A single socket payload may not exceed 64 kB, which is room for the largest thing sent this way, a call's session description; every field of every event has its own, much smaller, limit. A connection that sends more is closed.
 
 A new socket costs nothing, so what matters most is also limited per client address: 10 sign-ups and 30 new guest names an hour, and wrong passwords, recovery codes or bootstrap codes — after 5 for one name (20 in all) from an address, each further one has to wait twice as long as the last, up to 15 minutes. These counts are kept in memory and depend on `TRUSTED_PROXY_HOPS` being right for the host.
 
@@ -573,7 +604,7 @@ Clients do not need `/online-users` — presence arrives over the socket, and th
 
 ### What would come next
 
-- **One-to-one video calls.**
+- **Calls in the interface.** The server side of one-to-one audio and video calls is done (see Calls); the screens are next.
 - **Horizontal scaling**, moving presence into Redis and using Socket.IO's Redis adapter.
 - **More browsers.** The end-to-end suite runs in Chromium only; Firefox and WebKit would be a configuration change and a longer run.
 

@@ -64,6 +64,7 @@ const holdsReservation = (payload, guest) =>
 
 export const createSessionHandlers = ({
     presence, settings, rateLimiter, features = {}, onIdentityRemoved = async () => {}, onConversationsListed = async () => {},
+    onLoggedIn = () => {},
 }) => {
     const hasher = createPasswordHasher({ params: settings.passwordParams })
     // Compared as every name is: without regard to case.
@@ -187,6 +188,8 @@ export const createSessionHandlers = ({
             ...(members === undefined ? {} : { members }),
             ...extra,
         }, ...(onConfirmed === null ? [] : [onConfirmed]))
+        // (What a device that has just arrived must be told at once: a call that is ringing.)
+        onLoggedIn(socket, user)
         // Not part of logging in, and not allowed to fail it.
         onConversationsListed(user.userId, conversations)
             .catch(error => console.error("failed to record what a login delivered:", error.name))
