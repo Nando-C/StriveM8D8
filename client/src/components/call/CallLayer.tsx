@@ -17,16 +17,7 @@ export function CallLayer({ call }: { call: Call }) {
       )}
       <AnimatePresence>
         {(state.phase === 'outgoing' || state.phase === 'connecting' || state.phase === 'active') && (
-          <CallView
-            key="call"
-            state={state}
-            localStream={call.localStream}
-            remoteStream={call.remoteStream}
-            onHangUp={call.hangUp}
-            onToggleMic={call.toggleMic}
-            onToggleCamera={() => void call.toggleCamera()}
-            onMinimise={call.setMinimised}
-          />
+          <CallView key="call" call={call} />
         )}
         {state.phase === 'ended' && (
           <motion.div

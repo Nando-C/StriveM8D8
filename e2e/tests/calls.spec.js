@@ -4,6 +4,10 @@ import { bubbles, chat, guests, person } from './helpers.js'
 // Calls, with Chromium's made-up camera and microphone (see playwright.config.js): two
 // real browsers really connect to each other, on this machine.
 
+// One call at a time: two browsers encoding picture and sound for each other are heavy,
+// and several calls at once slow every other spec running beside them.
+test.describe.configure({ mode: 'default' })
+
 const callView = page => page.getByRole('region', { name: /^Call with / })
 const incoming = (page, from) => page.getByRole('dialog', { name: `${from} is calling` })
 
@@ -46,6 +50,25 @@ test('a video call: each sees and hears the other, and the conversation says how
     await ben.page.getByRole('button', { name: 'Mute the microphone' }).click()
     await expect(ben.page.getByRole('button', { name: 'Unmute the microphone' })).toBeVisible()
 
+    // A camera turned off is the person's avatar to the other, not a black picture; and back.
+    const benToAna = ana.page.locator('video[data-stream=remote]')
+    await ben.page.getByRole('button', { name: 'Turn the camera off' }).click()
+    await expect(benToAna).toBeHidden()
+    await ben.page.getByRole('button', { name: 'Turn the camera on' }).click()
+    await expect(benToAna).toBeVisible()
+
+    // Another microphone can be spoken through, there and then; the call goes on.
+    await ana.page.getByRole('button', { name: 'Microphone, camera and speaker' }).click()
+    const microphone = ana.page.getByRole('combobox', { name: 'Microphone' })
+    await expect(ana.page.getByRole('combobox', { name: 'Camera' })).toBeVisible()
+    const names = await microphone.locator('option').allTextContents()
+    expect(names.length).toBeGreaterThan(1)
+    await microphone.selectOption({ label: names.at(-1) })
+    await expect(microphone).toHaveValue(/.+/)
+    await ana.page.keyboard.press('Escape')
+    await expect.poll(() => received(ben.page)).toMatchObject({ playing: true, sound: true })
+    await expect(callView(ana.page)).toHaveAttribute('data-call', 'active')
+
     await ana.page.getByRole('button', { name: 'Hang up' }).click()
     await expect(callView(ana.page)).toBeHidden()
     await expect(callView(ben.page)).toBeHidden()
@@ -54,6 +77,35 @@ test('a video call: each sees and hears the other, and the conversation says how
     // Both find it in the conversation.
     await chat(ben.page, ana.name).click()
     for (const page of [ana.page, ben.page]) await expect(bubbles(page)).toHaveText([/^Video call · \d+ s$/])
+    expect([...ana.page.consoleErrors, ...ben.page.consoleErrors]).toEqual([])
+})
+
+test('a screen shared in a voice call is seen by the other person, whoever shares, and gone when it stops', async ({ browser }) => {
+    const [ana, ben] = await guests(browser, 'ana', 'ben')
+    await person(ana.page, ben.name).click()
+    await ana.page.getByRole('button', { name: 'Voice call', exact: true }).click()
+    await incoming(ben.page, ana.name).getByRole('button', { name: 'Accept' }).click()
+    for (const page of [ana.page, ben.page]) await expect(callView(page)).toHaveAttribute('data-call', 'active')
+
+    // First the one who called, then the one who was called: either may add a picture to the call.
+    for (const [sharer, watcher] of [[ana, ben], [ben, ana]]) {
+        const shown = watcher.page.locator('video[data-stream=remote]')
+        await expect(shown).toBeHidden()
+
+        await sharer.page.getByRole('button', { name: 'Share your screen' }).click()
+        await expect(callView(sharer.page)).toContainText('You are sharing your screen')
+        await expect(shown).toBeVisible()
+        await expect.poll(async () => (await received(watcher.page)).width).toBeGreaterThan(0)
+
+        await sharer.page.getByRole('button', { name: 'Stop sharing your screen' }).click()
+        await expect(callView(sharer.page)).not.toContainText('You are sharing your screen')
+        await expect(shown).toBeHidden()
+    }
+
+    // The voices were there throughout.
+    for (const page of [ana.page, ben.page]) await expect.poll(() => received(page)).toMatchObject({ sound: true })
+    await ben.page.getByRole('button', { name: 'Hang up' }).click()
+    await expect(callView(ana.page)).toBeHidden()
     expect([...ana.page.consoleErrors, ...ben.page.consoleErrors]).toEqual([])
 })
 

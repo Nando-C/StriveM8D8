@@ -20,8 +20,8 @@ A real-time, one-to-one chat application: a Node.js + Socket.IO server with Mong
 - **Status that means something.** Online, away (also set by itself after five minutes without activity, and only when *every* one of your devices is idle), do not disturb, and invisible — plus a line of your own that can clear itself after a while. Invisible is real: to everyone else you are indistinguishable from someone who is not connected, yet you can read and write as usual.
 - **Group chats.** Up to twenty people, made in two clicks. Each message says who wrote it, the ticks say when *everyone* has it — press them to see who has seen it — and membership is handled the way people expect: anyone can add or leave, the creator can rename and remove, someone added later sees the conversation from that point on, and someone removed loses it at once.
 - **File sharing.** Attach, drop or paste files into a message: they upload straight from the browser to private storage with a progress bar, and arrive as a picture grid, a video or audio player, or a download card. Pictures open full size with the arrow keys stepping through the conversation's media; a message, and its files, can be deleted by whoever sent it.
-- **Voice and video calls.** Call the person you are talking to from the conversation's header. The call goes straight from one browser to the other; it rings every device they have, can be answered with or without picture, shrinks to a corner so you can keep chatting, and survives a dropped connection. Whatever becomes of it — answered, declined, missed — is a line in the conversation, and a missed call waits as unread.
-- **882 automated tests**, 37 of them driving real browsers against the built app, run on every push by GitHub Actions.
+- **Voice and video calls.** Call the person you are talking to from the conversation's header. The call goes straight from one browser to the other; it rings every device they have, can be answered with or without picture, shrinks to a corner so you can keep chatting, and survives a dropped connection or a change of network. In it you can share your screen, choose which microphone, camera and speaker to use (remembered for next time), switch between a phone's two cameras, and are told when the connection is poor. Whatever becomes of it — answered, declined, missed — is a line in the conversation, and a missed call waits as unread.
+- **929 automated tests**, 38 of them driving real browsers against the built app, run on every push by GitHub Actions.
 
 ## Tech stack
 
@@ -165,7 +165,7 @@ Three suites, each testing what the others cannot.
 
 | | Server | Client |
 |---|---|---|
-| Tests | 455, in 20 files | 390, in 16 files |
+| Tests | 455, in 20 files | 436, in 16 files |
 | Approach | Real Socket.IO clients against a fresh server per test, with an in-memory MongoDB | The real app rendered against a fake socket; each test plays the server |
 | Lint | oxlint | oxlint, including React hooks rules |
 | Types | — | TypeScript, checked on every build |
@@ -188,7 +188,7 @@ Three suites, each testing what the others cannot.
   - accounts on two browsers with remote sign-out, recovery and deletion;
   - a guest becoming an account;
   - a group of four: made, talked in, joined later (and seeing nothing earlier), renamed, someone removed, the admin leaving and the next taking over;
-  - a voice and a video call between two browsers with a made-up camera and microphone — picture and sound really arriving on both sides — hung up, declined, missed, ended by leaving the page, and refused to someone who is offline or not to be disturbed;
+  - a voice and a video call between two browsers with a made-up camera and microphone — picture and sound really arriving on both sides, a camera turned off and on, another microphone chosen, a screen shared by either side — hung up, declined, missed, ended by leaving the page, and refused to someone who is offline or not to be disturbed;
   - phone-sized screens.
 
   A second, smaller run uses the private-deployment settings: no guest path, sign-up refused without an invitation, the owner's bootstrap link, an invitation link that works exactly once, and writing to a member who is offline. The suite is run twice in a row before it is trusted, and has no retries: a test that passes on the second attempt is a flaky test.
@@ -565,6 +565,7 @@ Between two people, sound or sound and picture. The media never passes through t
 4. **`call:signal`** carries one thing to the other device and to nobody else: a `description` (`{ type, sdp }`, `type` one of `offer`, `answer`, `pranswer`, `rollback`, at most 48,000 characters) or a `candidate` (`{ candidate, sdpMid, sdpMLineIndex, usernameFragment }`). Only those fields are passed on.
 5. **`call:end`** hangs up from either side, in whatever state the call is. A call ends by itself after 60 minutes. A page that is being closed or reloaded hangs up too — over the socket and, because a browser does not promise to deliver that from a page on its way out, with a beacon to `POST /call/leave` carrying the device's `secret`.
 
+- **What the two browsers settle between themselves.** The server knows nothing of what happens inside a call. Changing what is sent — another microphone or camera, the screen in place of the camera — swaps the track on a sender that is already there, so nothing has to be agreed again; only adding picture to a call that had none does. Beside sound and picture the browsers keep one small data channel (pre-agreed, id 0) on which each says what picture it is sending — `camera`, `screen` or `none` — because a camera that is off still sends black frames, and only its own end knows that is not a picture. When the path between them is lost (a network left or joined, the other device back on a new connection) a new one is looked for by an ICE restart; the caller's browser does so at once and the other's a few seconds later, only if nothing was proposed meanwhile, so that the two do not propose at the same moment.
 - **A call belongs to two devices, not to two connections.** If a device's connection drops without `call:end`, the other is told (`call:peer`) and the call waits 15 seconds; a new connection logged in as the same user takes it back with `call:rejoin` and the `secret`. Knowing the `callId` is not enough — the user's other devices know it too. After 15 seconds the call ends as `failed`.
 - **One call at a time.** Someone ringing or in a call is `busy`; a caller already in one is refused (`reason: "in-call"`).
 - **When the call cannot begin**, the acknowledgement of `call:invite` says why in `reason`: `unavailable` (not connected), `dnd` (they asked not to be disturbed: nothing rings), or `busy`. **Someone invisible is answered for exactly as someone who is not connected.**
@@ -607,7 +608,6 @@ Clients do not need `/online-users` — presence arrives over the socket, and th
 
 ### What would come next
 
-- **More in a call**: sharing a screen, choosing which camera and microphone to use, and a hint about the quality of the connection.
 - **Group calls**, which need a media server: a call here is between two browsers.
 - **Horizontal scaling**, moving presence into Redis and using Socket.IO's Redis adapter.
 - **More browsers.** The end-to-end suite runs in Chromium only; Firefox and WebKit would be a configuration change and a longer run.

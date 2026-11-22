@@ -7,11 +7,47 @@ export interface FakeTrack {
   enabled: boolean
   readyState: 'live' | 'ended'
   stop: () => void
+  onended: (() => void) | null
+  getSettings: () => { deviceId?: string; facingMode?: string }
 }
 
-export const track = (kind: 'audio' | 'video'): FakeTrack => {
-  const made: FakeTrack = { kind, enabled: true, readyState: 'live', stop: () => { made.readyState = 'ended' } }
+export const track = (kind: 'audio' | 'video', settings: { deviceId?: string; facingMode?: string } = {}): FakeTrack => {
+  const made: FakeTrack = {
+    kind, enabled: true, readyState: 'live', onended: null, getSettings: () => settings,
+    stop: () => { made.readyState = 'ended' },
+  }
   return made
+}
+
+/** What a fake connection sends one kind of thing through. */
+export interface FakeSender {
+  track: FakeTrack | null
+  replaceTrack: (next: FakeTrack | null) => Promise<void>
+}
+
+/** The line the two ends talk to each other on, as one end holds it. */
+export class FakeChannel {
+  readyState: 'connecting' | 'open' | 'closed' = 'connecting'
+  sent: string[] = []
+  onopen: (() => void) | null = null
+  onmessage: ((event: { data: unknown }) => void) | null = null
+  label: string
+  options: unknown
+  constructor(label: string, options: unknown) {
+    this.label = label
+    this.options = options
+  }
+  send = (data: string) => {
+    if (this.readyState !== 'open') throw new Error('not open')
+    this.sent.push(data)
+  }
+  // ---------- test controls
+  open = () => {
+    this.readyState = 'open'
+    this.onopen?.()
+  }
+  /** The other end says something. */
+  receive = (data: unknown) => this.onmessage?.({ data })
 }
 
 export class FakeMediaStream {
@@ -24,6 +60,9 @@ export class FakeMediaStream {
   getVideoTracks = () => this.tracks.filter(candidate => candidate.kind === 'video')
   addTrack = (added: FakeTrack) => {
     if (!this.tracks.includes(added)) this.tracks.push(added)
+  }
+  removeTrack = (removed: FakeTrack) => {
+    this.tracks = this.tracks.filter(candidate => candidate !== removed)
   }
 }
 
@@ -44,7 +83,10 @@ export class FakePeerConnection {
   /** Every description of the other end's that was taken in, in order. */
   remote: Description[] = []
   candidates: unknown[] = []
-  senders: Array<{ track: FakeTrack }> = []
+  senders: FakeSender[] = []
+  channels: FakeChannel[] = []
+  /** What `getStats` reports. */
+  stats: Array<Record<string, unknown>> = []
   restarts = 0
   closed = false
   /** Make the next thing of that kind fail, as a browser does with something malformed. */
@@ -67,8 +109,16 @@ export class FakePeerConnection {
 
   getSenders = () => this.senders
   addTrack = (added: FakeTrack) => {
-    this.senders.push({ track: added })
+    const sender: FakeSender = { track: added, replaceTrack: async next => { sender.track = next } }
+    this.senders.push(sender)
+    return sender
   }
+  createDataChannel = (label: string, options: unknown) => {
+    const channel = new FakeChannel(label, options)
+    this.channels.push(channel)
+    return channel
+  }
+  getStats = async () => new Map(this.stats.map((report, index) => [String(index), report]))
 
   // With no argument, as the app calls it: an answer to an offer just taken in, or a new offer.
   setLocalDescription = async () => {

@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
-import { callReducer, initialCallState, type CallOutcome } from '@/lib/call/callState'
-import { callsSupported, createPeer, type Peer } from '@/lib/call/peer'
+import { callReducer, initialCallState, pictureSent, type CallOutcome } from '@/lib/call/callState'
+import {
+  canShareScreen, chooseDevice, chosenDevices, listDevices, NO_DEVICES, preferring, type ChosenDevices, type DeviceKind, type Devices,
+} from '@/lib/call/devices'
+import { callsSupported, createPeer, type Peer, type Picture } from '@/lib/call/peer'
+import { createQualityMeter, QUALITY_PERIOD_MS } from '@/lib/call/quality'
 import { flashTitle, startRingtone } from '@/lib/call/ringing'
 import { onLeaving } from '@/lib/leaving'
 import { listen } from '@/lib/listen'
@@ -26,6 +30,10 @@ interface Live {
   /** This device's hold on the call: what takes it back after a dropped connection. Never stored, never shown. */
   secret: string | null
   local: MediaStream | null
+  /** The user's screen, while it is sent in place of the camera. */
+  screen: MediaStreamTrack | null
+  /** What picture the other end is to be told this one sends. */
+  picture: Picture
   peer: Peer | null
   /** Setting the connection up has begun. */
   begun: boolean
@@ -38,16 +46,25 @@ interface Live {
 }
 
 const newLive = (callId: string | null = null): Live => ({
-  callId, secret: null, local: null, peer: null, begun: false, answering: false, waiting: [], reached: false, connectTimer: undefined,
+  callId, secret: null, local: null, screen: null, picture: 'none', peer: null, begun: false, answering: false, waiting: [], reached: false, connectTimer: undefined,
 })
 
 const stop = (stream: MediaStream | null) => stream?.getTracks().forEach(track => track.stop())
 
-// The microphone, and the camera if asked for. A device with a microphone and no camera
-// still makes the call, without picture.
+/** Whether a camera looks away from the user. (A browser that does not say is taken to have one that looks at them.) */
+const facesAway = (camera: MediaStreamTrack | undefined) => camera?.getSettings?.().facingMode === 'environment'
+
+/** The same tracks in a new stream: whoever shows it sees that it changed. */
+const shown = (stream: MediaStream) => new MediaStream(stream.getTracks())
+
+// The microphone, and the camera if asked for — those the user chose last time, if they
+// are still there. A device with a microphone and no camera still makes the call,
+// without picture.
 const openMedia = async (video: boolean): Promise<{ stream: MediaStream; video: boolean } | { problem: CallOutcome }> => {
   try {
-    return { stream: await navigator.mediaDevices.getUserMedia({ audio: true, video }), video }
+    const chosen = chosenDevices()
+    const constraints = { audio: preferring(chosen.microphone), video: video && preferring(chosen.camera) }
+    return { stream: await navigator.mediaDevices.getUserMedia(constraints), video }
   } catch (error) {
     const name = error instanceof Error ? error.name : ''
     if (name === 'NotAllowedError' || name === 'SecurityError') return { problem: 'permission' }
@@ -70,6 +87,8 @@ export const useCall = ({ online, loginCount }: Options) => {
   const [state, dispatch] = useReducer(callReducer, initialCallState)
   const [localStream, setLocalStream] = useState<MediaStream | null>(null)
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null)
+  const [devices, setDevices] = useState<Devices>(NO_DEVICES)
+  const [chosen, setChosen] = useState<ChosenDevices>(chosenDevices)
   const live = useRef<Live | null>(null)
 
   /** Lets go of everything the call held: the connection, the camera, the microphone. */
@@ -80,6 +99,10 @@ export const useCall = ({ online, loginCount }: Options) => {
     clearTimeout(current.connectTimer)
     current.peer?.close()
     stop(current.local)
+    if (current.screen !== null) {
+      current.screen.onended = null
+      current.screen.stop()
+    }
     setLocalStream(null)
     setRemoteStream(null)
   }, [])
@@ -108,6 +131,9 @@ export const useCall = ({ online, loginCount }: Options) => {
           }
           dispatch(reached === 'connected' ? { type: 'connected', at: Date.now() } : { type: 'interrupted' })
         },
+        onPicture: picture => {
+          if (live.current === current) dispatch({ type: 'peerPicture', picture })
+        },
       })
     } catch {
       void ask('call:end', { callId })
@@ -116,6 +142,7 @@ export const useCall = ({ online, loginCount }: Options) => {
       return
     }
     if (current.local !== null) current.peer.send(current.local)
+    current.peer.say(current.picture)
     for (const signal of current.waiting.splice(0)) void current.peer.signal(signal)
     current.connectTimer = setTimeout(() => {
       if (live.current !== current || current.reached) return
@@ -143,7 +170,12 @@ export const useCall = ({ online, loginCount }: Options) => {
       if (current.peer === null) current.waiting.push(signal)
       else void current.peer.signal(signal)
     })
-    on('call:peer', ({ callId, connected }) => dispatch({ type: 'peer', callId, connected }))
+    on('call:peer', ({ callId, connected }) => {
+      dispatch({ type: 'peer', callId, connected })
+      // Back, on a new connection and perhaps a new network: the old path may be gone,
+      // and what was said to it while it was away never arrived.
+      if (connected && live.current?.callId === callId) live.current.peer?.restart()
+    })
     on('call:ended', ({ callId, reason }) => {
       if (live.current?.callId !== callId) return
       release()
@@ -197,6 +229,38 @@ export const useCall = ({ online, loginCount }: Options) => {
     })
   }, [loginCount, begin, release])
 
+  // This device joined a network (Wi-Fi came back, or mobile data took over): the path
+  // through the old one is gone, and is not waited for.
+  useEffect(() => {
+    const joined = () => live.current?.peer?.restart()
+    window.addEventListener('online', joined)
+    return () => window.removeEventListener('online', joined)
+  }, [])
+
+  // The other end is told what picture it is being sent: a camera that is off sends
+  // black, which only this end knows is not a picture.
+  const picture = pictureSent(state)
+  useEffect(() => {
+    const current = live.current
+    if (current === null) return
+    current.picture = picture
+    current.peer?.say(picture)
+  }, [picture])
+
+  // While the call lasts, the path is looked at now and then, to say when it is poor.
+  const active = state.phase === 'active'
+  useEffect(() => {
+    if (!active) return
+    const current = live.current
+    const isPoor = createQualityMeter()
+    const looking = setInterval(() => {
+      void current?.peer?.sample().then(sample => {
+        if (sample !== null && live.current === current) dispatch({ type: 'quality', poor: isPoor(sample) })
+      })
+    }, QUALITY_PERIOD_MS)
+    return () => clearInterval(looking)
+  }, [active])
+
   // An incoming call makes itself heard, and seen from another tab.
   const ringing = state.phase === 'incoming'
   const caller = state.peer?.username
@@ -235,6 +299,7 @@ export const useCall = ({ online, loginCount }: Options) => {
     current.local = opened.stream
     setLocalStream(opened.stream)
     if (media === 'video' && !opened.video) dispatch({ type: 'cameraUnavailable' })
+    dispatch({ type: 'facing', away: facesAway(opened.stream.getVideoTracks()[0]) })
 
     const answer = await ask('call:invite', { to: peer.userId, media })
     if (!answer.ok) {
@@ -269,6 +334,7 @@ export const useCall = ({ online, loginCount }: Options) => {
     current.local = opened.stream
     setLocalStream(opened.stream)
     if (video && !opened.video) dispatch({ type: 'cameraUnavailable' })
+    dispatch({ type: 'facing', away: facesAway(opened.stream.getVideoTracks()[0]) })
 
     const answer = await ask('call:accept', { callId })
     if (live.current !== current) return
@@ -309,17 +375,146 @@ export const useCall = ({ online, loginCount }: Options) => {
       return
     }
     try {
-      const camera = await navigator.mediaDevices.getUserMedia({ video: true })
-      if (live.current !== current || current.local === null) return stop(camera)
-      for (const track of camera.getVideoTracks()) current.local.addTrack(track)
-      current.peer?.send(current.local)
-      // (A new stream, so that the preview sees there is now a picture.)
-      setLocalStream(new MediaStream(current.local.getTracks()))
+      const camera = await navigator.mediaDevices.getUserMedia({ video: preferring(chosenDevices().camera) })
+      const [track] = camera.getVideoTracks()
+      if (live.current !== current || current.local === null || track === undefined) return stop(camera)
+      current.local.addTrack(track)
+      // (Not in place of the screen, if that is what is being sent: the camera waits its turn.)
+      if (current.screen === null) await current.peer?.put('video', track).catch(() => {})
+      setLocalStream(shown(current.local))
       dispatch({ type: 'cameraToggled' })
+      dispatch({ type: 'facing', away: facesAway(track) })
     } catch {
       // No camera, or not allowed: the call goes on without picture.
     }
   }, [])
+
+  // Speaks through another microphone from now on (`undefined`: whichever the browser picks).
+  const swapMicrophone = useCallback(async (id: string | undefined) => {
+    const current = live.current
+    if (current?.local == null) return
+    let opened: MediaStream
+    try {
+      opened = await navigator.mediaDevices.getUserMedia({ audio: id === undefined ? true : { deviceId: { exact: id } } })
+    } catch {
+      // It cannot be used after all: the call keeps the one it has.
+      return
+    }
+    const [track] = opened.getAudioTracks()
+    if (live.current !== current || current.local === null || track === undefined) return stop(opened)
+    const [old] = current.local.getAudioTracks()
+    if (old !== undefined) {
+      // (Muted stays muted.)
+      track.enabled = old.enabled
+      current.local.removeTrack(old)
+      old.stop()
+    }
+    current.local.addTrack(track)
+    await current.peer?.put('audio', track).catch(() => {})
+  }, [])
+
+  // Shows through another camera from now on. Returns the camera now in use, if there is one.
+  const swapCamera = useCallback(async (wanted: MediaTrackConstraints | true) => {
+    const current = live.current
+    const old = current?.local?.getVideoTracks()[0]
+    // (A camera that was never opened: what was chosen is used when it is.)
+    if (current?.local == null || old === undefined) return
+    // The one in use is let go first: a phone does not open a second camera beside it.
+    old.stop()
+    const open = (video: MediaTrackConstraints | true) => navigator.mediaDevices.getUserMedia({ video })
+    // (If the one asked for cannot be had, whichever can.)
+    const opened = await open(wanted).catch(() => open(true)).catch(() => null)
+    if (live.current !== current || current.local === null) return void stop(opened)
+    current.local.removeTrack(old)
+    const track = opened?.getVideoTracks()[0]
+    if (track === undefined) {
+      if (current.screen === null) await current.peer?.put('video', null).catch(() => {})
+      setLocalStream(shown(current.local))
+      dispatch({ type: 'cameraUnavailable' })
+      return
+    }
+    track.enabled = old.enabled
+    current.local.addTrack(track)
+    if (current.screen === null) await current.peer?.put('video', track).catch(() => {})
+    setLocalStream(shown(current.local))
+    dispatch({ type: 'facing', away: facesAway(track) })
+    return track
+  }, [])
+
+  /** Uses this microphone, camera or speaker — now, if a call is under way, and from now on. */
+  const choose = useCallback((kind: DeviceKind, id: string | undefined) => {
+    setChosen(chooseDevice(kind, id))
+    if (kind === 'microphone') void swapMicrophone(id)
+    else if (kind === 'camera') void swapCamera(id === undefined ? true : { deviceId: { exact: id } })
+    // (The speaker is whoever plays the sound's to use: the call view.)
+  }, [swapMicrophone, swapCamera])
+
+  /** On a phone: the camera on the other side of it. */
+  const flipCamera = useCallback(async () => {
+    const away = facesAway(live.current?.local?.getVideoTracks()[0])
+    const camera = await swapCamera({ facingMode: { exact: away ? 'user' : 'environment' } })
+    const id = camera?.getSettings?.().deviceId
+    if (typeof id === 'string' && id !== '') setChosen(chooseDevice('camera', id))
+  }, [swapCamera])
+
+  // Goes back from the screen to the camera (or to no picture, without one).
+  const stopSharing = useCallback(async (current: Live) => {
+    const screen = current.screen
+    if (screen === null) return
+    current.screen = null
+    screen.onended = null
+    screen.stop()
+    if (live.current !== current) return
+    dispatch({ type: 'sharing', sharing: false })
+    await current.peer?.put('video', current.local?.getVideoTracks()[0] ?? null).catch(() => {})
+  }, [])
+
+  /** Sends the screen (a window, a tab: the browser asks which) in place of the camera — or stops doing so. */
+  const toggleSharing = useCallback(async () => {
+    const current = live.current
+    if (current === null || current.peer === null) return
+    if (current.screen !== null) return stopSharing(current)
+    let display: MediaStream
+    try {
+      display = await navigator.mediaDevices.getDisplayMedia({ video: true })
+    } catch {
+      // The user closed the browser's question, or the browser will not: nothing changes.
+      return
+    }
+    const [track] = display.getVideoTracks()
+    if (live.current !== current || current.peer === null || current.screen !== null || track === undefined) return stop(display)
+    current.screen = track
+    // The browser has a "stop sharing" of its own, outside the page.
+    track.onended = () => void stopSharing(current)
+    dispatch({ type: 'sharing', sharing: true })
+    try {
+      await current.peer.put('video', track)
+    } catch {
+      void stopSharing(current)
+    }
+  }, [stopSharing])
+
+  // What there is to choose between, while a call has the microphone: the browser names
+  // its devices only then. Kept up to date as things are plugged in and pulled out.
+  const listening = localStream !== null
+  useEffect(() => {
+    if (!listening) return
+    let stale = false
+    const refresh = () => {
+      void listDevices().then(found => {
+        if (!stale) setDevices(found)
+      })
+      // The microphone in use was pulled out: whichever the browser picks next.
+      if (live.current?.local?.getAudioTracks()[0]?.readyState === 'ended') void swapMicrophone(undefined)
+    }
+    refresh()
+    const media = navigator.mediaDevices
+    media?.addEventListener?.('devicechange', refresh)
+    return () => {
+      stale = true
+      media?.removeEventListener?.('devicechange', refresh)
+    }
+  }, [listening, swapMicrophone])
 
   const setMinimised = useCallback((minimised: boolean) => dispatch({ type: 'minimised', minimised }), [])
   const dismiss = useCallback(() => dispatch({ type: 'dismissed' }), [])
@@ -330,6 +525,14 @@ export const useCall = ({ online, loginCount }: Options) => {
     remoteStream,
     /** Whether this browser can make calls at all. */
     supported: callsSupported(),
+    /** Whether this browser can send the screen. */
+    canShare: canShareScreen(),
+    /** The microphones, cameras and speakers there are (known during a call), and the user's choice of each. */
+    devices,
+    chosen,
+    choose,
+    flipCamera,
+    toggleSharing,
     start,
     accept,
     hangUp,

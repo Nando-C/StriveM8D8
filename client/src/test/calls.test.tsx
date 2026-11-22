@@ -215,7 +215,7 @@ describe('calling', () => {
 
       const connection = FakePeerConnection.last()
       expect(connection.configuration).toEqual({ iceServers: [{ urls: ['turn:relay.test'], username: 'u', credential: 'c' }] })
-      expect(connection.senders.map(sender => sender.track.kind)).toEqual(['audio', 'video'])
+      expect(connection.senders.map(sender => sender.track?.kind)).toEqual(['audio', 'video'])
       // What this browser proposes goes to the other through the server, and what the other says comes back.
       await act(() => connection.negotiate())
       expect(sent('call:signal')).toEqual([{ callId: 'call-1', description: { type: 'offer', sdp: 'offer-1' } }])
@@ -400,7 +400,7 @@ describe('calling', () => {
       await waitFor(() => expect(connection.remote).toEqual([{ type: 'offer', sdp: 'theirs' }]))
       await waitFor(() => expect(connection.candidates).toHaveLength(1))
       await waitFor(() => expect(sent('call:signal')).toEqual([{ callId: 'call-2', description: { type: 'answer', sdp: 'answer-1' } }]))
-      expect(connection.senders.map(sender => sender.track.kind)).toEqual(['audio'])
+      expect(connection.senders.map(sender => sender.track?.kind)).toEqual(['audio'])
     })
 
     it('says nothing when another of the user’s devices took it', async () => {
@@ -468,11 +468,11 @@ describe('calling', () => {
 
     it('opens the camera when it is turned on in a call that began without one', async () => {
       const { events, connection } = await callUnderWay('audio')
-      expect(connection.senders.map(sender => sender.track.kind)).toEqual(['audio'])
+      expect(connection.senders.map(sender => sender.track?.kind)).toEqual(['audio'])
 
       await events.click(button('Turn the camera on'))
 
-      await waitFor(() => expect(connection.senders.map(sender => sender.track.kind)).toEqual(['audio', 'video']))
+      await waitFor(() => expect(connection.senders.map(sender => sender.track?.kind)).toEqual(['audio', 'video']))
       expect(getUserMedia).toHaveBeenLastCalledWith({ video: true })
       expect(button('Turn the camera off')).toBeInTheDocument()
     })
@@ -577,6 +577,282 @@ describe('calling', () => {
       await waitFor(() => expect(callView()).not.toBeInTheDocument())
       expect(alertText()).toContain('The call was cut off')
       expect(allStopped()).toBe(true)
+    })
+
+    it('looks for a new path when the other device comes back, and when this one joins a network', async () => {
+      const { connection } = await callUnderWay()
+      act(() => connection.become('connected'))
+
+      serverSays('call:peer', { callId: 'call-1', connected: false })
+      expect(connection.restarts).toBe(0)
+      serverSays('call:peer', { callId: 'call-1', connected: true })
+      expect(connection.restarts).toBe(1)
+      // (Of another call: nothing.)
+      serverSays('call:peer', { callId: 'call-9', connected: true })
+      expect(connection.restarts).toBe(1)
+
+      act(() => void window.dispatchEvent(new Event('online')))
+      expect(connection.restarts).toBe(2)
+    })
+
+    it('shows the other person’s avatar, not a black picture, once they say their camera is off', async () => {
+      const { connection } = await callUnderWay()
+      act(() => {
+        connection.ontrack?.({ track: track('video') })
+        connection.become('connected')
+      })
+      const theirs = () => screen.getByLabelText('bob’s video')
+      expect(theirs()).not.toHaveClass('invisible')
+      const [channel] = connection.channels
+      // They were told what this side sends, too.
+      act(() => channel.open())
+      expect(channel.sent.map(said => JSON.parse(said))).toEqual([{ picture: 'camera' }])
+
+      act(() => channel.receive(JSON.stringify({ picture: 'none' })))
+      expect(theirs()).toHaveClass('invisible')
+      act(() => channel.receive(JSON.stringify({ picture: 'screen' })))
+      expect(theirs()).not.toHaveClass('invisible')
+
+      await userEvent.click(button('Turn the camera off'))
+      expect(JSON.parse(channel.sent.at(-1) ?? '')).toEqual({ picture: 'none' })
+    })
+
+    describe('sharing the screen', () => {
+      let display: FakeMediaStream
+      const getDisplayMedia = vi.fn<() => Promise<FakeMediaStream>>()
+      beforeEach(() => {
+        display = new FakeMediaStream([track('video')])
+        getDisplayMedia.mockReset().mockImplementation(async () => display)
+        Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia, getDisplayMedia } })
+      })
+      const sending = (connection: FakePeerConnection) => connection.senders.map(sender => sender.track)
+
+      it('is offered once the call is connected, in a browser that can', async () => {
+        const { connection } = await callUnderWay()
+        expect(screen.queryByRole('button', { name: 'Share your screen' })).not.toBeInTheDocument()
+        act(() => connection.become('connected'))
+        expect(button('Share your screen')).toBeInTheDocument()
+      })
+
+      it('sends the screen in place of the camera, says so to both, and puts the camera back afterwards', async () => {
+        const { events, connection } = await callUnderWay()
+        act(() => connection.become('connected'))
+        const [channel] = connection.channels
+        act(() => channel.open())
+        const [voice, camera] = opened[0].getTracks()
+        const [shared] = display.getTracks()
+
+        await events.click(button('Share your screen'))
+
+        await waitFor(() => expect(sending(connection)).toEqual([voice, shared]))
+        expect(callView()).toHaveTextContent('You are sharing your screen')
+        expect(JSON.parse(channel.sent.at(-1) ?? '')).toEqual({ picture: 'screen' })
+        // The camera is neither sent nor to be fiddled with meanwhile; it is still on.
+        expect(button('Turn the camera off')).toBeDisabled()
+        expect(camera.readyState).toBe('live')
+
+        await events.click(button('Stop sharing your screen'))
+
+        await waitFor(() => expect(sending(connection)).toEqual([voice, camera]))
+        expect(shared.readyState).toBe('ended')
+        expect(callView()).not.toHaveTextContent('You are sharing your screen')
+        expect(JSON.parse(channel.sent.at(-1) ?? '')).toEqual({ picture: 'camera' })
+        expect(button('Turn the camera off')).toBeEnabled()
+        // Nothing was agreed anew for any of it.
+        expect(sent('call:signal')).toEqual([])
+      })
+
+      it('stops when the browser’s own “stop sharing” is pressed; in a voice call nothing is sent afterwards', async () => {
+        const { events, connection } = await callUnderWay('audio')
+        act(() => connection.become('connected'))
+        const [voice] = opened[0].getTracks()
+        const [shared] = display.getTracks()
+        await events.click(button('Share your screen'))
+        await waitFor(() => expect(sending(connection)).toEqual([voice, shared]))
+
+        act(() => shared.onended?.())
+
+        await waitFor(() => expect(sending(connection)).toEqual([voice, null]))
+        expect(button('Share your screen')).toHaveAttribute('aria-pressed', 'false')
+        // And the camera can still be turned on, through the same sender.
+        await events.click(button('Turn the camera on'))
+        await waitFor(() => expect(sending(connection)).toEqual([voice, opened[1].getVideoTracks()[0]]))
+      })
+
+      it('changes nothing if the user closes the browser’s question', async () => {
+        const { events, connection } = await callUnderWay()
+        act(() => connection.become('connected'))
+        getDisplayMedia.mockRejectedValueOnce(denied('NotAllowedError'))
+
+        await events.click(button('Share your screen'))
+
+        expect(button('Share your screen')).toHaveAttribute('aria-pressed', 'false')
+        expect(sending(connection)).toEqual(opened[0].getTracks())
+        expect(callView()).toBeInTheDocument()
+      })
+
+      it('is let go with the call', async () => {
+        const { events, connection } = await callUnderWay()
+        act(() => connection.become('connected'))
+        await events.click(button('Share your screen'))
+        await waitFor(() => expect(callView()).toHaveTextContent('You are sharing your screen'))
+
+        await events.click(button('Hang up'))
+
+        expect(display.getTracks()[0].readyState).toBe('ended')
+        expect(allStopped()).toBe(true)
+      })
+    })
+
+    describe('choosing devices', () => {
+      const LIST = [
+        { kind: 'audioinput', deviceId: 'mic-1', label: 'Built-in microphone' },
+        { kind: 'audioinput', deviceId: 'mic-2', label: 'Headset' },
+        { kind: 'videoinput', deviceId: 'cam-1', label: 'Front camera' },
+        { kind: 'videoinput', deviceId: 'cam-2', label: 'Back camera' },
+        { kind: 'audiooutput', deviceId: 'out-1', label: 'Speakers' },
+        { kind: 'audiooutput', deviceId: 'out-2', label: 'Headphones' },
+      ]
+      const setSinkId = vi.fn(async (_id: string) => {})
+      let changed: (() => void) | undefined
+      beforeEach(() => {
+        setSinkId.mockClear()
+        changed = undefined
+        Object.defineProperty(navigator, 'mediaDevices', {
+          configurable: true,
+          value: {
+            getUserMedia,
+            enumerateDevices: async () => LIST,
+            addEventListener: (_: string, listener: () => void) => { changed = listener },
+            removeEventListener: () => {},
+          },
+        })
+        Object.defineProperty(HTMLMediaElement.prototype, 'setSinkId', { configurable: true, value: setSinkId })
+      })
+      afterEach(() => {
+        Reflect.deleteProperty(HTMLMediaElement.prototype, 'setSinkId')
+        window.localStorage.removeItem('strive-chat.call-devices')
+      })
+      const remembered = () => JSON.parse(window.localStorage.getItem('strive-chat.call-devices') ?? '{}')
+      const openSettings = async (events: ReturnType<typeof userEvent.setup>) => {
+        await events.click(await screen.findByRole('button', { name: 'Microphone, camera and speaker' }))
+        return screen.findByRole('combobox', { name: 'Microphone' })
+      }
+
+      it('speaks through another microphone at once, still muted if it was, and remembers it', async () => {
+        const { events, connection } = await callUnderWay()
+        const [oldVoice, camera] = opened[0].getTracks()
+        await events.click(button('Mute the microphone'))
+
+        const microphone = await openSettings(events)
+        expect([...microphone.querySelectorAll('option')].map(option => option.textContent)).toEqual(['Default', 'Built-in microphone', 'Headset'])
+        await events.selectOptions(microphone, 'Headset')
+
+        await waitFor(() => expect(connection.senders[0].track).toBe(opened[1].getAudioTracks()[0]))
+        expect(getUserMedia).toHaveBeenLastCalledWith({ audio: { deviceId: { exact: 'mic-2' } } })
+        expect(connection.senders[0].track?.enabled).toBe(false)
+        expect(oldVoice.readyState).toBe('ended')
+        expect(connection.senders[1].track).toBe(camera)
+        expect(remembered()).toEqual({ microphone: 'mic-2' })
+        expect(sent('call:signal')).toEqual([])
+      })
+
+      it('shows through another camera, letting go of the first before opening the second', async () => {
+        const { events, connection } = await callUnderWay()
+        const [, oldCamera] = opened[0].getTracks()
+        getUserMedia.mockImplementationOnce(async () => {
+          expect(oldCamera.readyState).toBe('ended')
+          const stream = new FakeMediaStream([track('video', { deviceId: 'cam-2', facingMode: 'environment' })])
+          opened.push(stream)
+          return stream
+        })
+
+        await openSettings(events)
+        await events.selectOptions(screen.getByRole('combobox', { name: 'Camera' }), 'Back camera')
+
+        await waitFor(() => expect(connection.senders[1].track).toBe(opened[1].getVideoTracks()[0]))
+        expect(getUserMedia).toHaveBeenLastCalledWith({ video: { deviceId: { exact: 'cam-2' } } })
+        expect(remembered()).toEqual({ camera: 'cam-2' })
+        // A camera looking away from the user is not shown as a mirror would.
+        await waitFor(() => expect(screen.getByLabelText('Your video')).not.toHaveClass('-scale-x-100'))
+      })
+
+      it('plays through the speaker chosen', async () => {
+        const { events } = await callUnderWay()
+        await openSettings(events)
+
+        await events.selectOptions(screen.getByRole('combobox', { name: 'Speaker' }), 'Headphones')
+
+        await waitFor(() => expect(setSinkId).toHaveBeenLastCalledWith('out-2'))
+        expect(remembered()).toEqual({ speaker: 'out-2' })
+      })
+
+      it('begins the next call with what was chosen, if it is still there', async () => {
+        window.localStorage.setItem('strive-chat.call-devices', JSON.stringify({ microphone: 'mic-2', camera: 'cam-2' }))
+        await callUnderWay()
+        expect(getUserMedia).toHaveBeenCalledWith({ audio: { deviceId: { ideal: 'mic-2' } }, video: { deviceId: { ideal: 'cam-2' } } })
+      })
+
+      it('goes on with whichever microphone there is when the one in use is pulled out', async () => {
+        const { connection } = await callUnderWay()
+        await waitFor(() => expect(changed).toBeDefined())
+        const [voice] = opened[0].getAudioTracks()
+
+        voice.readyState = 'ended'
+        act(() => changed?.())
+
+        await waitFor(() => expect(connection.senders[0].track).toBe(opened[1].getAudioTracks()[0]))
+        expect(getUserMedia).toHaveBeenLastCalledWith({ audio: true })
+      })
+
+      it('offers the other camera on a device held in the hand, and keeps the camera on if there turns out to be none', async () => {
+        const matchMedia = window.matchMedia
+        window.matchMedia = (query: string) => ({ ...matchMedia(query), matches: query === '(pointer: coarse)' })
+        try {
+          const { events, connection } = await callUnderWay()
+          getUserMedia.mockImplementationOnce(async () => {
+            const stream = new FakeMediaStream([track('video', { deviceId: 'cam-2', facingMode: 'environment' })])
+            opened.push(stream)
+            return stream
+          })
+
+          await events.click(await screen.findByRole('button', { name: 'Switch camera' }))
+
+          await waitFor(() => expect(connection.senders[1].track).toBe(opened[1].getVideoTracks()[0]))
+          expect(getUserMedia).toHaveBeenLastCalledWith({ video: { facingMode: { exact: 'environment' } } })
+          expect(remembered()).toEqual({ camera: 'cam-2' })
+
+          // Back again — and this browser will not say which camera is which: whichever it gives.
+          getUserMedia.mockRejectedValueOnce(denied('OverconstrainedError'))
+          await events.click(button('Switch camera'))
+          await waitFor(() => expect(connection.senders[1].track).toBe(opened[2].getVideoTracks()[0]))
+          expect(getUserMedia.mock.calls.slice(-2)).toEqual([[{ video: { facingMode: { exact: 'user' } } }], [{ video: true }]])
+        } finally {
+          window.matchMedia = matchMedia
+        }
+      })
+    })
+
+    it('says so when the connection is poor, and stops saying so when it is not', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const { connection } = await callUnderWay()
+      act(() => connection.become('connected'))
+      const counted = (received: number, lost: number) => {
+        connection.stats = [{ type: 'inbound-rtp', packetsReceived: received, packetsLost: lost }]
+      }
+
+      counted(1000, 0)
+      await act(() => vi.advanceTimersByTimeAsync(3000))
+      counted(2000, 300)
+      await act(() => vi.advanceTimersByTimeAsync(3000))
+      expect(callView()).not.toHaveTextContent('Poor connection')
+      counted(3000, 600)
+      await act(() => vi.advanceTimersByTimeAsync(3000))
+      expect(callView()).toHaveTextContent('Poor connection')
+
+      counted(4000, 600)
+      await act(() => vi.advanceTimersByTimeAsync(3000))
+      expect(callView()).not.toHaveTextContent('Poor connection')
     })
 
     it('learns on coming back that it was accepted meanwhile', async () => {

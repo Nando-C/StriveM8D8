@@ -1,3 +1,4 @@
+import type { Picture } from '@/lib/call/peer'
 import type { CallEndReason, CallIncomingPayload, CallMedia, NamedUser } from '@/types/protocol'
 
 // What the user's call is doing, as a pure state machine: nothing here touches a socket,
@@ -38,8 +39,16 @@ export interface CallState {
   /** The user made this call. */
   outgoing: boolean
   micOn: boolean
-  /** Whether this side sends picture. */
+  /** Whether this side's camera is on (it is what is sent, unless the screen is). */
   cameraOn: boolean
+  /** The camera in use looks away from the user (a phone's back camera): its picture is not shown mirrored. */
+  facingAway: boolean
+  /** This side sends its screen instead of its camera. */
+  sharing: boolean
+  /** What picture the other side says it sends; `null` until it has said. */
+  peerPicture: Picture | null
+  /** The path between the two devices is slow or losing a lot. */
+  poor: boolean
   minimised: boolean
   /** When the two devices first reached each other: what the timer counts from. */
   connectedAt: number | null
@@ -55,8 +64,8 @@ export interface CallState {
 
 export const initialCallState: CallState = {
   phase: 'idle', callId: null, peer: null, conversationId: null, media: 'audio', outgoing: false,
-  micOn: true, cameraOn: false, minimised: false, connectedAt: null, reconnecting: false, peerAway: false,
-  outcome: null, message: null,
+  micOn: true, cameraOn: false, facingAway: false, sharing: false, peerPicture: null, poor: false,
+  minimised: false, connectedAt: null, reconnecting: false, peerAway: false, outcome: null, message: null,
 }
 
 export type CallAction =
@@ -86,6 +95,12 @@ export type CallAction =
   /** There turned out to be no camera to send from. */
   | { type: 'cameraUnavailable' }
   | { type: 'minimised'; minimised: boolean }
+  /** Which way the camera now in use looks. */
+  | { type: 'facing'; away: boolean }
+  /** The screen is being sent, or no longer. */
+  | { type: 'sharing'; sharing: boolean }
+  | { type: 'peerPicture'; picture: Picture }
+  | { type: 'quality'; poor: boolean }
 
 /** In a call, or on the way into or out of one: no other can begin. */
 export const isEngaged = (state: CallState) => state.phase !== 'idle' && state.phase !== 'ended'
@@ -162,6 +177,18 @@ export const callReducer = (state: CallState, action: CallAction): CallState => 
 
     case 'minimised':
       return isEngaged(state) && state.minimised !== action.minimised ? { ...state, minimised: action.minimised } : state
+
+    case 'facing':
+      return isEngaged(state) && state.facingAway !== action.away ? { ...state, facingAway: action.away } : state
+
+    case 'sharing':
+      return isEngaged(state) && state.sharing !== action.sharing ? { ...state, sharing: action.sharing } : state
+
+    case 'peerPicture':
+      return isEngaged(state) && state.peerPicture !== action.picture ? { ...state, peerPicture: action.picture } : state
+
+    case 'quality':
+      return state.phase === 'active' && state.poor !== action.poor ? { ...state, poor: action.poor } : state
   }
 }
 
@@ -180,6 +207,10 @@ export const callStatusLine = (state: CallState): string => {
       return ''
   }
 }
+
+/** What picture this side is sending. */
+export const pictureSent = (state: Pick<CallState, 'sharing' | 'cameraOn'>): Picture =>
+  state.sharing ? 'screen' : state.cameraOn ? 'camera' : 'none'
 
 /** Why the call is over, in plain words. */
 export const callOutcomeLine = (state: Pick<CallState, 'outcome' | 'message' | 'peer'>): string => {
