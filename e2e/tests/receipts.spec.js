@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './test.js'
 import { bubbles, chat, chooseStatus, joinAsGuest, messageRow, openTab, person, send, tick, twoGuests } from './helpers.js'
 
 test('a message goes from one tick, to two when it reaches the other person, to coloured when they read it', async ({ browser }) => {

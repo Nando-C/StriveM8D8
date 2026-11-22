@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './test.js'
 import { accountMenu, joinAsGuest, openApp, openTab, people, person, signedInAs, unique } from './helpers.js'
 
 test('a guest gets in with a name alone, and the name is then theirs', async ({ browser }) => {
