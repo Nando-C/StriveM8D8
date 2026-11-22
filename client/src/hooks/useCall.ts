@@ -5,7 +5,7 @@ import {
 } from '@/lib/call/devices'
 import { callsSupported, createPeer, type Peer, type Picture } from '@/lib/call/peer'
 import { createQualityMeter, QUALITY_PERIOD_MS } from '@/lib/call/quality'
-import { flashTitle, startRingtone } from '@/lib/call/ringing'
+import { allowSound, flashTitle, startRingtone } from '@/lib/call/ringing'
 import { onLeaving } from '@/lib/leaving'
 import { listen } from '@/lib/listen'
 import { ask } from '@/lib/request'
@@ -318,13 +318,17 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
     return () => clearInterval(looking)
   }, [active])
 
-  // An incoming call makes itself heard, and seen from another tab.
-  const ringing = state.phase === 'incoming'
+  // The page may make sound once the user has touched it.
+  useEffect(() => allowSound(), [])
+
+  // A call makes itself heard at both ends while it rings, and an incoming one is seen from another tab.
+  // (At the caller's end only once the server has said that it rings.)
+  const ringing = state.phase === 'incoming' || (state.phase === 'outgoing' && state.callId !== null) ? state.phase : null
   const caller = state.peer?.username
   useEffect(() => {
-    if (!ringing) return
-    const silence = startRingtone()
-    const restore = flashTitle(`${caller ?? 'Someone'} is calling…`)
+    if (ringing === null) return
+    const silence = startRingtone(ringing)
+    const restore = ringing === 'incoming' ? flashTitle(`${caller ?? 'Someone'} is calling…`) : () => {}
     return () => {
       silence()
       restore()

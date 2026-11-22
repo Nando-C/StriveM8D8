@@ -654,3 +654,94 @@ describe('the tab’s title while a call rings', () => {
     expect(document.title).toBe('(3) Chat')
   })
 })
+
+describe('the sound of a call ringing', () => {
+  // (The browser's sound, as far as the ringtone uses it. Each test loads the module anew:
+  // it keeps one source of sound for the life of the page.)
+  class FakeAudioContext {
+    static made: FakeAudioContext[] = []
+    state = 'suspended'
+    currentTime = 0
+    destination = {}
+    notes: number[] = []
+    cut = false
+    constructor() {
+      FakeAudioContext.made.push(this)
+    }
+    resume = vi.fn(async () => {})
+    createGain() {
+      const ramp = vi.fn()
+      return { gain: { setValueAtTime: ramp, linearRampToValueAtTime: ramp }, connect: (to: unknown) => to, disconnect: () => void (this.cut = true) }
+    }
+    createOscillator() {
+      const frequency = { value: 0 }
+      return { frequency, connect: (to: unknown) => to, start: () => void this.notes.push(frequency.value), stop: () => {} }
+    }
+  }
+  const ringing = async () => {
+    vi.resetModules()
+    return import('@/lib/call/ringing')
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    FakeAudioContext.made = []
+    vi.stubGlobal('AudioContext', FakeAudioContext)
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('rings again and again until stopped, cutting the note it was on', async () => {
+    const { startRingtone } = await ringing()
+    const stop = startRingtone()
+    const [context] = FakeAudioContext.made
+    context.state = 'running'
+    vi.advanceTimersByTime(250)
+    expect(context.notes).toEqual([660, 880])
+    vi.advanceTimersByTime(2500)
+    expect(context.notes).toEqual([660, 880, 660, 880])
+    stop()
+    expect(context.cut).toBe(true)
+    vi.advanceTimersByTime(10_000)
+    expect(context.notes).toHaveLength(4)
+  })
+
+  it('lines nothing up while the page may not make sound, and starts within a moment of being touched', async () => {
+    const { allowSound, startRingtone } = await ringing()
+    const undo = allowSound()
+    const stop = startRingtone()
+    const [context] = FakeAudioContext.made
+    vi.advanceTimersByTime(10_000)
+    expect(context.notes).toEqual([])
+
+    context.resume.mockClear()
+    // (The browser wakes the sound only if asked while the page is being touched.)
+    document.dispatchEvent(new Event('pointerdown'))
+    expect(context.resume).toHaveBeenCalledTimes(1)
+    context.state = 'running'
+    vi.advanceTimersByTime(250)
+    expect(context.notes).toEqual([660, 880])
+    stop()
+    undo()
+  })
+
+  it('is one source of sound for every ring, and another tone at the caller’s end', async () => {
+    const { startRingtone } = await ringing()
+    startRingtone()()
+    const stop = startRingtone('outgoing')
+    expect(FakeAudioContext.made).toHaveLength(1)
+    const [context] = FakeAudioContext.made
+    context.state = 'running'
+    vi.advanceTimersByTime(250)
+    expect(context.notes).toEqual([440])
+    stop()
+  })
+
+  it('is silent, and harmless, in a browser that cannot make sound', async () => {
+    vi.stubGlobal('AudioContext', undefined)
+    const { startRingtone } = await ringing()
+    expect(() => startRingtone()()).not.toThrow()
+  })
+})

@@ -132,9 +132,24 @@ test('a call nobody answers is missed, and waits for them as something unread', 
     // (It rings for half a minute.)
     test.setTimeout(75_000)
     const [ana, ben] = await guests(browser, 'ana', 'ben')
+    // (Every note the page plays is counted, by its pitch.)
+    for (const { page } of [ana, ben]) {
+        await page.evaluate(() => {
+            const start = OscillatorNode.prototype.start
+            window.notesPlayed = []
+            OscillatorNode.prototype.start = function (...when) {
+                window.notesPlayed.push(this.frequency.value)
+                return start.apply(this, when)
+            }
+        })
+    }
+    const notes = page => page.evaluate(() => window.notesPlayed)
     await person(ana.page, ben.name).click()
     await ana.page.getByRole('button', { name: 'Voice call', exact: true }).click()
     await expect(incoming(ben.page, ana.name)).toBeVisible()
+    // It is heard at both ends: a ringtone where it rings, a quieter tone where it was made.
+    await expect.poll(() => notes(ben.page)).toEqual(expect.arrayContaining([660, 880]))
+    await expect.poll(() => notes(ana.page)).toContain(440)
     // While it rings, the tab says so to someone looking elsewhere.
     await expect.poll(() => ben.page.title()).toBe(`${ana.name} is calling…`)
 
@@ -145,6 +160,10 @@ test('a call nobody answers is missed, and waits for them as something unread', 
     await expect(chat(ben.page, ana.name)).toContainText('1 unread')
     await expect(bubbles(ana.page)).toHaveText(['Voice call · no answer'])
     await expect.poll(() => ben.page.title()).not.toContain('is calling')
+    // And is heard no more once it is over.
+    const [heardByAna, heardByBen] = [(await notes(ana.page)).length, (await notes(ben.page)).length]
+    await ana.page.waitForTimeout(3500)
+    expect([(await notes(ana.page)).length, (await notes(ben.page)).length]).toEqual([heardByAna, heardByBen])
     expect([...ana.page.consoleErrors, ...ben.page.consoleErrors]).toEqual([])
 })
 
