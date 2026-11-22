@@ -137,23 +137,29 @@ describe('calling someone', () => {
         expect((await invite(bob.socket, alice)).ok).toBe(true)
     })
 
-    it('is not something to read: it is no unread message, and moves nobody\'s place', async () => {
-        await start()
+    it('is unread, for the person called, only if they missed it', async () => {
+        await start({ callRingTimeoutMs: 150 })
         const alice = await guest('alice')
         const bob = await guest('bob')
         await send(alice.socket, messageTo(dm(alice, bob), 'are you there?'))
-        const described = nextEvent(bob.socket, 'conversationUpdated')
-        const invited = await invite(alice.socket, bob)
-        await described.catch(() => {})
+        const unreadFor = async person =>
+            (await login(await app.client(), { username: person.username, reservation: person.reservation })).conversations[0]
 
+        // One they declined: they were there. Only the message is unread.
+        const invited = await invite(alice.socket, bob)
         await ask(bob.socket, 'call:decline', { callId: invited.callId })
         await callLines(1)
+        const declined = await unreadFor(bob)
+        expect(declined.unreadCount).toBe(1)
+        expect(declined.lastMessage).toMatchObject({ kind: 'call', data: { media: 'video', outcome: 'declined' }, preview: '' })
 
-        const again = await login(await app.client(), { username: 'bob', reservation: bob.reservation })
-        const [conversation] = again.conversations
-        // The message is unread; the call is not counted with it.
-        expect(conversation.unreadCount).toBe(1)
-        expect(conversation.lastMessage).toMatchObject({ kind: 'call', data: { media: 'video', outcome: 'declined' }, preview: '' })
+        // One nobody answered: that is news to the person called — and never to the caller.
+        const ended = nextEvent(alice.socket, 'call:ended')
+        await invite(alice.socket, bob)
+        await ended
+        await callLines(2)
+        expect((await unreadFor(bob)).unreadCount).toBe(2)
+        expect((await unreadFor(alice)).unreadCount).toBe(0)
     })
 
     it('can be cancelled by the caller before it is answered', async () => {
@@ -567,6 +573,80 @@ describe('a connection lost during a call', () => {
         await settle()
 
         expect((await ask(phone, 'call:accept', { callId: invited.callId })).ok).toBe(true)
+    })
+})
+
+describe('hanging up as the page is closed', () => {
+    const leave = (body, headers = { 'Content-Type': 'text/plain;charset=UTF-8' }) =>
+        fetch(`${app.url}/call/leave`, { method: 'POST', headers, body: typeof body === 'string' ? body : JSON.stringify(body) })
+
+    it('ends the call for whoever holds a device\'s secret, without a socket', async () => {
+        await start({ callGraceMs: 5000 })
+        const alice = await guest('alice')
+        const bob = await guest('bob')
+        const { callId, calleeSecret } = await callUnderWay(alice, bob)
+        const ended = nextEvent(alice.socket, 'call:ended')
+        // (As when a page goes: the connection is cut, and nothing said over it got out.)
+        bob.socket.close()
+
+        const response = await leave({ callId, secret: calleeSecret })
+
+        expect(response.status).toBe(204)
+        expect(await ended).toEqual({ callId, reason: 'ended' })
+        expect((await callLines(1))[0].data.outcome).toBe('ended')
+    })
+
+    it('cancels a call that was still ringing', async () => {
+        await start()
+        const alice = await guest('alice')
+        const bob = await guest('bob')
+        const invited = await invite(alice.socket, bob)
+        const stopped = nextEvent(bob.socket, 'call:ended')
+
+        // (Sent as JSON, by something other than a browser's beacon, it is understood too.)
+        await leave({ callId: invited.callId, secret: invited.secret }, { 'Content-Type': 'application/json' })
+
+        expect(await stopped).toEqual({ callId: invited.callId, reason: 'cancelled' })
+    })
+
+    it.each([
+        ['the id alone', ({ callId }) => ({ callId })],
+        ['a secret that is not the call\'s', ({ callId }) => ({ callId, secret: 'x'.repeat(43) })],
+        ['a secret that is not text', ({ callId }) => ({ callId, secret: { $ne: '' } })],
+        ['another call\'s id', ({ calleeSecret }) => ({ callId: '00000000-0000-4000-8000-000000000000', secret: calleeSecret })],
+        ['nothing that can be read', () => 'callId=1&secret=2'],
+        ['nothing at all', () => ''],
+        ['far too much', ({ callId }) => ({ callId, secret: 'x'.repeat(5000) })],
+    ])('does nothing for %s, and says nothing about it', async (_what, body) => {
+        await start()
+        const alice = await guest('alice')
+        const bob = await guest('bob')
+        const call = await callUnderWay(alice, bob)
+        const ended = record(alice.socket, 'call:ended')
+
+        const response = await leave(body(call))
+
+        // (Too large is turned away before it is read; everything else gets the one answer.)
+        expect([204, 413]).toContain(response.status)
+        expect(await response.text()).not.toContain(call.callId)
+        await settle()
+        expect(ended).toEqual([])
+        expect(await ask(alice.socket, 'call:signal', { callId: call.callId, description: OFFER })).toEqual({ ok: true })
+    })
+
+    it('cannot be tried without end from one address', async () => {
+        await start()
+        const alice = await guest('alice')
+        const bob = await guest('bob')
+        const { callId, calleeSecret } = await callUnderWay(alice, bob)
+        const ended = record(alice.socket, 'call:ended')
+
+        for (let attempt = 0; attempt < 30; attempt += 1) await leave({ callId, secret: 'x'.repeat(43) })
+        // By now even the right secret is not listened to, from here.
+        await leave({ callId, secret: calleeSecret })
+
+        await settle()
+        expect(ended).toEqual([])
     })
 })
 

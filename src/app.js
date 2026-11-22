@@ -88,7 +88,7 @@ export const createApp = (options = {}) => {
         next(error)
     })
 
-    const { getOnlineUsers, runMaintenance, sweepPendingUploads, sweepExpiredFiles, hasherStats } =
+    const { getOnlineUsers, runMaintenance, sweepPendingUploads, sweepExpiredFiles, hasherStats, leaveCall } =
         registerSocketHandlers(io, settings, { storage })
 
     // Hourly housekeeping (idle guests, last-seen times). It never keeps the process
@@ -109,7 +109,7 @@ export const createApp = (options = {}) => {
         server.on('close', () => clearInterval(sweeping))
     }
 
-    app.use(createRouter({ getOnlineUsers, settings }))
+    app.use(createRouter({ getOnlineUsers, settings, leaveCall }))
 
     app.use((req, res, next) => next(createError(404)))
 

@@ -77,5 +77,6 @@ export const registerSocketHandlers = (io, settings, { storage = null } = {}) =>
         sweepPendingUploads: attachments.sweepPending,
         sweepExpiredFiles: attachments.sweepExpired,
         hasherStats: session.hasherStats,
+        leaveCall: calls.leave,
     }
 }

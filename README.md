@@ -20,7 +20,8 @@ A real-time, one-to-one chat application: a Node.js + Socket.IO server with Mong
 - **Status that means something.** Online, away (also set by itself after five minutes without activity, and only when *every* one of your devices is idle), do not disturb, and invisible — plus a line of your own that can clear itself after a while. Invisible is real: to everyone else you are indistinguishable from someone who is not connected, yet you can read and write as usual.
 - **Group chats.** Up to twenty people, made in two clicks. Each message says who wrote it, the ticks say when *everyone* has it — press them to see who has seen it — and membership is handled the way people expect: anyone can add or leave, the creator can rename and remove, someone added later sees the conversation from that point on, and someone removed loses it at once.
 - **File sharing.** Attach, drop or paste files into a message: they upload straight from the browser to private storage with a progress bar, and arrive as a picture grid, a video or audio player, or a download card. Pictures open full size with the arrow keys stepping through the conversation's media; a message, and its files, can be deleted by whoever sent it.
-- **780 automated tests**, 32 of them driving real browsers against the built app, run on every push by GitHub Actions.
+- **Voice and video calls.** Call the person you are talking to from the conversation's header. The call goes straight from one browser to the other; it rings every device they have, can be answered with or without picture, shrinks to a corner so you can keep chatting, and survives a dropped connection. Whatever becomes of it — answered, declined, missed — is a line in the conversation, and a missed call waits as unread.
+- **882 automated tests**, 37 of them driving real browsers against the built app, run on every push by GitHub Actions.
 
 ## Tech stack
 
@@ -164,7 +165,7 @@ Three suites, each testing what the others cannot.
 
 | | Server | Client |
 |---|---|---|
-| Tests | 445, in 20 files | 303, in 15 files |
+| Tests | 455, in 20 files | 390, in 16 files |
 | Approach | Real Socket.IO clients against a fresh server per test, with an in-memory MongoDB | The real app rendered against a fake socket; each test plays the server |
 | Lint | oxlint | oxlint, including React hooks rules |
 | Types | — | TypeScript, checked on every build |
@@ -187,6 +188,7 @@ Three suites, each testing what the others cannot.
   - accounts on two browsers with remote sign-out, recovery and deletion;
   - a guest becoming an account;
   - a group of four: made, talked in, joined later (and seeing nothing earlier), renamed, someone removed, the admin leaving and the next taking over;
+  - a voice and a video call between two browsers with a made-up camera and microphone — picture and sound really arriving on both sides — hung up, declined, missed, ended by leaving the page, and refused to someone who is offline or not to be disturbed;
   - phone-sized screens.
 
   A second, smaller run uses the private-deployment settings: no guest path, sign-up refused without an invitation, the owner's bootstrap link, an invitation link that works exactly once, and writing to a member who is offline. The suite is run twice in a row before it is trusted, and has no retries: a test that passes on the second attempt is a flaky test.
@@ -530,7 +532,7 @@ The shapes used above:
 //  lastMessage: { id, from, fromName, preview, timestamp, kind?, data?, attachments? } | null
 //           null also when the last message is from before you joined; kind and data only when it is not text;
 //           attachments: how many files it carries, when it carries any (preview is "" for files alone)
-//  unreadCount: messages from others after your read position, at most 99 (system, call and deleted messages are not counted)
+//  unreadCount: messages from others after your read position, at most 99 (system and deleted messages are not counted; of calls, only one you missed)
 ```
 
 `timestamp` is milliseconds since the Unix epoch. The same message has the same `id` and `timestamp` in the live `message` event, in the sender's acknowledgement, and in `history`. A member marked `gone` no longer exists: the conversation is kept for the other person, who can read it but not add to it.
@@ -555,18 +557,18 @@ Failure messages: `File sharing is not available here`, `Create an account to se
 
 ### Calls
 
-Between two people, sound or sound and picture. The media never passes through this server: the two browsers connect to each other (WebRTC), and what travels over the socket is who is calling whom and what the two browsers say to find a path between them. `loggedin.features.calls` says the server does this. The events are in place and tested; the screens that use them are the next step, so the live app does not place calls yet.
+Between two people, sound or sound and picture. The media never passes through this server: the two browsers connect to each other (WebRTC), and what travels over the socket is who is calling whom and what the two browsers say to find a path between them. `loggedin.features.calls` says the server does this.
 
 1. **`call:invite`** `{ to, media }` — `to` is a `userId`, `media` is `"audio"` or `"video"`. Whoever may write to someone may call them. Every connection of the person called receives `call:incoming`; the caller's acknowledgement carries the `callId` and a `secret`.
 2. **`call:accept`** from any one of the called person's connections takes the call: its acknowledgement carries that device's own `secret`, the caller receives `call:accepted`, and the other connections stop ringing (`call:ended`, `answered-elsewhere`). `call:decline` refuses it; the caller can `call:cancel` before it is answered; unanswered after 30 seconds it is `missed`.
 3. **`call:config`** gives a device that is in the call its `iceServers`: public STUN and, where `TURN_KEY_ID` and `TURN_API_TOKEN` are set, relay credentials made for that call.
 4. **`call:signal`** carries one thing to the other device and to nobody else: a `description` (`{ type, sdp }`, `type` one of `offer`, `answer`, `pranswer`, `rollback`, at most 48,000 characters) or a `candidate` (`{ candidate, sdpMid, sdpMLineIndex, usernameFragment }`). Only those fields are passed on.
-5. **`call:end`** hangs up from either side, in whatever state the call is. A call ends by itself after 60 minutes.
+5. **`call:end`** hangs up from either side, in whatever state the call is. A call ends by itself after 60 minutes. A page that is being closed or reloaded hangs up too — over the socket and, because a browser does not promise to deliver that from a page on its way out, with a beacon to `POST /call/leave` carrying the device's `secret`.
 
 - **A call belongs to two devices, not to two connections.** If a device's connection drops without `call:end`, the other is told (`call:peer`) and the call waits 15 seconds; a new connection logged in as the same user takes it back with `call:rejoin` and the `secret`. Knowing the `callId` is not enough — the user's other devices know it too. After 15 seconds the call ends as `failed`.
 - **One call at a time.** Someone ringing or in a call is `busy`; a caller already in one is refused (`reason: "in-call"`).
 - **When the call cannot begin**, the acknowledgement of `call:invite` says why in `reason`: `unavailable` (not connected), `dnd` (they asked not to be disturbed: nothing rings), or `busy`. **Someone invisible is answered for exactly as someone who is not connected.**
-- **Every call leaves a line in the conversation**: a message of `kind: "call"`, written as the caller's, whose `data` is `{ media, outcome, durationMs }` — `outcome` being how it ended (`ended`, `declined`, `cancelled`, `missed`, `failed`) or why it never rang (`unavailable`, `dnd`, `busy`). So the person called finds a missed call there, whether they were away, invisible or busy. It is not counted as unread and cannot be deleted. The client puts it into words for whoever is reading.
+- **Every call leaves a line in the conversation**: a message of `kind: "call"`, written as the caller's, whose `data` is `{ media, outcome, durationMs }` — `outcome` being how it ended (`ended`, `declined`, `cancelled`, `missed`, `failed`) or why it never rang (`unavailable`, `dnd`, `busy`). So the person called finds a missed call there, whether they were away, invisible or busy. A call they missed counts as unread for them, like a message; any other does not. The line cannot be deleted. The client puts it into words for whoever is reading.
 - **The demo bot declines.**
 
 Failure messages: `Invalid call`, `Unknown conversation`, `This person is no longer here`, `You are already in a call`, `They cannot be reached right now`, `They have asked not to be disturbed`, `They are in another call`, `Unknown call` (one answer for a call that does not exist, is somebody else's, or is not this device's), `Answered on another device`, `Invalid signal`, `The call has not been answered`, `The other side is not connected right now`, `Not logged in`, `Could not be saved`, `Too many requests, slow down`.
@@ -590,6 +592,7 @@ With `DEMO_BOT=true` the server adds a user called `demo-bot` who is always onli
 | `GET` | `/config` | `{ signup: "open" \| "invite" \| "closed", guests: boolean, protocol: 2 }` — which ways in this deployment offers |
 | `GET` | `/health` | `{ status: "ok", db: "up" \| "down" }` — always `200` while the process is alive, including when the database is down |
 | `PUT`, `GET` | `/files/:token` | Only with `FILE_STORAGE=local`: where a file is uploaded to and fetched from in development. The token is signed by the server, names one file and one operation, and expires in minutes; `GET` honours `Range`. With `s3` these addresses are the bucket's own. |
+| `POST` | `/call/leave` | Body `{ callId, secret }` as text. Hangs up the call for the device holding that secret; always `204`, whatever was sent. What a page sends (as a beacon) while it is being closed, when nothing said over the socket is sure to get out. 30 per minute per client address. |
 
 Clients do not need `/online-users` — presence arrives over the socket, and the client in this repository never calls it — but it is handy for inspection. `/config` is the one thing that client fetches over HTTP: it has to know which ways in to offer before anyone is logged in. Unknown routes return `404` with a JSON body.
 
@@ -604,7 +607,8 @@ Clients do not need `/online-users` — presence arrives over the socket, and th
 
 ### What would come next
 
-- **Calls in the interface.** The server side of one-to-one audio and video calls is done (see Calls); the screens are next.
+- **More in a call**: sharing a screen, choosing which camera and microphone to use, and a hint about the quality of the connection.
+- **Group calls**, which need a media server: a call here is between two browsers.
 - **Horizontal scaling**, moving presence into Redis and using Socket.IO's Redis adapter.
 - **More browsers.** The end-to-end suite runs in Chromium only; Firefox and WebKit would be a configuration change and a longer run.
 

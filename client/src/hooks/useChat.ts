@@ -6,6 +6,7 @@ import {
 import { chatReducer, initialChatState } from '@/lib/chatState'
 import { directConversationId } from '@/lib/conversationId'
 import { giveBackUploads, uploadsCanBeGivenBack } from '@/lib/giveBack'
+import { sayFarewells } from '@/lib/leaving'
 import { listen } from '@/lib/listen'
 import { UNCONFIRMED } from '@/lib/messages'
 import { useIdleReporter } from '@/lib/useIdleReporter'
@@ -129,6 +130,8 @@ export const useChat = () => {
       if (!socket.connected) return
       // Whatever was read in the last second and not yet reported goes out first.
       readReporter.flush()
+      // (And a call is hung up, rather than left to time out on the other person.)
+      sayFarewells()
       leftOnPageHide = true
       socket.disconnect()
     }
@@ -322,6 +325,8 @@ export const useChat = () => {
     kind: state.kind,
     admin: state.admin,
     features: state.features,
+    /** Goes up with each login: a new connection, on which what was under way is taken up again. */
+    loginCount: state.loginCount,
     ownStatus: state.ownStatus,
     loginError: state.loginError,
     chats,

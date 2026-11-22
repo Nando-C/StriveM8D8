@@ -43,6 +43,8 @@ const RATE_LIMITS = {
     // Candidates arrive in bursts: a dozen or two per description, from each side.
     signal: { limit: 200, windowMs: 10_000 },
 }
+// Per client address: hanging up over HTTP, which no socket's limit covers.
+const LEAVE_LIMIT = { limit: 30, windowMs: 60_000 }
 
 const INVALID_CALL = 'Invalid call'
 // One answer for a call that does not exist, is somebody else's, or is not this device's.
@@ -287,6 +289,20 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
         }
     }
 
+    /**
+     * Hanging up without a socket: what a page sends as it is closed or reloaded, when
+     * the browser no longer promises that anything said over the socket gets out
+     * (`navigator.sendBeacon`). Whoever holds a device's secret for the call is that
+     * device. Says nothing back — not even whether there was such a call.
+     */
+    const leave = ({ callId, secret, address }) => {
+        if (!rateLimiter.allow(`address:${address}`, 'call:leave', LEAVE_LIMIT)) return
+        const call = typeof callId === 'string' && CALL_ID.test(callId) ? calls.get(callId) : undefined
+        if (call === undefined) return
+        if (![call.caller, call.callee].some(own => sameSecret(secret, own.secret))) return
+        finish(call, call.state === 'ringing' ? 'cancelled' : 'ended')
+    }
+
     /** A device has just logged in: if its user is being called, it rings too. */
     const socketJoined = (socket, user) => {
         const call = byUser.get(user.userId)
@@ -310,5 +326,5 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
         on('call:signal', 'signal', signal)
     }
 
-    return { registerOn, socketGone, socketJoined, count: () => calls.size }
+    return { registerOn, socketGone, socketJoined, leave, count: () => calls.size }
 }

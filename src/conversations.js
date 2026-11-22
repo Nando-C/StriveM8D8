@@ -14,6 +14,10 @@ const PREVIEW_LENGTH = 80
 // Kinds of message that are not something to read: what happened to a group, a call
 // that took place (or did not), and what is left of a message its author deleted.
 export const NOT_TO_READ = ['system', 'call', 'deleted']
+/** How a call came out when the person called never got to answer it: that one is news to them. */
+export const MISSED_CALL_OUTCOMES = ['missed', 'cancelled', 'unavailable', 'dnd', 'busy']
+// What counts as unread, among what others wrote: what was said, and a call that was missed.
+const TO_READ = { $or: [{ kind: { $nin: NOT_TO_READ } }, { kind: 'call', 'data.outcome': { $in: MISSED_CALL_OUTCOMES } }] }
 
 const USER_ID = /^[A-Za-z0-9-]{1,64}$/
 
@@ -66,7 +70,8 @@ export const joinedBefore = (member, position) => comparePositions(position, pla
 const seesLastMessage = (conversation, member) => joinedBefore(member, lastPosition(conversation.lastMessage))
 
 // How many messages from other people the member has not read, up to 100. What happened
-// to the conversation itself (someone was added, it was renamed) is not a message to read.
+// to the conversation itself (someone was added, it was renamed) is not a message to read;
+// nor is a call they took part in — but one they missed is.
 const unreadCountFor = async (conversation, member) => {
     const from = laterPosition(plainPosition(member.readUpTo), plainPosition(member.joinedAfter))
     // Most conversations, most of the time, have nothing new in them — and the conversation
@@ -74,7 +79,7 @@ const unreadCountFor = async (conversation, member) => {
     // Only the ones that might have something unread cost a query.
     if (comparePositions(lastPosition(conversation.lastMessage), from) <= 0) return 0
     const count = await Message.countDocuments(
-        { conversationKey: conversation._id, from: { $ne: member.userId }, kind: { $nin: NOT_TO_READ }, ...afterPosition(from) },
+        { conversationKey: conversation._id, from: { $ne: member.userId }, $and: [TO_READ, afterPosition(from)] },
         { limit: MAX_UNREAD_SHOWN + 1 },
     )
     return Math.min(count, MAX_UNREAD_SHOWN)

@@ -1,6 +1,8 @@
 import { useState, type DragEvent, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { ArrowLeft, Info, MessagesSquare } from 'lucide-react'
+import { CallButtons } from '@/components/call/CallButtons'
+import { CallLayer } from '@/components/call/CallLayer'
 import { ConnectionBanner } from '@/components/ConnectionBanner'
 import { EntryScreen } from '@/components/EntryScreen'
 import { GroupAvatar } from '@/components/groups/GroupAvatar'
@@ -11,9 +13,11 @@ import { MessageList } from '@/components/MessageList'
 import { Sidebar } from '@/components/Sidebar'
 import { Button } from '@/components/ui/button'
 import { UserAvatar } from '@/components/UserAvatar'
+import { useCall } from '@/hooks/useCall'
 import { useChat } from '@/hooks/useChat'
 import { useDraftFiles } from '@/hooks/useDraftFiles'
-import type { Candidate, OpenGroup } from '@/lib/chatSelectors'
+import { isEngaged } from '@/lib/call/callState'
+import type { Candidate, OpenConversation, OpenGroup } from '@/lib/chatSelectors'
 import { fade } from '@/lib/motion'
 import { useServerConfig, type ServerConfig } from '@/lib/serverConfig'
 import { presenceLineOf } from '@/lib/status'
@@ -96,6 +100,8 @@ function GroupDetailsButton(props: GroupDetailsButtonProps) {
 function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat>; config: ServerConfig; username: string }) {
   const [creatingGroup, setCreatingGroup] = useState(false)
   const online = chat.connected && chat.phase === 'loggedIn'
+  // One call for the whole app: it goes on whichever conversation is open.
+  const call = useCall({ online, loginCount: chat.loginCount })
 
   const open = chat.open
   const blockedReason = !chat.connected
@@ -211,6 +217,12 @@ function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat
                 {open.group !== null && (
                   <GroupDetailsButton conversationId={open.id} group={open.group} candidates={chat.candidates} online={online} />
                 )}
+                {open.counterpart !== null && chat.features.calls === true && (
+                  <CallButtons
+                    unavailable={whyNotCall(open, { online, supported: call.supported, engaged: isEngaged(call.state) })}
+                    onCall={media => void call.start({ userId: open.counterpart!.userId, username: open.title }, media, open.id)}
+                  />
+                )}
               </header>
               <ConversationBody
                 key={open.id}
@@ -245,6 +257,7 @@ function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat
           )}
         </main>
       </div>
+      <CallLayer call={call} />
       {creatingGroup && (
         <NewGroupDialog
           candidates={chat.candidates}
@@ -255,6 +268,17 @@ function ChatShell({ chat, config, username }: { chat: ReturnType<typeof useChat
     </div>
   )
 }
+
+// Why the person a conversation is with cannot be called right now, or null if they can.
+// (Someone invisible looks offline, here as everywhere.)
+const whyNotCall = (open: OpenConversation, own: { online: boolean; supported: boolean; engaged: boolean }): string | null =>
+  !own.supported ? 'Calls are not supported in this browser'
+    : !own.online ? 'You are not connected'
+      : own.engaged ? 'You are already in a call'
+        : open.counterpart?.gone ? `${open.title} is no longer here`
+          : open.presence === 'offline' ? `${open.title} is offline`
+            : open.presence === 'dnd' ? `${open.title} has asked not to be disturbed`
+              : null
 
 interface ConversationBodyProps {
   conversationId: string

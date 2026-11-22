@@ -12,7 +12,7 @@ import type { Thread } from '@/lib/chatState'
 import { isMedia } from '@/lib/files'
 import { describeCall } from '@/lib/callEvents'
 import { describeGroupEvent } from '@/lib/groupEvents'
-import { deletedLine, isSaid, type LocalMessage } from '@/lib/messages'
+import { deletedLine, isSaid, isToRead, type LocalMessage } from '@/lib/messages'
 import { comparePositions, positionOf } from '@/lib/positions'
 import { ask } from '@/lib/request'
 import { useRequest } from '@/lib/useRequest'
@@ -297,7 +297,7 @@ export function MessageList({
       ? undefined
       : messages.find(
           message =>
-            !message.own && isSaid(message) && message.id !== null && comparePositions(positionOf({ id: message.id, timestamp: message.timestamp }), unreadFrom) > 0,
+            !message.own && isToRead(message) && message.id !== null && comparePositions(positionOf({ id: message.id, timestamp: message.timestamp }), unreadFrom) > 0,
         )?.key
 
   const viewport = () => root.current?.querySelector<HTMLElement>('[data-slot=scroll-area-viewport]') ?? null

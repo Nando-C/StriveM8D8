@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import express, { Router } from 'express'
 import createError from 'http-errors'
 import { clientAddress } from './clientAddress.js'
 import { isDatabaseReady } from './db.js'
@@ -6,7 +6,7 @@ import { isDatabaseReady } from './db.js'
 /** The socket protocol's version. A client built for another one should say so, not misbehave. */
 export const PROTOCOL_VERSION = 2
 
-export const createRouter = ({ getOnlineUsers, settings }) => {
+export const createRouter = ({ getOnlineUsers, settings, leaveCall = () => {} }) => {
     const router = Router()
 
     // Where guests are switched off the deployment is private, and this would publish
@@ -44,6 +44,21 @@ export const createRouter = ({ getOnlineUsers, settings }) => {
             })
         })
     }
+
+    // A page that is being closed hangs up its call here: a browser delivers a beacon
+    // sent while unloading, and promises nothing of the kind for a socket. The body is
+    // `{ callId, secret }` as text (which needs no permission asked first); the secret
+    // is what makes it the device's own. Always the same answer, whatever was sent.
+    router.post('/call/leave', express.text({ type: () => true, limit: 500 }), (req, res) => {
+        try {
+            const { callId, secret } = typeof req.body === 'string' ? JSON.parse(req.body) : req.body
+            const address = clientAddress({ remoteAddress: req.socket.remoteAddress, forwardedFor: req.headers['x-forwarded-for'] }, settings.trustedProxyHops)
+            leaveCall({ callId, secret, address })
+        } catch {
+            // Not something this route understands: nothing to do, and nothing to say.
+        }
+        res.status(204).end()
+    })
 
     // For hosting platforms and uptime checks. Always 200 while the process is alive:
     // the server is designed to stay up without its database, and to say so.
