@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './test.js'
 import {
     bubbles, chat, chats, composer, joinAsGuest, log, SAVED, messageRow, openApp, openTab, person, send, signedInAs, twoGuests, unique,
 } from './helpers.js'

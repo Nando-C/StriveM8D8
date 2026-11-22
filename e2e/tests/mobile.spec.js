@@ -1,4 +1,4 @@
-import { devices, expect, test } from '@playwright/test'
+import { devices, expect, test } from './test.js'
 import { bubbles, chat, chats, composer, joinAsGuest, menuButton, openApp, people, person, send, signedInAs, unique } from './helpers.js'
 
 // The same app on a phone: the list and the conversation are separate screens.

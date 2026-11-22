@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './test.js'
 import { BOOTSTRAP_CODE, OWNER } from '../profiles.js'
 import {
     accountMenu, bubbles, chat, fillSignUp, menuButton, openApp, openTab, people, person, send, signIn, signedInAs, unique,

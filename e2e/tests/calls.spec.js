@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './test.js'
 import { bubbles, chat, guests, person } from './helpers.js'
 
 // Calls, with Chromium's made-up camera and microphone (see playwright.config.js): two
