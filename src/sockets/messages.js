@@ -238,8 +238,8 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter, att
                 { returnDocument: 'after' },
             ).lean()
             // Whoever wrote a message has read everything up to it. (Not so for a change
-            // to a group: it can be made from the details panel without looking at a thing.)
-            if (kind !== 'system') await advance(conversation._id, author.userId, 'readUpTo', position)
+            // to a group, or a call: either can happen without their looking at a thing.)
+            if (!NOT_TO_READ.includes(kind)) await advance(conversation._id, author.userId, 'readUpTo', position)
             // The bot has no device to acknowledge anything: what is said to it has reached it.
             if (settings.demoBot && author.userId !== BOT.id && memberOf(conversation, BOT.id) && conversation.kind === 'direct') {
                 await advance(conversation._id, BOT.id, 'deliveredUpTo', position)
@@ -303,6 +303,23 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter, att
         // (Nothing has been awaited since `current` was read.)
         if (describe === 'after') await tellEveryone(current)
         return saved
+    }
+
+    /**
+     * Writes something in a direct conversation in `author`'s name that no client sent
+     * (the line a call leaves): the conversation is begun if this is the first thing in
+     * it. Resolves to the saved message, or null if `author` may not write there (any more).
+     */
+    const say = async (conversationId, author, content) => {
+        let conversation = await Conversation.findById(conversationId).lean()
+        let created = false
+        if (!conversation) {
+            const opened = await openDirect(conversationId, author)
+            if (opened.refusal) return null
+            ;({ conversation, created } = opened)
+        }
+        if (refusalIn(conversation, author)) return null
+        return post(conversation, author, content, { describe: created ? 'after' : null })
     }
 
     // The bot answers a moment later, in the same conversation, like anyone else would.
@@ -402,13 +419,14 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter, att
         })
 
         socket.on('getHistory', async payload => {
-            const conversationId = isObject(payload) && typeof payload.conversationId === 'string'
+            // (Said back in every answer, so only if it is no longer than an id can be.)
+            const conversationId = isObject(payload) && isNonEmptyString(payload.conversationId, MAX_CONVERSATION_ID_LENGTH)
                 ? payload.conversationId
                 : null
             const fail = message => socket.emit('historyError', { conversationId, message })
 
             if (!allowed(socket, 'getHistory')) return fail(SLOW_DOWN)
-            if (conversationId === null || conversationId.length > MAX_CONVERSATION_ID_LENGTH) return fail('Invalid conversation')
+            if (conversationId === null) return fail('Invalid conversation')
             const before = payload.before ?? null
             if (before !== null && !isPosition(before)) return fail('Invalid position')
 
@@ -583,5 +601,5 @@ export const createMessageHandlers = ({ io, presence, settings, rateLimiter, att
         }
     }
 
-    return { registerOn, identityRemoved, listDelivered, visibleAgain, post, tellMembers, refusalToWrite }
+    return { registerOn, identityRemoved, listDelivered, visibleAgain, post, say, tellMembers, refusalToWrite }
 }

@@ -31,6 +31,9 @@ export default defineConfig({
     expect: { timeout: 7000 },
     use: {
         ...devices['Desktop Chrome'],
+        // Calls: a made-up camera and microphone (a moving test picture and a beep), and
+        // no question asked about using them.
+        launchOptions: { args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] },
         // Kept only when something fails: the trace is what explains a failure in CI.
         trace: 'retain-on-failure',
         screenshot: 'only-on-failure',

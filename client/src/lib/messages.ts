@@ -44,8 +44,16 @@ export const previewOf = (text: string) => {
   return flat.length > PREVIEW_LENGTH ? `${flat.slice(0, PREVIEW_LENGTH)}…` : flat
 }
 
-/** Whether a message is something somebody said: not a line about a group, not what is left of a deleted one. */
-export const isSaid = (message: Pick<LocalMessage, 'kind'>) => message.kind !== 'system' && message.kind !== 'deleted'
+/** Whether a message is something somebody said: not a line about a group or a call, not what is left of a deleted one. */
+export const isSaid = (message: Pick<LocalMessage, 'kind'>) => message.kind === 'text'
+
+const MISSED_CALL_OUTCOMES: readonly unknown[] = ['missed', 'cancelled', 'unavailable', 'dnd', 'busy']
+
+/** Whether a message from someone else is news to the user: something said, or a call they missed. (As the server counts.) */
+export const isToRead = (message: Pick<LocalMessage, 'kind' | 'data'>) =>
+  isSaid(message) ||
+  (message.kind === 'call' && typeof message.data === 'object' && message.data !== null &&
+    MISSED_CALL_OUTCOMES.includes((message.data as { outcome?: unknown }).outcome))
 
 /** What stands where a deleted message was. */
 export const deletedLine = (message: Pick<LocalMessage, 'own' | 'fromName'>) =>

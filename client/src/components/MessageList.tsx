@@ -10,8 +10,9 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { UserAvatar } from '@/components/UserAvatar'
 import type { Thread } from '@/lib/chatState'
 import { isMedia } from '@/lib/files'
+import { describeCall } from '@/lib/callEvents'
 import { describeGroupEvent } from '@/lib/groupEvents'
-import { deletedLine, isSaid, type LocalMessage } from '@/lib/messages'
+import { deletedLine, isSaid, isToRead, type LocalMessage } from '@/lib/messages'
 import { comparePositions, positionOf } from '@/lib/positions'
 import { ask } from '@/lib/request'
 import { useRequest } from '@/lib/useRequest'
@@ -296,7 +297,7 @@ export function MessageList({
       ? undefined
       : messages.find(
           message =>
-            !message.own && isSaid(message) && message.id !== null && comparePositions(positionOf({ id: message.id, timestamp: message.timestamp }), unreadFrom) > 0,
+            !message.own && isToRead(message) && message.id !== null && comparePositions(positionOf({ id: message.id, timestamp: message.timestamp }), unreadFrom) > 0,
         )?.key
 
   const viewport = () => root.current?.querySelector<HTMLElement>('[data-slot=scroll-area-viewport]') ?? null
@@ -354,7 +355,7 @@ export function MessageList({
         const previous = messages[index - 1]
         const startsDay = previous === undefined || !isSameDay(previous.timestamp, message.timestamp)
         // A line across the middle rather than anybody's bubble: what happened to a
-        // group, and what is left of a message its author deleted.
+        // group, a call, and what is left of a message its author deleted.
         const system = !isSaid(message)
         const sameSender =
           !startsDay && previous !== undefined && isSaid(previous) && previous.from === message.from
@@ -366,7 +367,10 @@ export function MessageList({
           message,
           startsDay,
           tick: message.own ? tickOf(message, summary, ownUserId) : ('sent' as const),
-          line: message.kind === 'deleted' ? deletedLine(message) : system ? describeGroupEvent(message.data, ownUserId) : undefined,
+          line: !system ? undefined
+            : message.kind === 'deleted' ? deletedLine(message)
+              : message.kind === 'call' ? describeCall(message.data, message.own)
+                : describeGroupEvent(message.data, ownUserId),
           sender: !group || system || message.own ? undefined : sameSender ? ('continued' as const) : ('named' as const),
           seenBy: receipts?.seenBy.join(', '),
           deliveredTo: receipts?.deliveredTo.join(', '),

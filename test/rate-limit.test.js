@@ -122,11 +122,32 @@ describe('payload size cap', () => {
         await login(alice, { username: 'alice' })
         const closed = nextEvent(alice, 'disconnect')
 
-        alice.emit('sendmessage', messageTo('anyone', 'x'.repeat(50_000)))
+        alice.emit('sendmessage', messageTo('anyone', 'x'.repeat(100_000)))
 
         await closed
         expect(await Message.countDocuments()).toBe(0)
         await expect.poll(async () => (await onlineUsers(app)).map(user => user.username)).toEqual(['demo-bot'])
+    })
+})
+
+describe('what is still checked under the larger cap', () => {
+    it('refuses a message longer than a message may be, without closing the connection', async () => {
+        const alice = await app.client()
+        const bob = await app.client()
+        const a = await login(alice, { username: 'alice' })
+        const b = await login(bob, { username: 'bob' })
+
+        // (Under the cap now that it has room for a call's session description.)
+        expect(await send(alice, messageTo(dm(a, b), 'x'.repeat(20_000)))).toEqual({ ok: false, message: 'Invalid message' })
+        expect(alice.connected).toBe(true)
+    })
+
+    it('does not say a long conversation id back', async () => {
+        const alice = await app.client()
+        await login(alice, { username: 'alice' })
+
+        expect(await getHistory(alice, { conversationId: 'x'.repeat(20_000) }))
+            .toEqual({ ok: false, conversationId: null, message: 'Invalid conversation' })
     })
 })
 

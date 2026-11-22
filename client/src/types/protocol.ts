@@ -217,9 +217,78 @@ export type StorageUsageAck = { ok: true; usedBytes: number; maxBytes: number; f
 export interface Features {
   /** Whether files can be sent at all. (Sending them is for accounts; anyone can receive them.) */
   files: boolean
+  /** Whether this server sets up calls. (Absent from a server older than they are.) */
+  calls?: boolean
   maxFileBytes?: number
   maxFilesPerMessage?: number
 }
+
+// ---------- calls
+//
+// The sound and pictures of a call go from one browser to the other; what goes through
+// the server is who is calling whom, and what the two browsers say to set it up.
+
+export type CallMedia = 'audio' | 'video'
+
+/** How a call came out, as the line it leaves in the conversation records it (`kind: 'call'`, in `data`). */
+export type CallOutcome = 'ended' | 'declined' | 'cancelled' | 'missed' | 'busy' | 'dnd' | 'unavailable' | 'failed'
+
+export interface CallRecord {
+  media: CallMedia
+  outcome: CallOutcome
+  /** How long the two were in it; 0 if it was never answered. */
+  durationMs: number
+}
+
+/** Why a call is over. `answered-elsewhere`: on another of the user's devices — it goes on there. */
+export type CallEndReason = Exclude<CallOutcome, 'busy' | 'dnd' | 'unavailable'> | 'answered-elsewhere'
+
+/** Someone is calling. Sent to every device of the person called. */
+export interface CallIncomingPayload {
+  callId: string
+  conversationId: string
+  media: CallMedia
+  from: NamedUser
+}
+
+export interface CallEndedPayload {
+  callId: string
+  reason: CallEndReason
+}
+
+/** What one browser tells the other to set the call up: a session description, or a candidate path. */
+export type CallSignal =
+  | { description: { type: 'offer' | 'answer' | 'pranswer' | 'rollback'; sdp: string } }
+  | { candidate: { candidate: string; sdpMid: string | null; sdpMLineIndex: number | null; usernameFragment: string | null } }
+
+export type CallSignalPayload = { callId: string } & CallSignal
+
+/** A server to find a path through, as `RTCPeerConnection` takes it. `username` and `credential`: a relay's, good for one call. */
+export interface IceServer {
+  urls: string[]
+  username?: string
+  credential?: string
+}
+
+/**
+ * The answer to `call:invite`. `secret` is this device's hold on the call: kept in memory
+ * only, and presented (`call:rejoin`) to take the call back after a dropped connection.
+ * A refusal may say why in `reason`: the other person is `unavailable`, `busy`, or asked
+ * not to be disturbed (`dnd`), or the user is in a call already (`in-call`).
+ */
+export type CallInviteAck =
+  | { ok: true; callId: string; secret: string }
+  | { ok: false; message: string; reason?: 'unavailable' | 'busy' | 'dnd' | 'in-call' }
+
+/** `reason: 'answered-elsewhere'`: another of the user's devices took it first. */
+export type CallAcceptAck = { ok: true; secret: string } | { ok: false; message: string; reason?: 'answered-elsewhere' }
+
+export type CallRejoinAck =
+  | { ok: true; state: 'ringing' | 'active'; media: CallMedia; peerConnected: boolean }
+  | { ok: false; message: string }
+
+/** `reason: 'peer-lost'`: the other device's connection is down just now; it may be back. */
+export type CallSignalAck = { ok: true } | { ok: false; message: string; reason?: 'peer-lost' }
 
 export interface MessageDeletedPayload {
   conversationId: string
@@ -440,6 +509,14 @@ export interface ServerToClientEvents {
   conversationRemoved: (payload: ConversationRemovedPayload) => void
   /** A message's author deleted it: what is left is a marker (`kind: 'deleted'`). */
   messageDeleted: (payload: MessageDeletedPayload) => void
+  'call:incoming': (payload: CallIncomingPayload) => void
+  /** To the calling device: the other person accepted. */
+  'call:accepted': (payload: { callId: string }) => void
+  'call:ended': (payload: CallEndedPayload) => void
+  /** From the other device in the call, and from nobody else. */
+  'call:signal': (payload: CallSignalPayload) => void
+  /** The other device's connection dropped (it has a while to come back), or is back. */
+  'call:peer': (payload: { callId: string; connected: boolean }) => void
   /** Member directory only: an account was created / removed. */
   memberJoined: (payload: Member) => void
   /** The whole directory: sent to a guest at the moment they become an account. */
@@ -466,6 +543,18 @@ export interface ClientToServerEvents {
   /** `download`: an address that saves the file rather than showing it. */
   getFileUrl: (payload: { fileId: string; download?: boolean }, ack: (response: FileUrlAck) => void) => void
   getStorageUsage: (payload: Record<string, never>, ack: (response: StorageUsageAck) => void) => void
+  /** Calls `to` (a userId): rings every device they have connected. */
+  'call:invite': (payload: { to: string; media: CallMedia }, ack: (response: CallInviteAck) => void) => void
+  'call:accept': (payload: { callId: string }, ack: (response: CallAcceptAck) => void) => void
+  'call:decline': (payload: { callId: string }, ack: (response: Ack) => void) => void
+  /** The caller, before it is answered. */
+  'call:cancel': (payload: { callId: string }, ack: (response: Ack) => void) => void
+  /** Hanging up, in whatever state the call is. */
+  'call:end': (payload: { callId: string }, ack: (response: Ack) => void) => void
+  'call:rejoin': (payload: { callId: string; secret: string }, ack: (response: CallRejoinAck) => void) => void
+  /** Only for a device that is in the call. */
+  'call:config': (payload: { callId: string }, ack: (response: Ack<{ iceServers: IceServer[] }>) => void) => void
+  'call:signal': (payload: CallSignalPayload, ack: (response: CallSignalAck) => void) => void
   createGroup: (payload: CreateGroupPayload, ack: (response: Ack<{ conversationId: string }>) => void) => void
   addMembers: (payload: AddMembersPayload, ack: (response: Ack) => void) => void
   /** The group's admin only. */

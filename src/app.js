@@ -3,6 +3,7 @@ import cors from 'cors'
 import createError from 'http-errors'
 import { createServer } from 'http'
 import { Server } from 'socket.io'
+import { MAX_SDP_LENGTH } from './sockets/calls.js'
 import { SWEEP_EXPIRED_EVERY_MS, SWEEP_PENDING_EVERY_MS } from './sockets/files.js'
 import { registerSocketHandlers } from './sockets/index.js'
 import { PROTOCOL_VERSION, createRouter } from './routes.js'
@@ -59,10 +60,11 @@ export const createApp = (options = {}) => {
     const server = createServer(app)
 
     const io = new Server(server, {
-        // The largest legitimate payload is a 2000-character message — up to four bytes a
-        // character — with the ids of ten attachments (about 400 bytes) and its framing.
-        // (A file's bytes never come this way: they go straight to storage.) The default is 1 MB.
-        maxHttpBufferSize: 12_000,
+        // The largest legitimate payload is what one browser tells another to set up a
+        // call (a session description: see MAX_SDP_LENGTH), with its framing. Everything
+        // else is far smaller, and each event checks its own fields: this is only the
+        // ceiling. (A file's bytes never come this way.) The default is 1 MB.
+        maxHttpBufferSize: MAX_SDP_LENGTH + 16_000,
         // Covers the long-polling transport.
         cors: { origin: allowedOrigins },
         // Covers the WebSocket handshake, which CORS does not apply to.
@@ -86,7 +88,7 @@ export const createApp = (options = {}) => {
         next(error)
     })
 
-    const { getOnlineUsers, runMaintenance, sweepPendingUploads, sweepExpiredFiles, hasherStats } =
+    const { getOnlineUsers, runMaintenance, sweepPendingUploads, sweepExpiredFiles, hasherStats, leaveCall } =
         registerSocketHandlers(io, settings, { storage })
 
     // Hourly housekeeping (idle guests, last-seen times). It never keeps the process
@@ -107,7 +109,7 @@ export const createApp = (options = {}) => {
         server.on('close', () => clearInterval(sweeping))
     }
 
-    app.use(createRouter({ getOnlineUsers, settings }))
+    app.use(createRouter({ getOnlineUsers, settings, leaveCall }))
 
     app.use((req, res, next) => next(createError(404)))
 

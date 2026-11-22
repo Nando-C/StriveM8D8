@@ -1,4 +1,5 @@
 import { EMPTY_THREAD, ownMember, type ChatState, type Thread } from '@/lib/chatState'
+import { describeCall } from '@/lib/callEvents'
 import { describeGroupEvent } from '@/lib/groupEvents'
 import { filesLabel, oneLine, type LocalMessage } from '@/lib/messages'
 import type { Presence } from '@/lib/status'
@@ -105,8 +106,9 @@ export const chatList = (state: Pick<ChatState, 'threads' | 'onlineUsers' | 'use
         ? { kind: local.kind, own: local.own, data: local.data, text: oneLine(local.text), fromName: local.fromName, files: local.attachments?.length ?? 0 }
         : last && { kind: last.kind, own: last.from === state.userId, data: last.data, text: last.preview, fromName: last.fromName, files: last.attachments ?? 0 }
       const group = thread.summary?.kind === 'group'
-      // What happened to a group is told as it is: nobody "said" it.
-      const system = shownLast?.kind === 'system'
+      // What happened to a group, and a call, are told as they are: nobody "said" them.
+      const call = shownLast?.kind === 'call'
+      const system = shownLast?.kind === 'system' || call
       const deleted = shownLast?.kind === 'deleted'
       // Files alone have no words to show: said as what they are.
       const said = shownLast?.text === '' && shownLast.files > 0 ? filesLabel(shownLast.files) : (shownLast?.text ?? '')
@@ -117,7 +119,9 @@ export const chatList = (state: Pick<ChatState, 'threads' | 'onlineUsers' | 'use
         counterpart,
         // (A group has no counterpart.)
         ...(counterpart === null ? NO_APPEARANCE : appearanceOf(shown.get(counterpart.userId))),
-        preview: system ? describeGroupEvent(shownLast?.data, state.userId) : deleted ? 'Message deleted' : said,
+        preview: call ? describeCall(shownLast?.data, shownLast?.own === true)
+          : system ? describeGroupEvent(shownLast?.data, state.userId)
+            : deleted ? 'Message deleted' : said,
         previewOwn,
         previewFrom: group && !system && !deleted && !previewOwn ? (shownLast?.fromName ?? null) : null,
         memberNames: group ? otherNames(state, thread) : null,

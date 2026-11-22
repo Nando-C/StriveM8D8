@@ -47,6 +47,14 @@ const DEFAULTS = Object.freeze({
     uploadMaxAddressMbPerDay: undefined,
     /** How much may be stored in all. Beyond it, uploads are refused for everyone. */
     uploadMaxTotalMb: 2000,
+    /** The relay (TURN) provider's key: { keyId, apiToken }. null: calls are tried without a relay. */
+    turn: null,
+    /** How long a call rings before it is missed. */
+    callRingTimeoutMs: 30_000,
+    /** How long a device whose connection dropped has to come back to its call. */
+    callGraceMs: 15_000,
+    /** The longest a call may last. */
+    callMaxMs: 60 * 60_000,
 })
 
 // Per client address, because a new socket costs nothing: each of these writes to the
@@ -72,6 +80,9 @@ export const resolveSettings = (options = {}) => {
         throw new TypeError('fileStorage "s3" needs s3.bucket, s3.accessKeyId and s3.secretAccessKey')
     }
     settings.uploadMaxAddressMbPerDay ??= settings.uploadMaxUserMbPerDay * 4
+    if (settings.turn !== null && !(settings.turn?.keyId && settings.turn.apiToken)) {
+        throw new TypeError('turn needs keyId and apiToken')
+    }
     settings.adminUsernames = [...settings.adminUsernames]
     settings.bootstrapCode = settings.bootstrapCode || null
     return settings
@@ -151,6 +162,10 @@ export const settingsFromEnv = (env, warn = console.warn) => {
     megabytes('UPLOAD_MAX_USER_MB_PER_DAY', 'uploadMaxUserMbPerDay')
     megabytes('UPLOAD_MAX_ADDRESS_MB_PER_DAY', 'uploadMaxAddressMbPerDay', { zeroAllowed: true })
     megabytes('UPLOAD_MAX_TOTAL_MB', 'uploadMaxTotalMb')
+
+    // A relay for calls, where one is paid for: both halves of its key, or none.
+    if (env.TURN_KEY_ID && env.TURN_API_TOKEN) settings.turn = { keyId: env.TURN_KEY_ID, apiToken: env.TURN_API_TOKEN }
+    else if (env.TURN_KEY_ID || env.TURN_API_TOKEN) warn(" ⚠️  TURN_KEY_ID and TURN_API_TOKEN go together: calls are set up without a relay")
 
     return settings
 }

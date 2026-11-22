@@ -1,4 +1,4 @@
-import { UNCONFIRMED, asDeleted, fromServer, isSaid, mergeConfirmed, previewOf, type LocalMessage } from '@/lib/messages'
+import { UNCONFIRMED, asDeleted, fromServer, isToRead, mergeConfirmed, previewOf, type LocalMessage } from '@/lib/messages'
 import { comparePositions, positionOf } from '@/lib/positions'
 import type {
   Attachment,
@@ -307,6 +307,7 @@ const withLastMessage = (thread: Thread, message: LocalMessage): Thread => {
         fromName: message.fromName,
         preview: previewOf(message.text),
         timestamp: message.timestamp,
+        ...(message.kind === 'text' ? {} : { kind: message.kind, data: message.data }),
         ...(message.attachments?.length ? { attachments: message.attachments.length } : {}),
       },
     },
@@ -492,9 +493,10 @@ export const chatReducer = (state: ChatState, action: ChatAction): ChatState => 
       const alreadyKnown = threadOf(state, conversationId).messages.some(candidate => candidate.id === id)
       // What happened to a group (someone was added, it was renamed) is shown in it, but
       // is not a message to read — and the server's own word on the group came just before it.
-      const system = !isSaid(message)
+      const system = message.kind === 'system'
       // The user's own message, sent from another of their devices, is not news to them.
-      const counts = !message.own && !alreadyKnown && !system
+      // (Nor is a call they took part in; one they missed is.)
+      const counts = !message.own && !alreadyKnown && isToRead(message)
       const next = withThreadBegun(state, conversationId, thread => {
         const received = {
           ...thread,
