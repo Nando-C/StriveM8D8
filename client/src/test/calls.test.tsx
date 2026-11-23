@@ -645,7 +645,7 @@ describe('calling', () => {
       await answer('logout', { ok: true })
 
       await screen.findByLabelText('Username')
-      expect(callView()).not.toBeInTheDocument()
+      await waitFor(() => expect(callView()).not.toBeInTheDocument())
       expect(connection.closed).toBe(true)
       expect(allStopped()).toBe(true)
       expect(screen.queryByRole('alert')).not.toBeInTheDocument()
@@ -659,7 +659,7 @@ describe('calling', () => {
 
       await waitFor(() => expect(connection.closed).toBe(true))
       expect(allStopped()).toBe(true)
-      expect(callView()).not.toBeInTheDocument()
+      await waitFor(() => expect(callView()).not.toBeInTheDocument())
     })
 
     it('opens one camera, however many times the button is pressed while it opens', async () => {
