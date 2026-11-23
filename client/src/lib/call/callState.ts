@@ -110,6 +110,18 @@ const over = (state: CallState, outcome: CallOutcome, message: string | null = n
   outgoing: state.outgoing, outcome, message,
 })
 
+/** The call itself is on screen (not merely ringing here, nor over). */
+export const inCallView = (state: CallState) => isEngaged(state) && state.phase !== 'incoming'
+
+/** At which end the call is ringing, if it is. (At the caller's, only once the server has said that it rings.) */
+export const ringingAs = (state: CallState): 'incoming' | 'outgoing' | null =>
+  state.phase === 'incoming' || (state.phase === 'outgoing' && state.callId !== null) ? state.phase : null
+
+// Things the user has to do something about are left on screen until they close them.
+const STAYS: readonly (CallOutcome | null)[] = ['permission', 'no-device', 'unreachable']
+/** Whether why a call ended stays on screen until it is closed. */
+export const outcomeStays = (outcome: CallOutcome | null) => STAYS.includes(outcome)
+
 // What the user need not be told: they did it themselves, or it is not their call any more.
 const QUIET: readonly CallOutcome[] = ['cancelled', 'answered-elsewhere']
 
@@ -196,7 +208,7 @@ export const callReducer = (state: CallState, action: CallAction): CallState => 
 export const callStatusLine = (state: CallState): string => {
   switch (state.phase) {
     case 'outgoing':
-      return state.callId === null ? 'Calling…' : 'Ringing…'
+      return ringingAs(state) === null ? 'Calling…' : 'Ringing…'
     case 'incoming':
       return state.media === 'video' ? 'Incoming video call' : 'Incoming voice call'
     case 'connecting':

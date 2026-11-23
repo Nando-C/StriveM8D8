@@ -1,3 +1,5 @@
+import { describeCall, isMissedCall } from '@/lib/callEvents'
+import { describeGroupEvent } from '@/lib/groupEvents'
 import type { Attachment, Message, MessageKind } from '@/types/protocol'
 
 export type MessageStatus = 'sent' | 'pending' | 'failed'
@@ -47,13 +49,18 @@ export const previewOf = (text: string) => {
 /** Whether a message is something somebody said: not a line about a group or a call, not what is left of a deleted one. */
 export const isSaid = (message: Pick<LocalMessage, 'kind'>) => message.kind === 'text'
 
-const MISSED_CALL_OUTCOMES: readonly unknown[] = ['missed', 'cancelled', 'unavailable', 'dnd', 'busy']
-
 /** Whether a message from someone else is news to the user: something said, or a call they missed. (As the server counts.) */
 export const isToRead = (message: Pick<LocalMessage, 'kind' | 'data'>) =>
-  isSaid(message) ||
-  (message.kind === 'call' && typeof message.data === 'object' && message.data !== null &&
-    MISSED_CALL_OUTCOMES.includes((message.data as { outcome?: unknown }).outcome))
+  isSaid(message) || (message.kind === 'call' && isMissedCall(message.data))
+
+/**
+ * The words for something that happened rather than was said — to a group, or a call —
+ * as `ownUserId` reads it; `null` for any other kind of message.
+ */
+export const eventLine = (message: { kind?: MessageKind; data?: unknown; own: boolean }, ownUserId: string | null): string | null =>
+  message.kind === 'call' ? describeCall(message.data, message.own)
+    : message.kind === 'system' ? describeGroupEvent(message.data, ownUserId)
+      : null
 
 /** What stands where a deleted message was. */
 export const deletedLine = (message: Pick<LocalMessage, 'own' | 'fromName'>) =>

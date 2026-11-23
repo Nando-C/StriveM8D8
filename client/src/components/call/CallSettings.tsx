@@ -2,7 +2,7 @@ import { useId } from 'react'
 import { Settings } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { canChooseSpeaker, type ChosenDevices, type DeviceKind, type Devices } from '@/lib/call/devices'
+import { canChooseSpeaker, DEVICE_NAMES, type ChosenDevices, type DeviceKind, type Devices } from '@/lib/call/devices'
 
 interface CallSettingsProps {
   devices: Devices
@@ -11,13 +11,13 @@ interface CallSettingsProps {
   className?: string
 }
 
-const KINDS: [DeviceKind, string][] = [['microphone', 'Microphone'], ['camera', 'Camera'], ['speaker', 'Speaker']]
+const KINDS: DeviceKind[] = ['microphone', 'camera', 'speaker']
 
 /** Which microphone, camera and speaker the call uses: the browser's own lists, so a phone shows its own picker. */
 export function CallSettings({ devices, chosen, onChoose, className }: CallSettingsProps) {
   const id = useId()
   // (A speaker can be chosen only where the browser lets sound be sent to one.)
-  const kinds = KINDS.filter(([kind]) => devices[kind].length > 0 && (kind !== 'speaker' || canChooseSpeaker()))
+  const kinds = KINDS.filter(kind => devices[kind].length > 0 && (kind !== 'speaker' || canChooseSpeaker()))
   if (kinds.length === 0) return null
 
   return (
@@ -29,13 +29,13 @@ export function CallSettings({ devices, chosen, onChoose, className }: CallSetti
         </Button>
       </PopoverTrigger>
       <PopoverContent side="top" className="gap-3">
-        {kinds.map(([kind, name]) => {
+        {kinds.map(kind => {
           const list = devices[kind]
           // (One that was chosen and is no longer there: the browser is using whichever it has.)
           const current = list.some(device => device.id === chosen[kind]) ? chosen[kind] : ''
           return (
             <div key={kind} className="flex flex-col gap-1">
-              <label htmlFor={`${id}-${kind}`} className="text-xs font-medium text-muted-foreground">{name}</label>
+              <label htmlFor={`${id}-${kind}`} className="text-xs font-medium text-muted-foreground">{DEVICE_NAMES[kind]}</label>
               <select
                 id={`${id}-${kind}`}
                 value={current}

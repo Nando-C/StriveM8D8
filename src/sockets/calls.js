@@ -1,4 +1,5 @@
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
+import { newSecret, sameString } from '../auth/secrets.js'
 import { BOT, BOT_REPLY_DELAY_MS } from '../bot.js'
 import { directConversationId, isUserId } from '../conversations.js'
 import { isDatabaseReady } from '../db.js'
@@ -15,9 +16,9 @@ import { COULD_NOT_BE_SAVED, answering, isNonEmptyString, isObject, refuse } fro
 // for the call, and after a dropped connection a new socket that presents it takes the
 // call back. Everything is kept in memory: a call does not survive the server.
 
-export const CALL_MEDIA = ['audio', 'video']
-/** Why a call is over, as both sides are told (`call:ended`) and as the conversation records it. */
-export const CALL_OUTCOMES = ['ended', 'declined', 'cancelled', 'missed', 'busy', 'dnd', 'unavailable', 'failed']
+const CALL_MEDIA = ['audio', 'video']
+// Why a call is over, as both sides are told (`call:ended`) and as the conversation
+// records it: 'ended', 'declined', 'cancelled', 'missed', 'busy', 'dnd', 'unavailable' or 'failed'.
 
 /**
  * The longest session description that is passed on. Chromium's offers measure 1.3 kB
@@ -56,10 +57,8 @@ const WHY_NOT = {
     busy: 'They are in another call',
 }
 
-const newSecret = () => randomBytes(32).toString('base64url')
-const sameSecret = (given, held) =>
-    typeof given === 'string' && given.length === SECRET_LENGTH && held !== null &&
-    Buffer.byteLength(given) === Buffer.byteLength(held) && timingSafeEqual(Buffer.from(given), Buffer.from(held))
+// (A side that no device holds has no secret, and nothing matches it.)
+const sameSecret = (given, held) => typeof given === 'string' && given.length === SECRET_LENGTH && sameString(given, held)
 
 // A session description as it is passed on: its two fields, and nothing else a client put there.
 const descriptionIn = value => {
@@ -104,7 +103,7 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
     const later = (ms, action) => setTimeout(action, ms).unref()
 
     // What a call leaves behind: a line in the conversation, written as the caller's.
-    // `outcome` is one of CALL_OUTCOMES; the client words it for whoever reads it.
+    // The client words `outcome` for whoever reads it.
     const record = ({ conversationId, caller, media }, outcome, durationMs = 0) =>
         messages.say(conversationId, { userId: caller.userId, username: caller.username }, { kind: 'call', data: { media, outcome, durationMs } })
             .catch(error => console.error("failed to record a call:", error?.name))
@@ -119,10 +118,18 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
         }
         for (const timer of Object.values(call.timers)) clearTimeout(timer)
         // (Whoever is still being rung stops ringing, too.)
-        const sockets = [call.caller.socketId, call.callee.socketId, ...call.ringing].filter(Boolean)
-        presence.tellSockets(sockets, 'call:ended', { callId: call.callId, reason })
+        presence.tellSockets([call.caller.socketId, call.callee.socketId, ...call.ringing], 'call:ended', { callId: call.callId, reason })
         record(call, reason, call.startedAt === null ? 0 : Date.now() - call.startedAt)
     }
+
+    // One side hangs up: a call that was still ringing was cancelled, whatever ended it.
+    const hangUp = (call, active = 'ended') => finish(call, call.state === 'ringing' ? 'cancelled' : active)
+
+    // Tells the device on one side of a call, if a device is there. (`tellSockets`
+    // passes over an id that is not a connected socket's, `null` included.)
+    const tellSide = (call, own, event, more) => presence.tellSockets([own.socketId], event, { callId: call.callId, ...more })
+
+    const callNamed = callId => (typeof callId === 'string' && CALL_ID.test(callId) ? calls.get(callId) : undefined)
 
     const begin = ({ caller, socket, to, media, conversationId }) => {
         const call = {
@@ -151,17 +158,13 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
         if (byUser.has(user.userId)) refuse('You are already in a call', { reason: 'in-call' })
 
         // The bot has nothing to answer with: it rings for a moment, and declines.
-        if (to === BOT.id) {
-            const call = begin({ caller: user, socket, to, media, conversationId })
-            call.timers.bot = later(BOT_REPLY_DELAY_MS, () => finish(call, 'declined'))
-            return { callId: call.callId, secret: call.caller.secret }
-        }
-
+        const toBot = to === BOT.id
         const callee = presence.users.get(to)
         // Someone invisible is, to the caller, someone who is not connected: the same
         // answer, by the same path, with nothing awaited that would tell the two apart.
         const whyNot =
-            callee === undefined || presence.publicUser(callee) === null ? 'unavailable'
+            toBot ? null
+            : callee === undefined || presence.publicUser(callee) === null ? 'unavailable'
             : callee.status === 'dnd' ? 'dnd'
             : byUser.has(to) ? 'busy'
             : null
@@ -172,9 +175,12 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
         }
 
         const call = begin({ caller: user, socket, to, media, conversationId })
-        for (const socketId of presence.socketsOf(to)) call.ringing.add(socketId)
-        call.timers.ring = later(settings.callRingTimeoutMs, () => finish(call, 'missed'))
-        presence.tellSockets([...call.ringing], 'call:incoming', incomingOf(call))
+        if (toBot) call.timers.bot = later(BOT_REPLY_DELAY_MS, () => finish(call, 'declined'))
+        else {
+            for (const socketId of presence.socketsOf(to)) call.ringing.add(socketId)
+            call.timers.ring = later(settings.callRingTimeoutMs, () => finish(call, 'missed'))
+            presence.tellSockets([...call.ringing], 'call:incoming', incomingOf(call))
+        }
         return { callId: call.callId, secret: call.caller.secret }
     }
 
@@ -185,7 +191,7 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
 
     /** The call a payload names, and the asker's side of it — or a refusal that says nothing more. */
     const callOf = (payload, user) => {
-        const call = typeof payload.callId === 'string' && CALL_ID.test(payload.callId) ? calls.get(payload.callId) : undefined
+        const call = callNamed(payload.callId)
         const own = call === undefined ? null : sideOf(call, user.userId)
         if (own === null) refuse(UNKNOWN_CALL)
         return { call, own }
@@ -210,7 +216,7 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
         const others = [...call.ringing].filter(socketId => socketId !== socket.id)
         call.ringing.clear()
         presence.tellSockets(others, 'call:ended', { callId: call.callId, reason: 'answered-elsewhere' })
-        if (call.caller.socketId !== null) presence.tellSockets([call.caller.socketId], 'call:accepted', { callId: call.callId })
+        tellSide(call, call.caller, 'call:accepted')
         call.timers.cap = later(settings.callMaxMs, () => finish(call, 'ended'))
         return { secret: own.secret }
     }
@@ -234,7 +240,7 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
         const { call, own } = callOf(payload, user)
         if (call.state === 'ringing' && own === call.callee) finish(call, 'declined')
         else if (own.socketId !== socket.id) refuse(UNKNOWN_CALL)
-        else finish(call, call.state === 'ringing' ? 'cancelled' : 'ended')
+        else hangUp(call)
         return {}
     }
 
@@ -248,7 +254,7 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
         if (call.state !== 'active') refuse('The call has not been answered')
         const peer = otherSide(call, own)
         if (peer.socketId === null) refuse('The other side is not connected right now', { reason: 'peer-lost' })
-        presence.tellSockets([peer.socketId], 'call:signal', { callId: call.callId, [hasDescription ? 'description' : 'candidate']: content })
+        tellSide(call, peer, 'call:signal', { [hasDescription ? 'description' : 'candidate']: content })
         return {}
     }
 
@@ -261,7 +267,7 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
         own.lost = null
         own.socketId = socket.id
         const peer = otherSide(call, own)
-        if (peer.socketId !== null) presence.tellSockets([peer.socketId], 'call:peer', { callId: call.callId, connected: true })
+        tellSide(call, peer, 'call:peer', { connected: true })
         return { state: call.state, media: call.media, peerConnected: peer.socketId !== null }
     }
 
@@ -283,9 +289,8 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
             for (const own of [call.caller, call.callee]) {
                 if (own.socketId !== socketId) continue
                 own.socketId = null
-                own.lost = later(settings.callGraceMs, () => finish(call, call.state === 'ringing' ? 'cancelled' : 'failed'))
-                const peer = otherSide(call, own)
-                if (peer.socketId !== null) presence.tellSockets([peer.socketId], 'call:peer', { callId: call.callId, connected: false })
+                own.lost = later(settings.callGraceMs, () => hangUp(call, 'failed'))
+                tellSide(call, otherSide(call, own), 'call:peer', { connected: false })
             }
         }
     }
@@ -299,7 +304,7 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
         // (Deleting from a Map while iterating over it is safe.)
         for (const call of calls.values()) {
             call.ringing.delete(socketId)
-            if (call.caller.socketId === socketId || call.callee.socketId === socketId) finish(call, call.state === 'ringing' ? 'cancelled' : 'ended')
+            if (call.caller.socketId === socketId || call.callee.socketId === socketId) hangUp(call)
         }
     }
 
@@ -311,10 +316,8 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
      */
     const leave = ({ callId, secret, address }) => {
         if (!rateLimiter.allow(`address:${address}`, 'call:leave', LEAVE_LIMIT)) return
-        const call = typeof callId === 'string' && CALL_ID.test(callId) ? calls.get(callId) : undefined
-        if (call === undefined) return
-        if (![call.caller, call.callee].some(own => sameSecret(secret, own.secret))) return
-        finish(call, call.state === 'ringing' ? 'cancelled' : 'ended')
+        const call = callNamed(callId)
+        if (call !== undefined && [call.caller, call.callee].some(own => sameSecret(secret, own.secret))) hangUp(call)
     }
 
     /** A device has just logged in: if its user is being called, it rings too. */
@@ -340,5 +343,5 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
         on('call:signal', 'signal', signal)
     }
 
-    return { registerOn, socketGone, socketLeft, socketJoined, leave, count: () => calls.size }
+    return { registerOn, socketGone, socketLeft, socketJoined, leave }
 }

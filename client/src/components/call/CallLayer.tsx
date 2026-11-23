@@ -1,14 +1,15 @@
+import { memo } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { X } from 'lucide-react'
 import { CallView } from '@/components/call/CallView'
 import { IncomingCall } from '@/components/call/IncomingCall'
 import { Button } from '@/components/ui/button'
 import type { Call } from '@/hooks/useCall'
-import { callOutcomeLine } from '@/lib/call/callState'
+import { callOutcomeLine, inCallView } from '@/lib/call/callState'
 import { notice } from '@/lib/motion'
 
 /** Whatever of a call is on screen right now, over the rest of the app: ringing, the call itself, or why it ended. */
-export function CallLayer({ call }: { call: Call }) {
+export const CallLayer = memo(function CallLayer({ call }: { call: Call }) {
   const { state } = call
   return (
     <>
@@ -16,9 +17,7 @@ export function CallLayer({ call }: { call: Call }) {
         <IncomingCall from={state.peer.username} media={state.media} onAccept={video => void call.accept(video)} onDecline={call.hangUp} />
       )}
       <AnimatePresence>
-        {(state.phase === 'outgoing' || state.phase === 'connecting' || state.phase === 'active') && (
-          <CallView key="call" call={call} />
-        )}
+        {inCallView(state) && <CallView key="call" call={call} />}
         {state.phase === 'ended' && (
           <motion.div
             key="outcome"
@@ -39,4 +38,4 @@ export function CallLayer({ call }: { call: Call }) {
       </AnimatePresence>
     </>
   )
-}
+})
