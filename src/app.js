@@ -88,8 +88,10 @@ export const createApp = (options = {}) => {
         next(error)
     })
 
-    const { getOnlineUsers, runMaintenance, sweepPendingUploads, sweepExpiredFiles, hasherStats, leaveCall } =
+    const { getOnlineUsers, runMaintenance, sweepPendingUploads, sweepExpiredFiles, hasherStats, leaveCall, closeCalls } =
         registerSocketHandlers(io, settings, { storage })
+    // (Calls are kept in memory, with timers: they stop with the server.)
+    server.on('close', closeCalls)
 
     // Hourly housekeeping (idle guests, last-seen times). It never keeps the process
     // alive by itself, and stops with the server.

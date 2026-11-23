@@ -322,6 +322,7 @@ describe('a call that cannot begin', () => {
         expect((await callLines(3)).map(line => line.data.outcome)).toEqual(['unavailable', 'unavailable', 'unavailable'])
         // Neither was a call: the caller can call someone else at once.
         expect((await invite(alice.socket, bob)).reason).toBe('unavailable')
+        await callLines(4)
     })
 
     it('does not ring someone who asked not to be disturbed', async () => {
@@ -368,6 +369,8 @@ describe('a call that cannot begin', () => {
 
         expect((await invite(carol.socket, bob)).reason).toBe('busy')
         expect((await invite(bob.socket, carol)).reason).toBe('in-call')
+        // (The line the refused call leaves is waited for: it is written after the answer.)
+        await callLines(1)
     })
 
     it('is declined by the bot, after a moment', async () => {
