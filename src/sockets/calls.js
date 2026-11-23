@@ -90,6 +90,8 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
     const calls = new Map()
     /** userId → the one call they are in, ringing or active */
     const byUser = new Map()
+    /** The server has stopped: nothing more is rung, timed or written. */
+    let closed = false
 
     // One side of a call: who, and — once they are in it — which device. `socketId` is
     // null while that device's connection is down; `lost` is then the timer that ends
@@ -106,7 +108,7 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
     // What a call leaves behind: a line in the conversation, written as the caller's.
     // The client words `outcome` for whoever reads it.
     const record = ({ conversationId, caller, media }, outcome, durationMs = 0) =>
-        messages.say(conversationId, { userId: caller.userId, username: caller.username }, { kind: 'call', data: { media, outcome, durationMs } })
+        closed ? undefined : messages.say(conversationId, { userId: caller.userId, username: caller.username }, { kind: 'call', data: { media, outcome, durationMs } })
             .catch(error => console.error("failed to record a call:", error?.name))
 
     /** Ends a call, tells both sides why, and records it — once, however many things end it at once. */
@@ -351,6 +353,19 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
         presence.tellSockets([socket.id], 'call:incoming', incomingOf(call))
     }
 
+    /**
+     * The server is stopping. Its calls go with it, as everything kept in memory does:
+     * their timers are stopped, and none leaves a line (there may be nowhere to write it).
+     */
+    const close = () => {
+        closed = true
+        for (const call of calls.values()) {
+            for (const timer of [...Object.values(call.timers), call.caller.lost, call.callee.lost]) clearTimeout(timer)
+        }
+        calls.clear()
+        byUser.clear()
+    }
+
     // (A call under way does not stop because the database is out of reach for a moment.)
     const answer = answering({ presence, allowed, database: false })
 
@@ -366,5 +381,5 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
         on('call:signal', 'signal', signal)
     }
 
-    return { registerOn, socketGone, socketLeft, socketJoined, leave }
+    return { registerOn, socketGone, socketLeft, socketJoined, leave, close }
 }

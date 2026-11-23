@@ -79,5 +79,6 @@ export const registerSocketHandlers = (io, settings, { storage = null } = {}) =>
         sweepExpiredFiles: attachments.sweepExpired,
         hasherStats: session.hasherStats,
         leaveCall: calls.leave,
+        closeCalls: calls.close,
     }
 }
