@@ -3,6 +3,7 @@ import { newSecret, sameString } from '../auth/secrets.js'
 import { BOT, BOT_REPLY_DELAY_MS } from '../bot.js'
 import { directConversationId, isUserId } from '../conversations.js'
 import { isDatabaseReady } from '../db.js'
+import { hasRelay } from '../turn.js'
 import { COULD_NOT_BE_SAVED, answering, isNonEmptyString, isObject, refuse } from './validation.js'
 
 // Calls between two people. The sound and pictures never pass through this server: the
@@ -39,7 +40,7 @@ const RATE_LIMITS = {
     // Each one rings somebody, or leaves a line in a conversation.
     invite: { limit: 6, windowMs: 60_000 },
     answer: { limit: 20, windowMs: 10_000 },
-    // Each one may ask the relay provider for credentials.
+    // The first of a call has the relay provider asked for credentials, and so does one that follows an answer without any.
     config: { limit: 5, windowMs: 10_000 },
     // Candidates arrive in bursts: a dozen or two per description, from each side.
     signal: { limit: 200, windowMs: 10_000 },
@@ -138,6 +139,8 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
             /** The sockets of the person called that are ringing. */
             ringing: new Set(),
             timers: {},
+            /** The servers its two devices are to use, once one of them has asked: a promise. */
+            servers: null,
         }
         calls.set(call.callId, call)
         byUser.set(caller.userId, call)
@@ -271,10 +274,30 @@ export const createCallHandlers = ({ presence, settings, rateLimiter, messages, 
         return { state: call.state, media: call.media, peerConnected: peer.socketId !== null }
     }
 
-    // Relay credentials cost their provider money: only for a device that is in a call.
+    // The servers a call's devices are to use. The provider is asked once for the call —
+    // its two devices ask within a moment of each other, and are given the same. An
+    // answer without a relay (the provider could not be asked, or there is none) is not
+    // kept, and nor is a failure: a device that asks again has the provider asked again.
+    // (Today's client asks once per call, so a call that began without a relay stays so.)
+    const serversOf = call => (call.servers ??= iceServers().then(
+        servers => {
+            if (!hasRelay(servers)) call.servers = null
+            return servers
+        },
+        error => {
+            call.servers = null
+            throw error
+        },
+    ))
+
+    // Relay credentials cost their provider money: only for a device that is in a call —
+    // and still in it once the provider has answered, which takes a moment.
     const config = async ({ socket, user, payload }) => {
+        const { call } = deviceOf(payload, user, socket)
+        const servers = await serversOf(call)
+        // (Refused if the call is over, or is no longer this device's.)
         deviceOf(payload, user, socket)
-        return { iceServers: await iceServers() }
+        return { iceServers: servers }
     }
 
     /**

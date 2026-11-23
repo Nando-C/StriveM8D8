@@ -707,6 +707,15 @@ describe('the servers a call is set up through', () => {
         ],
     }
     const answering = (body, status = 201) => vi.fn(async () => new Response(JSON.stringify(body), { status }))
+    const withRelay = answer => answer.iceServers.some(server => server.credential === 'made-up-credential')
+    const stunOnly = { ok: true, iceServers: STUN_SERVERS }
+    const bothAsk = (callId, ...people) => Promise.all(people.map(({ socket }) => ask(socket, 'call:config', { callId })))
+    /** A call under way between two people, where a relay is configured. */
+    const relayedCall = async () => {
+        await start({ turn: { keyId: 'key-id', apiToken: 'key-token' } })
+        const [alice, bob] = [await guest('alice'), await guest('bob')]
+        return { alice, bob, ...(await callUnderWay(alice, bob)) }
+    }
 
     it('are given only to a device that is in a call', async () => {
         await start()
@@ -718,7 +727,7 @@ describe('the servers a call is set up through', () => {
         const config = socket => ask(socket, 'call:config', { callId: invited.callId })
         const unknown = { ok: false, message: 'Unknown call' }
 
-        expect(await config(alice.socket)).toEqual({ ok: true, iceServers: [{ urls: ['stun:stun.cloudflare.com:3478'] }] })
+        expect(await config(alice.socket)).toEqual(stunOnly)
         // Not the caller's other device, not a stranger — and not the person called until they have accepted.
         expect(await config(aliceOther)).toEqual(unknown)
         expect(await config(carol.socket)).toEqual(unknown)
@@ -730,10 +739,7 @@ describe('the servers a call is set up through', () => {
 
     it('include a relay where one is configured, asked for with the key — which goes nowhere else', async () => {
         const fetched = vi.spyOn(globalThis, 'fetch').mockImplementation(answering(relay))
-        await start({ turn: { keyId: 'key-id', apiToken: 'key-token' } })
-        const alice = await guest('alice')
-        const bob = await guest('bob')
-        const { callId } = await callUnderWay(alice, bob)
+        const { alice, callId } = await relayedCall()
 
         const answer = await ask(alice.socket, 'call:config', { callId })
 
@@ -756,6 +762,72 @@ describe('the servers a call is set up through', () => {
         expect(JSON.parse(request.body).ttl).toBeLessThanOrEqual(48 * 3600)
     })
 
+    it('are asked of the provider once for a call, and are the same for its two devices', async () => {
+        const fetched = vi.spyOn(globalThis, 'fetch').mockImplementation(answering(relay))
+        const { alice, bob, callId } = await relayedCall()
+
+        // (Both at once, as two browsers setting a call up do — and one of them again.)
+        const [hers, his] = await bothAsk(callId, alice, bob)
+        const again = await ask(alice.socket, 'call:config', { callId })
+
+        expect(withRelay(hers)).toBe(true)
+        expect(his).toEqual(hers)
+        expect(again).toEqual(hers)
+        expect(fetched).toHaveBeenCalledTimes(1)
+
+        // Another call is another asking.
+        await ask(alice.socket, 'call:end', { callId })
+        const next = await callUnderWay(alice, bob)
+        await ask(bob.socket, 'call:config', { callId: next.callId })
+        expect(fetched).toHaveBeenCalledTimes(2)
+    })
+
+    it('are asked for once more when the provider could not be asked, by both devices together', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {})
+        const fetched = vi.spyOn(globalThis, 'fetch').mockImplementationOnce(answering({ error: 'no' }, 503)).mockImplementation(answering(relay))
+        const { alice, bob, callId } = await relayedCall()
+
+        // One failure does not leave the call without a relay: both get the second answer.
+        const [hers, his] = await bothAsk(callId, alice, bob)
+
+        expect(withRelay(hers)).toBe(true)
+        expect(his).toEqual(hers)
+        expect(fetched).toHaveBeenCalledTimes(2)
+    })
+
+    it('are without a relay when the provider cannot be asked at all — and it is asked again for a device that asks again', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {})
+        // (Slow to refuse, as a provider out of reach is: the two devices' askings overlap.)
+        const refusing = async () => {
+            await new Promise(resolve => setTimeout(resolve, 50))
+            return new Response('{}', { status: 503 })
+        }
+        const fetched = vi.spyOn(globalThis, 'fetch').mockImplementation(refusing)
+        const { alice, bob, callId } = await relayedCall()
+
+        expect(await bothAsk(callId, alice, bob)).toEqual([stunOnly, stunOnly])
+        // Two attempts between them, not two each.
+        expect(fetched).toHaveBeenCalledTimes(2)
+
+        fetched.mockImplementation(answering(relay))
+        expect(withRelay(await ask(alice.socket, 'call:config', { callId }))).toBe(true)
+    })
+
+    it('are not given to a device whose call ended while the provider was being asked', async () => {
+        let answerNow
+        vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(resolve => {
+            answerNow = () => resolve(new Response(JSON.stringify(relay), { status: 201 }))
+        }))
+        const { alice, bob, callId } = await relayedCall()
+
+        const asked = ask(alice.socket, 'call:config', { callId })
+        await vi.waitFor(() => expect(answerNow).toBeTypeOf('function'))
+        await ask(bob.socket, 'call:end', { callId })
+        answerNow()
+
+        expect(await asked).toEqual({ ok: false, message: 'Unknown call' })
+    })
+
     it.each([
         ['refuses', () => answering({ error: 'no' }, 403)],
         ['cannot be reached', () => vi.fn(async () => { throw new TypeError('fetch failed') })],
@@ -770,6 +842,30 @@ describe('the servers a call is set up through', () => {
 
         expect(logged).toHaveBeenCalledTimes(1)
         expect(JSON.stringify(logged.mock.calls)).not.toMatch(/key-token|key-id/)
+    })
+
+    it.each([
+        ['is in trouble', () => answering({}, 503), 2],
+        ['cannot be reached', () => vi.fn(async () => { throw new TypeError('fetch failed') }), 2],
+        ['refuses', () => answering({}, 403), 1],
+        ['runs out of time', () => vi.fn(async () => { throw new DOMException('timed out', 'TimeoutError') }), 1],
+        ['answers without a relay', () => answering({ iceServers: [] }), 1],
+    ])('are asked for once more only when that may help: the provider %s', async (_what, provider, requests) => {
+        vi.spyOn(console, 'error').mockImplementation(() => {})
+        const fetched = provider()
+
+        expect(await createIceServers({ turn: { keyId: 'key-id', apiToken: 'key-token' }, ttlSeconds: 4200, fetch: fetched })()).toEqual(STUN_SERVERS)
+        expect(fetched).toHaveBeenCalledTimes(requests)
+    })
+
+    it('say so when a second request made up for the first', async () => {
+        const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+        const fetched = vi.fn().mockImplementationOnce(answering({}, 503)).mockImplementation(answering(relay))
+
+        const servers = await createIceServers({ turn: { keyId: 'key-id', apiToken: 'key-token' }, ttlSeconds: 4200, fetch: fetched })()
+
+        expect(servers.some(server => server.credential === 'made-up-credential')).toBe(true)
+        expect(logged.mock.calls).toEqual([['failed to get relay credentials:', 'status 503']])
     })
 
     it('never ask the provider where no relay is configured', async () => {

@@ -21,7 +21,7 @@ A real-time, one-to-one chat application: a Node.js + Socket.IO server with Mong
 - **Group chats.** Up to twenty people, made in two clicks. Each message says who wrote it, the ticks say when *everyone* has it — press them to see who has seen it — and membership is handled the way people expect: anyone can add or leave, the creator can rename and remove, someone added later sees the conversation from that point on, and someone removed loses it at once.
 - **File sharing.** Attach, drop or paste files into a message: they upload straight from the browser to private storage with a progress bar, and arrive as a picture grid, a video or audio player, or a download card. Pictures open full size with the arrow keys stepping through the conversation's media; a message, and its files, can be deleted by whoever sent it.
 - **Voice and video calls.** Call the person you are talking to from the conversation's header. The call goes straight from one browser to the other; it rings every device they have (and is heard ringing by the caller), can be answered with or without picture, shrinks to a corner so you can keep chatting, and survives a dropped connection or a change of network. In it you can share your screen, choose which microphone, camera and speaker to use (remembered for next time), switch between a phone's two cameras, and are told when the connection is poor. Whatever becomes of it — answered, declined, missed — is a line in the conversation, and a missed call waits as unread.
-- **944 automated tests**, 38 of them driving real browsers against the built app, run on every push by GitHub Actions.
+- **954 automated tests**, 38 of them driving real browsers against the built app, run on every push by GitHub Actions.
 
 ## Tech stack
 
@@ -165,7 +165,7 @@ Three suites, each testing what the others cannot.
 
 | | Server | Client |
 |---|---|---|
-| Tests | 457, in 20 files | 449, in 16 files |
+| Tests | 467, in 20 files | 449, in 16 files |
 | Approach | Real Socket.IO clients against a fresh server per test, with an in-memory MongoDB | The real app rendered against a fake socket; each test plays the server |
 | Lint | oxlint | oxlint, including React hooks rules |
 | Types | — | TypeScript, checked on every build |
@@ -561,7 +561,7 @@ Between two people, sound or sound and picture. The media never passes through t
 
 1. **`call:invite`** `{ to, media }` — `to` is a `userId`, `media` is `"audio"` or `"video"`. Whoever may write to someone may call them. Every connection of the person called receives `call:incoming`; the caller's acknowledgement carries the `callId` and a `secret`.
 2. **`call:accept`** from any one of the called person's connections takes the call: its acknowledgement carries that device's own `secret`, the caller receives `call:accepted`, and the other connections stop ringing (`call:ended`, `answered-elsewhere`). `call:decline` refuses it; the caller can `call:cancel` before it is answered; unanswered after 30 seconds it is `missed`.
-3. **`call:config`** gives a device that is in the call its `iceServers`: public STUN and, where `TURN_KEY_ID` and `TURN_API_TOKEN` are set, relay credentials made for that call.
+3. **`call:config`** gives a device that is in the call its `iceServers`: public STUN and, where `TURN_KEY_ID` and `TURN_API_TOKEN` are set, relay credentials made for that call (the provider is asked once per call: both devices are given the same).
 4. **`call:signal`** carries one thing to the other device and to nobody else: a `description` (`{ type, sdp }`, `type` one of `offer`, `answer`, `pranswer`, `rollback`, at most 48,000 characters) or a `candidate` (`{ candidate, sdpMid, sdpMLineIndex, usernameFragment }`). Only those fields are passed on.
 5. **`call:end`** hangs up from either side, in whatever state the call is. A call ends by itself after 60 minutes. A page that is being closed or reloaded hangs up too — over the socket and, because a browser does not promise to deliver that from a page on its way out, with a beacon to `POST /call/leave` carrying the device's `secret`.
 
