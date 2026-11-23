@@ -423,9 +423,12 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
 
   // The camera (or none) is what is sent from now on — unless the screen is: the camera
   // then waits its turn — and whoever shows the user's own picture sees that it changed.
+  // Says whether the call is still the one: it may have ended while the other end was being sent to.
   const sendCamera = useCallback(async (current: Live, track: MediaStreamTrack | null) => {
     if (current.screen === null) await current.peer?.put('video', track).catch(() => {})
-    if (current.local !== null) setLocalStream(shown(current.local))
+    if (live.current !== current || current.local === null) return false
+    setLocalStream(shown(current.local))
+    return true
   }, [])
 
   /** Stops or starts sending picture — opening the camera first, in a call that began without one. */
@@ -443,7 +446,7 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
       const [track] = camera.getVideoTracks()
       if (live.current !== current || current.local === null || track === undefined) return stop(camera)
       current.local.addTrack(track)
-      await sendCamera(current, track)
+      if (!(await sendCamera(current, track))) return
       dispatch({ type: 'cameraToggled' })
       dispatch({ type: 'facing', away: facesAway(track) })
     } catch {
@@ -501,7 +504,7 @@ export const useCall = ({ online, loginCount, signedIn }: Options) => {
       track.enabled = old.enabled
       current.local.addTrack(track)
     }
-    await sendCamera(current, track ?? null)
+    if (!(await sendCamera(current, track ?? null))) return
     dispatch(track === undefined ? { type: 'cameraUnavailable' } : { type: 'facing', away: facesAway(track) })
     return track
   }, [sendCamera])
